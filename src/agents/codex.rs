@@ -71,6 +71,31 @@ impl Agent for CodexAgent {
             .env("WS_ROOT", &ctx.sessions_root);
         Ok(cmd)
     }
+
+    fn headless(&self, ws: &Workspace, prompt: &str, ctx: &LaunchCtx) -> Result<Command> {
+        let mut cmd = Command::new(self.binary());
+        cmd.arg("exec");
+        if !ctx.fresh && marker_present(ws) {
+            cmd.arg("resume").arg("--last");
+        }
+        cmd.arg(prompt)
+            .arg("-C")
+            .arg(&ws.root)
+            .arg("--color")
+            .arg("never");
+        cmd.current_dir(&ws.root)
+            .env("WS_WORKSPACE", &ws.name)
+            .env("WS_DIR", &ws.root)
+            .env("WS_ROOT", &ctx.sessions_root);
+        Ok(cmd)
+    }
+
+    fn headless_succeeded(&self, out: &std::process::Output) -> bool {
+        // codex exec has no machine-readable success field on stdout; a clean
+        // exit with some final output is the signal. Empty output means the run
+        // produced nothing, which is a failure, not a quiet success.
+        out.status.success() && !out.stdout.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -164,5 +189,36 @@ mod tests {
         let b = CodexAgent.binary();
         std::env::remove_var("WS_CODEX_BIN");
         assert_eq!(b, "/fake/codex");
+    }
+
+    #[test]
+    fn headless_uses_exec_and_never_bypasses_the_sandbox() {
+        let td = TempDir::new().unwrap();
+        let ws = ws_at(td.path());
+        let ctx = LaunchCtx { fresh: true, sessions_root: td.path().to_path_buf() };
+        let a = args(&CodexAgent.headless(&ws, "do the thing", &ctx).unwrap());
+        assert_eq!(a.first().map(String::as_str), Some("exec"));
+        assert!(a.contains(&"do the thing".to_string()), "{a:?}");
+        for forbidden in ["--dangerously-bypass-approvals-and-sandbox",
+                          "--dangerously-bypass-hook-trust", "-s", "--sandbox"] {
+            assert!(!a.iter().any(|x| x == forbidden), "{forbidden} must never be passed: {a:?}");
+        }
+    }
+
+    #[test]
+    fn headless_resumes_when_a_marker_exists_and_not_when_fresh() {
+        let td = TempDir::new().unwrap();
+        let ws = ws_at(td.path());
+        record_marker(&ws).unwrap();
+
+        let resumed = args(&CodexAgent
+            .headless(&ws, "next", &LaunchCtx { fresh: false, sessions_root: td.path().into() })
+            .unwrap());
+        assert_eq!(resumed.get(1).map(String::as_str), Some("resume"), "{resumed:?}");
+
+        let first = args(&CodexAgent
+            .headless(&ws, "next", &LaunchCtx { fresh: true, sessions_root: td.path().into() })
+            .unwrap());
+        assert_ne!(first.get(1).map(String::as_str), Some("resume"), "{first:?}");
     }
 }

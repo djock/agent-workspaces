@@ -32,6 +32,15 @@ pub trait Agent {
     fn hook_trust_note(&self) -> Option<&'static str> {
         None
     }
+
+    /// Build a non-interactive Command that runs `prompt` to completion.
+    /// Implementations MUST NOT pass any permission-escalation flag: the drain
+    /// runs unattended, and an agent that needed approval should fail, not proceed.
+    fn headless(&self, ws: &Workspace, prompt: &str, ctx: &LaunchCtx) -> anyhow::Result<Command>;
+
+    /// Whether a finished headless run counts as success. Unreadable output is
+    /// always a failure.
+    fn headless_succeeded(&self, out: &std::process::Output) -> bool;
 }
 
 pub fn for_id(id: &str) -> anyhow::Result<Box<dyn Agent>> {

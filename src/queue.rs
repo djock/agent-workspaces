@@ -72,8 +72,6 @@ pub fn add(tasks_path: &Path, text: &str, actor: &str) -> Result<String> {
     Ok(id)
 }
 
-/// Unused outside tests until Task 4 wires the drain runner through it.
-#[allow(dead_code)]
 pub fn set_state(tasks_path: &Path, id: &str, state: TaskState, note: Option<&str>) -> Result<()> {
     append(
         tasks_path,
@@ -138,9 +136,6 @@ pub fn pending(tasks_path: &Path) -> Result<Vec<Task>> {
 /// still marked running when no drain holds the lock is one whose process died.
 /// It is failed, never re-run — re-running a half-finished task could repeat
 /// destructive work, and re-queueing by hand is cheap.
-///
-/// Unused outside tests until Task 4 wires the drain runner through it.
-#[allow(dead_code)]
 pub fn reap_orphans(tasks_path: &Path) -> Result<usize> {
     let orphans: Vec<String> = tasks(tasks_path)?
         .into_iter()
