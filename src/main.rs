@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod context;
 mod contract;
+mod drain;
 mod handoff;
 mod hookio;
 mod hooksetup;
@@ -16,6 +17,7 @@ mod mail;
 mod meta;
 mod migrate;
 mod prompts;
+mod queue;
 mod readme;
 mod registry;
 mod rows;
@@ -61,6 +63,7 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
         Cmd::Whoami => commands::whoami()?,
         Cmd::Who { name } => commands::who(name)?,
         Cmd::Msg(c) => commands::msg(c)?,
+        Cmd::Queue(c) => commands::queue(c)?,
         Cmd::Secrets(c) => commands::secrets(c)?,
         Cmd::Search { query, include_archived } => commands::search(query, include_archived)?,
         Cmd::MigrateCs { names, all, dry_run } => commands::migrate_cs(names, all, dry_run)?,
@@ -104,6 +107,9 @@ fn print_help() {
          ws -who [<name>]        actors who have worked in a workspace\n\
          ws -msg <name> <body>   send a message to another workspace\n\
          ws -msg log [<name>]    read the message history\n\
+         ws -queue add <name> <text>   add a task to a workspace's queue\n\
+         ws -queue list [<name>]       show the queue\n\
+         ws -queue drain [<name>]      run pending tasks through the agent\n\
          ws -update           install the latest release (--check, --force)\n\
          ws -uninstall        remove ws integrations and binary (--force)\n\
          ws migrate-cs <name>...|--all   import cs sessions (--dry-run)\n\

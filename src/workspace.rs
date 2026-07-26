@@ -29,6 +29,24 @@ impl Workspace {
     pub fn workspace_toml(&self) -> PathBuf {
         self.ws_dir().join("workspace.toml")
     }
+    pub fn queue_dir(&self) -> PathBuf {
+        self.ws_dir().join("queue")
+    }
+    pub fn queue_tasks(&self) -> PathBuf {
+        self.queue_dir().join("tasks.jsonl")
+    }
+    /// Drain journal: per-checkout run output, not shared state.
+    /// Unused until Task 4 wires the drain runner through it.
+    #[allow(dead_code)]
+    pub fn queue_journal(&self) -> PathBuf {
+        self.local_dir().join("queue-journal.log")
+    }
+    /// Present when the circuit breaker has tripped. Cleared by `--reset`.
+    /// Unused until Task 4 wires the drain runner through it.
+    #[allow(dead_code)]
+    pub fn circuit_marker(&self) -> PathBuf {
+        self.local_dir().join("queue-circuit-open")
+    }
     pub fn readme(&self) -> PathBuf {
         self.ws_dir().join("README.md")
     }

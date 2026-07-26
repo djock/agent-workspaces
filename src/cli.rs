@@ -28,6 +28,14 @@ pub enum Cmd {
     Whoami,
     Who { name: Option<String> },
     Msg(MsgCmd),
+    Queue(QueueCmd),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum QueueCmd {
+    Add { name: String, text: String },
+    List { name: Option<String> },
+    Drain { name: Option<String>, reset: bool },
 }
 
 #[derive(Debug, PartialEq)]
@@ -127,6 +135,7 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         "-secrets" => parse_secrets(it.collect()),
         "-tag" => parse_tag(it.collect()),
         "-msg" => parse_msg(it.collect()),
+        "-queue" => parse_queue(it.collect()),
         "-status" => parse_status(it.collect()),
         "-archive" => parse_archive(it.collect(), true),
         "-unarchive" => parse_archive(it.collect(), false),
@@ -289,6 +298,44 @@ fn parse_msg(args: Vec<String>) -> Result<Cmd> {
         bail!("usage: ws -msg <name> <body>");
     }
     Ok(Cmd::Msg(MsgCmd::Send { to: first, body: rest.join(" ") }))
+}
+
+fn parse_queue(args: Vec<String>) -> Result<Cmd> {
+    let mut it = args.into_iter();
+    let sub = it
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("usage: ws -queue add|list|drain ..."))?;
+    match sub.as_str() {
+        "add" => {
+            let name = it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -queue add <name> <text>"))?;
+            let rest: Vec<String> = it.collect();
+            if rest.is_empty() {
+                bail!("usage: ws -queue add <name> <text>");
+            }
+            Ok(Cmd::Queue(QueueCmd::Add { name, text: rest.join(" ") }))
+        }
+        "list" => {
+            let name = it.next();
+            if it.next().is_some() {
+                bail!("usage: ws -queue list [<name>]");
+            }
+            Ok(Cmd::Queue(QueueCmd::List { name }))
+        }
+        "drain" => {
+            let mut name = None;
+            let mut reset = false;
+            for a in it {
+                match a.as_str() {
+                    "--reset" => reset = true,
+                    other if other.starts_with("--") => bail!("unexpected argument: {other}"),
+                    other if name.is_none() => name = Some(other.to_string()),
+                    other => bail!("unexpected argument: {other}"),
+                }
+            }
+            Ok(Cmd::Queue(QueueCmd::Drain { name, reset }))
+        }
+        other => bail!("unknown queue subcommand: {other} (try add, list, drain)"),
+    }
 }
 
 fn parse_tag(args: Vec<String>) -> Result<Cmd> {
@@ -623,5 +670,33 @@ mod tests {
     #[test]
     fn msg_send_requires_a_body() {
         assert!(parse(vec!["-msg".into(), "proj".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_queue_subcommands() {
+        assert_eq!(
+            p(&["-queue", "add", "proj", "write the docs"]),
+            Cmd::Queue(QueueCmd::Add { name: "proj".into(), text: "write the docs".into() })
+        );
+        assert_eq!(p(&["-queue", "list", "proj"]), Cmd::Queue(QueueCmd::List { name: Some("proj".into()) }));
+        assert_eq!(
+            p(&["-queue", "drain", "proj"]),
+            Cmd::Queue(QueueCmd::Drain { name: Some("proj".into()), reset: false })
+        );
+        assert_eq!(
+            p(&["-queue", "drain", "proj", "--reset"]),
+            Cmd::Queue(QueueCmd::Drain { name: Some("proj".into()), reset: true })
+        );
+    }
+
+    #[test]
+    fn queue_add_requires_a_target_and_text() {
+        assert!(parse(vec!["-queue".into(), "add".into()]).is_err());
+        assert!(parse(vec!["-queue".into(), "add".into(), "proj".into()]).is_err());
+    }
+
+    #[test]
+    fn an_unknown_queue_subcommand_is_rejected() {
+        assert!(parse(vec!["-queue".into(), "flush".into()]).is_err());
     }
 }

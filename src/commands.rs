@@ -1212,3 +1212,36 @@ pub fn msg(cmd: crate::cli::MsgCmd) -> Result<()> {
         }
     }
 }
+
+pub fn queue(cmd: crate::cli::QueueCmd) -> Result<()> {
+    use crate::cli::QueueCmd;
+    let cfg = config::load();
+    match cmd {
+        QueueCmd::Add { name, text } => {
+            let ws = crate::workspace::resolve(&name, &cfg);
+            if !ws.exists() {
+                anyhow::bail!("no workspace named {name}");
+            }
+            let actor = crate::actors::actor_slug_in(&ws.root);
+            crate::queue::add(&ws.queue_tasks(), &text, &actor)?;
+            let n = crate::queue::pending(&ws.queue_tasks())?.len();
+            println!("queued for {name} ({n} pending) — run `ws -queue drain {name}` to start");
+            Ok(())
+        }
+        QueueCmd::List { name } => {
+            // current_or_named: honours $WS_WORKSPACE, same as Task 1's -who.
+            let (_n, root) = current_or_named(name)?;
+            let tasks = crate::queue::tasks(&root.join(".ws/queue/tasks.jsonl"))?;
+            if tasks.is_empty() {
+                println!("queue is empty");
+                return Ok(());
+            }
+            for t in tasks {
+                let note = t.note.map(|n| format!("  ({n})")).unwrap_or_default();
+                println!("{:<8} {}{}", t.state.as_str(), t.text, note);
+            }
+            Ok(())
+        }
+        QueueCmd::Drain { name, reset } => crate::drain::run(name, reset),
+    }
+}

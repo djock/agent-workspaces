@@ -210,7 +210,7 @@ fn render_detail(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::styled(
         format!(
             "queue {}   mail {}",
-            det.queue,
+            det.queue.map(|n| n.to_string()).unwrap_or_else(|| "?".into()),
             det.mail.map(|n| n.to_string()).unwrap_or_else(|| "?".into())
         ),
         Style::new().fg(app.theme.dim),
