@@ -224,6 +224,13 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         other if other.starts_with('-') => {
             bail!("unknown command: {other}\ntry: ws -list | ws -adopt | ws -rm | ws config | ws <name>");
         }
+        // Known limitation (M1): this arm claims *every* bare name with an
+        // inner `@`, so an adopted workspace literally named `client@acme`
+        // routes here instead of to the launch arm below and cannot be
+        // launched from the CLI. It fails safe — `worktree::create` bails
+        // "already exists" via `lookup_checked` rather than touching
+        // anything — so the workspace is unreachable, never damaged.
+        // Disambiguating would mean consulting the registry from the parser.
         name if crate::worktree::parse_name(name).is_some() => {
             let mut merge = false;
             for a in it {

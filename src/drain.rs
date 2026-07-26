@@ -144,8 +144,19 @@ pub fn run(name: Option<String>, reset: bool) -> Result<()> {
 
     // Same resolution order as commands::launch, minus the --agent override:
     // workspace default, then config default.
-    let agent_id = crate::meta::read(&ws.workspace_toml())
-        .default_agent
+    //
+    // I4: `read_checked`, never the lenient `read`. `read`'s "a missing or
+    // unparseable file reads as defaults" rationale is for *display* — listing
+    // commands walking a half-built workspace. Here the answer decides which
+    // binary gets executed with nobody watching, so a `workspace.toml` we
+    // cannot parse must refuse the drain rather than fall through to the
+    // config default. This is not hypothetical: `workspace.toml` is tracked
+    // and is not union-merged, so a `base@feature` merge can leave conflict
+    // markers in it, after which the lenient read would have silently drained
+    // a codex-configured workspace with claude. `Ok(None)` — genuinely no
+    // file — still falls back, which is the pre-`ws -agent` state.
+    let agent_id = crate::meta::read_checked(&ws.workspace_toml())?
+        .and_then(|m| m.default_agent)
         .unwrap_or_else(|| cfg.default_agent.clone());
     let agent = agents::for_id(&agent_id)?;
     if !agent.is_installed() {

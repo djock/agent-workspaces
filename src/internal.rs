@@ -54,15 +54,14 @@ fn session_start() {
         let _ = timeline::record(&ws.timeline(), "opened", &actors::actor_slug(), serde_json::json!({}));
     }
 
-    // build injected context
-    let context = build_context(&ws);
+    // ONE mail scan, feeding both the rendered context and the watermark.
+    let mail = crate::mail::unread(&ws.mail_dir(), &ws.mail_seen());
+    let (context, watermark) = session_context(&ws, mail);
 
     // One atomic_write per session start, not one per message: this is a hook
     // path and atomic_write fsyncs twice.
-    if let Ok(msgs) = crate::mail::unread(&ws.mail_dir(), &ws.mail_seen()) {
-        if let Some(newest) = msgs.last() {
-            let _ = crate::mail::mark_seen(&ws.mail_seen(), &newest.id);
-        }
+    if let Some(id) = watermark {
+        let _ = crate::mail::mark_seen(&ws.mail_seen(), &id);
     }
 
     println!("{}", hookio::additional_context("SessionStart", &context));
@@ -214,7 +213,28 @@ fn system_time_age_secs(t: std::time::SystemTime) -> u64 {
         .unwrap_or(0)
 }
 
-fn build_context(ws: &Workspace) -> String {
+/// The context injected at session start, plus the mail id to mark seen —
+/// **both derived from the single `mail` scan passed in**.
+///
+/// I3: `session_start` used to render from one `mail::unread` scan and then
+/// take a *second*, independent scan to pick the watermark. Every message that
+/// landed in between — the whole of `build_context`: a README read, a notebook
+/// directory walk, several stats — was marked read without ever being shown,
+/// and there is no way to get it back. Mail arriving from a sibling workspace
+/// or a cron while a session starts was silently swallowed.
+///
+/// The watermark is therefore the id of the newest message this function
+/// actually rendered. Callers must not scan again; this function must not
+/// scan at all.
+fn session_context(
+    ws: &Workspace,
+    mail: Result<Vec<crate::mail::Message>, anyhow::Error>,
+) -> (String, Option<String>) {
+    let watermark = mail.as_ref().ok().and_then(|m| m.last().map(|x| x.id.clone()));
+    (build_context(ws, mail), watermark)
+}
+
+fn build_context(ws: &Workspace, mail: Result<Vec<crate::mail::Message>, anyhow::Error>) -> String {
     let mut s = format!("# ws workspace: {}\n\n", ws.name);
 
     if let Ok(readme) = std::fs::read_to_string(ws.readme()) {
@@ -238,9 +258,10 @@ fn build_context(ws: &Workspace) -> String {
         }
     }
 
-    // Unread mail. A read error is reported, not swallowed: silently showing an
-    // empty mailbox would be indistinguishable from having no mail.
-    match crate::mail::unread(&ws.mail_dir(), &ws.mail_seen()) {
+    // Unread mail, from the caller's single scan. A read error is reported,
+    // not swallowed: silently showing an empty mailbox would be
+    // indistinguishable from having no mail.
+    match mail {
         Ok(msgs) if !msgs.is_empty() => {
             s.push_str(&format!("Unread mail ({}):\n", msgs.len()));
             for m in &msgs {
@@ -486,13 +507,109 @@ mod tests {
         let ws = Workspace { name: "proj".into(), root: td.path().to_path_buf() };
         std::fs::create_dir_all(ws.ws_dir()).unwrap();
 
-        let quiet = build_context(&ws);
+        let scan = crate::mail::unread(&ws.mail_dir(), &ws.mail_seen());
+        let quiet = build_context(&ws, scan);
         assert!(!quiet.contains("Unread mail"), "no mail: no mail section");
 
         crate::mail::send(&ws.mail_dir(), "alice", "please review the plan").unwrap();
-        let loud = build_context(&ws);
+        let scan = crate::mail::unread(&ws.mail_dir(), &ws.mail_seen());
+        let loud = build_context(&ws, scan);
         assert!(loud.contains("Unread mail (1)"), "count is shown: {loud}");
         assert!(loud.contains("please review the plan"), "body is shown: {loud}");
         assert!(loud.contains("alice"), "sender is shown: {loud}");
+    }
+
+    /// I3, the real lost-mail path. `session_start` rendered from one mail
+    /// scan and then marked seen from a *second*, independent one, so a
+    /// message arriving between the two was marked read having never been
+    /// shown. This test reproduces that window exactly: the scan is taken,
+    /// then a message arrives, then the context is built.
+    ///
+    /// The discriminator is that `session_context` must derive the watermark
+    /// from the vector it was **given**. Restore the second scan inside it and
+    /// the watermark becomes `late`, both assertions below fail, and the
+    /// message is gone.
+    #[test]
+    fn mail_arriving_after_the_scan_is_not_marked_seen() {
+        let td = TempDir::new().unwrap();
+        let ws = Workspace { name: "proj".into(), root: td.path().to_path_buf() };
+        std::fs::create_dir_all(ws.ws_dir()).unwrap();
+        std::fs::create_dir_all(ws.local_dir()).unwrap();
+
+        let early = crate::mail::send(&ws.mail_dir(), "alice", "the early one").unwrap();
+        // Exactly what session_start does: scan once, up front.
+        let scan = crate::mail::unread(&ws.mail_dir(), &ws.mail_seen());
+        // ...and now mail lands while the context is still being assembled.
+        let late = crate::mail::send(&ws.mail_dir(), "bob", "the late one").unwrap();
+        assert_ne!(early, late);
+
+        let (context, watermark) = session_context(&ws, scan);
+
+        assert!(context.contains("the early one"), "the scanned message is rendered: {context}");
+        assert!(
+            !context.contains("the late one"),
+            "the late message cannot have been rendered — it did not exist yet: {context}"
+        );
+        assert_eq!(
+            watermark.as_deref(),
+            Some(early.as_str()),
+            "the watermark must be the newest message actually RENDERED, not the newest on disk"
+        );
+
+        // And the consequence that matters: after marking seen, the late
+        // message is still waiting rather than silently consumed.
+        crate::mail::mark_seen(&ws.mail_seen(), &watermark.unwrap()).unwrap();
+        let still = crate::mail::unread(&ws.mail_dir(), &ws.mail_seen()).unwrap();
+        assert_eq!(still.len(), 1, "the unshown message must survive: {still:?}");
+        assert_eq!(still[0].id, late);
+        assert_eq!(still[0].body, "the late one");
+    }
+
+    /// The other half of the I3 constraint: at most ONE `atomic_write` per
+    /// session start regardless of how many messages are unread. The
+    /// watermark is a single id, so marking is a single write.
+    #[test]
+    fn many_unread_messages_produce_one_watermark_not_one_per_message() {
+        let td = TempDir::new().unwrap();
+        let ws = Workspace { name: "proj".into(), root: td.path().to_path_buf() };
+        std::fs::create_dir_all(ws.ws_dir()).unwrap();
+        std::fs::create_dir_all(ws.local_dir()).unwrap();
+
+        let mut ids = Vec::new();
+        for body in ["one", "two", "three"] {
+            ids.push(crate::mail::send(&ws.mail_dir(), "alice", body).unwrap());
+        }
+        let scan = crate::mail::unread(&ws.mail_dir(), &ws.mail_seen());
+        let (context, watermark) = session_context(&ws, scan);
+
+        assert!(context.contains("Unread mail (3)"), "all three are rendered: {context}");
+        assert_eq!(
+            watermark.as_deref(),
+            ids.last().map(String::as_str),
+            "one watermark, the newest rendered id"
+        );
+        crate::mail::mark_seen(&ws.mail_seen(), &watermark.unwrap()).unwrap();
+        assert!(
+            crate::mail::unread(&ws.mail_dir(), &ws.mail_seen()).unwrap().is_empty(),
+            "one write clears all three"
+        );
+    }
+
+    /// A mail read *error* must not produce a watermark: marking seen on the
+    /// strength of a failed scan would consume mail nobody could read.
+    #[test]
+    fn an_unreadable_mailbox_yields_no_watermark() {
+        let td = TempDir::new().unwrap();
+        let ws = Workspace { name: "proj".into(), root: td.path().to_path_buf() };
+        std::fs::create_dir_all(ws.ws_dir()).unwrap();
+        std::fs::create_dir_all(ws.mail_dir()).unwrap();
+        std::fs::write(ws.mail_dir().join("9-garbage.json"), "{not json").unwrap();
+
+        let scan = crate::mail::unread(&ws.mail_dir(), &ws.mail_seen());
+        assert!(scan.is_err(), "the fixture must actually fail to scan");
+        let (context, watermark) = session_context(&ws, scan);
+
+        assert_eq!(watermark, None, "a failed scan must never advance the watermark");
+        assert!(context.contains("Mail could not be read"), "and it is reported: {context}");
     }
 }

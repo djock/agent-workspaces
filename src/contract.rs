@@ -54,10 +54,16 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
         "local/\n*.enc\n",
     )?;
 
-    // .ws/.gitattributes — union-merge notebooks/timeline (used from Phase 2 on)
+    // .ws/.gitattributes — union-merge every append-only file.
+    //
+    // `queue/*.jsonl` is the same shape as the notebooks and the timeline:
+    // append-only, one record per line, written independently in a base and in
+    // its worktree. Without union merge a `base@feature` merge conflicts on
+    // it, and a conflicted merge is the C1 path — the one that leaves the
+    // user's repository mid-merge.
     write_if_absent(
         &ws.join(".gitattributes"),
-        "notebook/*.md merge=union\ntimeline.jsonl merge=union\n",
+        "notebook/*.md merge=union\ntimeline.jsonl merge=union\nqueue/*.jsonl merge=union\n",
     )?;
 
     // git init only if this dir is not already inside a repo (direct or ancestor)
