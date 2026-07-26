@@ -1,0 +1,30 @@
+# Transient files
+*.lock
+!Cargo.lock
+*.tmp
+*.bak
+
+# Rust build output
+/target
+
+# Local assistant and workspace state (never shared)
+/.cs/
+/.ws/
+
+# Claude Code local settings (recreated on each machine)
+.claude/settings.local.json
+
+# Machine-local session protocol
+CLAUDE.local.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor and tool config
+.vscode/
+.idea/
+.obsidian/
+*.swp
+*.swo
+*~

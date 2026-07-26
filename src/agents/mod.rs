@@ -1,0 +1,43 @@
+pub mod claude;
+pub mod codex;
+
+use std::path::PathBuf;
+use std::process::Command;
+
+use crate::workspace::Workspace;
+
+pub struct LaunchCtx {
+    pub fresh: bool,
+    pub sessions_root: PathBuf,
+}
+
+pub trait Agent {
+    fn id(&self) -> &'static str;
+    fn binary(&self) -> String;
+    fn is_installed(&self) -> bool;
+    fn context_file(&self) -> &'static str;
+    /// Build the launch Command, deciding fresh vs resume itself and persisting any
+    /// per-agent launch state (e.g. Claude's session-id, Codex's "launched" marker).
+    fn launch(&self, ws: &Workspace, ctx: &LaunchCtx) -> anyhow::Result<Command>;
+    /// Whether this workspace has a prior session for this agent (drives resume).
+    fn has_prior_session(&self, ws: &Workspace) -> bool;
+
+    /// Where this agent's hooks config lives (a JSON file with a top-level `hooks` object).
+    fn hooks_config_path(&self) -> PathBuf;
+    /// Where this agent's ws-installed prompts/commands live.
+    fn prompts_dir(&self) -> PathBuf;
+    /// File name (under `prompts_dir()`) for a given prompt base name (e.g. "summary").
+    fn prompt_filename(&self, base: &str) -> String;
+    /// A note to surface after install if the agent needs an extra trust/enable step.
+    fn hook_trust_note(&self) -> Option<&'static str> {
+        None
+    }
+}
+
+pub fn for_id(id: &str) -> anyhow::Result<Box<dyn Agent>> {
+    match id {
+        "claude" => Ok(Box::new(claude::ClaudeAgent)),
+        "codex" => Ok(Box::new(codex::CodexAgent)),
+        other => anyhow::bail!("unknown agent: {other} (ws supports claude and codex)"),
+    }
+}
