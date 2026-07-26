@@ -1,6 +1,22 @@
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use toml_edit::{Array, DocumentMut, Item, Table};
+
+pub const CODEX_STATUS_LINE: &[&str] = &[
+    "model-with-reasoning",
+    "git-branch",
+    "context-used",
+    "five-hour-limit",
+    "weekly-limit",
+];
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct CodexStatuslineBackup {
+    status_line: Option<Vec<String>>,
+    status_line_use_colors: Option<bool>,
+}
 
 pub struct HookSpec {
     pub event: &'static str,
@@ -34,6 +50,13 @@ pub fn codex_hooks_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".codex")
         .join("hooks.json")
+}
+
+pub fn codex_config_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".codex")
+        .join("config.toml")
 }
 
 fn shell_quote(value: &str) -> String {
@@ -195,6 +218,164 @@ pub fn register_statuslines(ws_bin: &Path) -> Result<()> {
 
     crate::atomic::atomic_write(&settings_path, serde_json::to_string_pretty(&root)?)?;
     Ok(())
+}
+
+fn codex_statusline_backup_path() -> PathBuf {
+    crate::config::ws_config_dir().join("codex-statusline-backup.toml")
+}
+
+fn codex_tui(doc: &DocumentMut) -> Result<Option<&Table>> {
+    match doc.get("tui") {
+        None => Ok(None),
+        Some(item) => item
+            .as_table()
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("Codex config key `tui` is not a table")),
+    }
+}
+
+fn codex_status_line_of(tui: Option<&Table>) -> Result<Option<Vec<String>>> {
+    let Some(item) = tui.and_then(|table| table.get("status_line")) else {
+        return Ok(None);
+    };
+    let array = item
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Codex config key `tui.status_line` is not an array"))?;
+    array
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| anyhow::anyhow!("Codex `tui.status_line` entries must be strings"))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
+fn codex_status_line_colors_of(tui: Option<&Table>) -> Result<Option<bool>> {
+    let Some(item) = tui.and_then(|table| table.get("status_line_use_colors")) else {
+        return Ok(None);
+    };
+    item.as_bool()
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!("Codex config key `tui.status_line_use_colors` is not a boolean"))
+}
+
+fn codex_tui_mut(doc: &mut DocumentMut) -> Result<&mut Table> {
+    if !doc.contains_key("tui") {
+        doc.insert("tui", Item::Table(Table::new()));
+    }
+    doc.get_mut("tui")
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| anyhow::anyhow!("Codex config key `tui` is not a table"))
+}
+
+fn codex_status_line_array(values: &[&str]) -> Array {
+    let mut array = Array::new();
+    for value in values {
+        array.push(*value);
+    }
+    array
+}
+
+/// Configure Codex's native footer with the same information rendered by the
+/// Claude status-line command. The original Codex footer is backed up once and
+/// restored by uninstall. toml_edit preserves unrelated comments and layout.
+pub fn register_codex_statusline() -> Result<()> {
+    let path = codex_config_path();
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("failed to read {}", path.display())),
+    };
+    let mut doc = source.parse::<DocumentMut>().map_err(|e| {
+        anyhow::anyhow!(
+            "{} is not valid TOML ({e}); refusing to overwrite it. \
+             Fix it or move it aside, then re-run `ws setup`.",
+            path.display()
+        )
+    })?;
+
+    let backup_path = codex_statusline_backup_path();
+    match std::fs::read_to_string(&backup_path) {
+        Ok(source) => {
+            toml::from_str::<CodexStatuslineBackup>(&source).with_context(|| {
+                format!("{} is corrupt (refusing to overwrite)", backup_path.display())
+            })?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let tui = codex_tui(&doc)?;
+            let backup = CodexStatuslineBackup {
+                status_line: codex_status_line_of(tui)?,
+                status_line_use_colors: codex_status_line_colors_of(tui)?,
+            };
+            crate::atomic::atomic_write(&backup_path, toml::to_string(&backup)?)?;
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to read {}", backup_path.display()))
+        }
+    }
+
+    let tui = codex_tui_mut(&mut doc)?;
+    tui.insert(
+        "status_line",
+        toml_edit::value(codex_status_line_array(CODEX_STATUS_LINE)),
+    );
+    tui.insert("status_line_use_colors", toml_edit::value(true));
+    crate::atomic::atomic_write(&path, doc.to_string())?;
+    Ok(())
+}
+
+/// Restore the Codex footer that existed before ws setup. If the user changed
+/// the footer after setup, leave their newer value and the backup untouched.
+pub fn unregister_codex_statusline() -> Result<usize> {
+    let path = codex_config_path();
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e).with_context(|| format!("failed to read {}", path.display())),
+    };
+    let mut doc = source.parse::<DocumentMut>().map_err(|e| {
+        anyhow::anyhow!("{} is not valid TOML ({e}); refusing to modify it.", path.display())
+    })?;
+    let current = codex_status_line_of(codex_tui(&doc)?)?;
+    let owned = CODEX_STATUS_LINE.iter().map(|value| value.to_string()).collect::<Vec<_>>();
+    if current.as_ref() != Some(&owned) {
+        return Ok(0);
+    }
+
+    let backup_path = codex_statusline_backup_path();
+    let backup: CodexStatuslineBackup = match std::fs::read_to_string(&backup_path) {
+        Ok(source) => toml::from_str(&source)
+            .with_context(|| format!("{} is corrupt (refusing to modify)", backup_path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to read {}", backup_path.display()))
+        }
+    };
+
+    let tui = codex_tui_mut(&mut doc)?;
+    match backup.status_line {
+        Some(values) => {
+            let refs = values.iter().map(String::as_str).collect::<Vec<_>>();
+            tui.insert("status_line", toml_edit::value(codex_status_line_array(&refs)));
+        }
+        None => {
+            tui.remove("status_line");
+        }
+    }
+    match backup.status_line_use_colors {
+        Some(value) => {
+            tui.insert("status_line_use_colors", toml_edit::value(value));
+        }
+        None => {
+            tui.remove("status_line_use_colors");
+        }
+    }
+    crate::atomic::atomic_write(&path, doc.to_string())?;
+    std::fs::remove_file(&backup_path)?;
+    Ok(1)
 }
 
 fn group_is_ws(group: &Value, hooks_dir: &Path) -> bool {
@@ -481,6 +662,67 @@ mod tests {
         assert!(settings.get("subagentStatusLine").is_none());
         assert_eq!(settings["other"], "keep");
         assert!(!crate::config::ws_config_dir().join("statusline-backup.json").exists());
+    }
+
+    #[test]
+    fn codex_statusline_preserves_config_comments_and_backs_up_the_original() {
+        let _d = iso();
+        let path = codex_config_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = "# keep this comment\nmodel = \"gpt-test\"\n\n[tui]\nstatus_line = [\"model\", \"current-dir\"]\nstatus_line_use_colors = false\n";
+        std::fs::write(&path, original).unwrap();
+
+        register_codex_statusline().unwrap();
+
+        let configured = std::fs::read_to_string(&path).unwrap();
+        assert!(configured.contains("# keep this comment"));
+        assert!(configured.contains("model = \"gpt-test\""));
+        let doc = configured.parse::<DocumentMut>().unwrap();
+        assert_eq!(
+            codex_status_line_of(codex_tui(&doc).unwrap()).unwrap(),
+            Some(CODEX_STATUS_LINE.iter().map(|value| value.to_string()).collect())
+        );
+        assert_eq!(codex_status_line_colors_of(codex_tui(&doc).unwrap()).unwrap(), Some(true));
+
+        let backup = std::fs::read_to_string(codex_statusline_backup_path()).unwrap();
+        let backup: CodexStatuslineBackup = toml::from_str(&backup).unwrap();
+        assert_eq!(backup.status_line, Some(vec!["model".into(), "current-dir".into()]));
+        assert_eq!(backup.status_line_use_colors, Some(false));
+    }
+
+    #[test]
+    fn codex_statusline_setup_is_idempotent_and_uninstall_restores_the_original() {
+        let _d = iso();
+        let path = codex_config_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = "[tui]\nstatus_line = [\"model\", \"weekly-limit\"]\n";
+        std::fs::write(&path, original).unwrap();
+
+        register_codex_statusline().unwrap();
+        register_codex_statusline().unwrap();
+        assert_eq!(unregister_codex_statusline().unwrap(), 1);
+
+        let restored = std::fs::read_to_string(&path).unwrap();
+        let doc = restored.parse::<DocumentMut>().unwrap();
+        assert_eq!(
+            codex_status_line_of(codex_tui(&doc).unwrap()).unwrap(),
+            Some(vec!["model".into(), "weekly-limit".into()])
+        );
+        assert_eq!(codex_status_line_colors_of(codex_tui(&doc).unwrap()).unwrap(), None);
+        assert!(!codex_statusline_backup_path().exists());
+    }
+
+    #[test]
+    fn codex_statusline_refuses_to_replace_invalid_toml() {
+        let _d = iso();
+        let path = codex_config_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = "not valid toml ][";
+        std::fs::write(&path, original).unwrap();
+
+        assert!(register_codex_statusline().is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert!(!codex_statusline_backup_path().exists());
     }
 
     #[test]

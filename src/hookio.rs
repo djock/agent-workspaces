@@ -48,10 +48,6 @@ pub fn additional_context(event: &str, context: &str) -> String {
     .to_string()
 }
 
-pub fn decision_approve() -> String {
-    json!({ "decision": "approve" }).to_string()
-}
-
 pub fn decision_block(reason: &str) -> String {
     json!({ "decision": "block", "reason": reason }).to_string()
 }
@@ -88,10 +84,6 @@ mod tests {
 
     #[test]
     fn decisions() {
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&decision_approve()).unwrap()["decision"],
-            "approve"
-        );
         let b: serde_json::Value = serde_json::from_str(&decision_block("do X")).unwrap();
         assert_eq!(b["decision"], "block");
         assert_eq!(b["reason"], "do X");

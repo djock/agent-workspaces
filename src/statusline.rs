@@ -10,9 +10,14 @@ pub struct CtxInfo {
     pub used_percentage: f64,
 }
 #[derive(Debug, Default, Deserialize)]
-pub struct CostInfo {
+pub struct ModelInfo {
     #[serde(default)]
-    pub total_cost_usd: f64,
+    pub display_name: String,
+}
+#[derive(Debug, Default, Deserialize)]
+pub struct EffortInfo {
+    #[serde(default)]
+    pub level: String,
 }
 #[derive(Debug, Default, Deserialize)]
 pub struct WorkspaceInfo {
@@ -36,11 +41,13 @@ pub struct RateLimits {
 #[derive(Debug, Default, Deserialize)]
 pub struct StatuslineInput {
     #[serde(default)]
+    pub model: ModelInfo,
+    #[serde(default)]
+    pub effort: EffortInfo,
+    #[serde(default)]
     pub context_window: CtxInfo,
     #[serde(default)]
     pub rate_limits: RateLimits,
-    #[serde(default)]
-    pub cost: CostInfo,
     #[serde(default)]
     pub workspace: WorkspaceInfo,
     #[serde(default)]
@@ -81,38 +88,46 @@ fn git_branch(cwd: &str) -> Option<String> {
     }
 }
 
-pub fn render(input: &StatuslineInput, workspace_name: Option<&str>, no_color: bool) -> String {
+pub fn render(input: &StatuslineInput, no_color: bool) -> String {
     let cwd = if !input.workspace.current_dir.is_empty() {
         input.workspace.current_dir.as_str()
     } else {
         input.cwd.as_str()
     };
     let mut parts: Vec<String> = Vec::new();
+    if !input.model.display_name.is_empty() {
+        let model = if input.effort.level.is_empty() {
+            input.model.display_name.clone()
+        } else {
+            format!("{} ({})", input.model.display_name, input.effort.level)
+        };
+        parts.push(model);
+    }
     if let Some(b) = git_branch(cwd) {
         parts.push(format!("\u{2387} {b}")); // ⎇ branch
-    }
-    if let Some(w) = workspace_name {
-        parts.push(w.to_string());
     }
     parts.push(format!("ctx {}%", input.context_window.used_percentage.round() as i64));
 
     let five = input.rate_limits.five_hour.used_percentage.round() as i64;
     let cd = limits::countdown(input.rate_limits.five_hour.resets_at, limits::now_epoch());
     let five_seg = format!("5h {five}% (resets in {cd})");
-    parts.push(colorize(five_seg, five, no_color));
+    parts.push(colorize(five_seg, five, 85, no_color));
 
-    parts.push(format!("${:.2}", input.cost.total_cost_usd));
+    let week = input.rate_limits.seven_day.used_percentage.round() as i64;
+    let cd = limits::countdown(input.rate_limits.seven_day.resets_at, limits::now_epoch());
+    let week_seg = format!("wk {week}% (resets in {cd})");
+    parts.push(colorize(week_seg, week, 90, no_color));
     parts.join(" \u{b7} ") // middot separator
 }
 
-/// Escalate the 5h segment color at 85/95 unless NO_COLOR.
-fn colorize(seg: String, pct: i64, no_color: bool) -> String {
+/// Escalate a limit segment at its warning threshold, then red at 95%.
+fn colorize(seg: String, pct: i64, warn_at: i64, no_color: bool) -> String {
     if no_color {
         return seg;
     }
     let code = if pct >= 95 {
         "31" // red
-    } else if pct >= 85 {
+    } else if pct >= warn_at {
         "33" // yellow
     } else {
         return seg;
@@ -191,11 +206,10 @@ pub fn run() {
     // Best-effort limit capture: workspace copy (if in a ws launch) + global copy.
     let snap = to_snapshot(&input);
     let _ = limits::write(&limits::global_path(), &snap);
-    let ws_name = std::env::var("WS_WORKSPACE").ok().filter(|s| !s.is_empty());
     if let Some(ws) = crate::internal::current_ws() {
         let _ = limits::write(&ws.local_dir().join("limits.json"), &snap);
     }
 
     let no_color = std::env::var_os("NO_COLOR").is_some();
-    let _ = writeln!(std::io::stdout(), "{}", render(&input, ws_name.as_deref(), no_color));
+    let _ = writeln!(std::io::stdout(), "{}", render(&input, no_color));
 }

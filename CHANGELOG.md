@@ -6,6 +6,12 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-26
+
+- Allow Claude to stop silently instead of emitting the invalid Stop-hook decision `approve`.
+- Configure matching Claude and Codex status bars with one model label, branch,
+  context usage, and both 5-hour and weekly limits, without a folder path.
+
 ## [0.1.1] - 2026-07-26
 
 - Quote hook and status-line executable paths so macOS configuration paths containing spaces work.
@@ -23,6 +29,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Provide an interactive terminal dashboard.
 - Add installation, update, uninstall, diagnostics, CI, and release packaging.
 
-[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/djock/agent-workspaces/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/djock/agent-workspaces/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/djock/agent-workspaces/releases/tag/v0.1.0

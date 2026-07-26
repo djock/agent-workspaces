@@ -87,11 +87,14 @@ pub fn setup() -> Result<()> {
             println!("  note: {note}");
         }
     }
-    // Claude statusline registration (Phase 3) — only when Claude is actually
-    // installed, so a Codex-only user never gets a ~/.claude/settings.json created.
+    // Configure each installed agent's status bar with the same core fields.
     if crate::agents::for_id("claude")?.is_installed() {
         crate::hooksetup::register_statuslines(&ws_bin)?;
-        println!("registered ws statusline + subagent-statusline");
+        println!("registered Claude statusline + subagent-statusline");
+    }
+    if crate::agents::for_id("codex")?.is_installed() {
+        crate::hooksetup::register_codex_statusline()?;
+        println!("registered Codex statusline");
     }
     Ok(())
 }
@@ -163,7 +166,8 @@ pub fn uninstall(force: bool) -> Result<()> {
             agent.prompt_filename(base)
         })?;
     }
-    let statuslines = crate::hooksetup::unregister_statuslines(&ws_bin)?;
+    let statuslines = crate::hooksetup::unregister_statuslines(&ws_bin)?
+        + crate::hooksetup::unregister_codex_statusline()?;
     let scripts = crate::hooksetup::remove_hook_scripts()?;
 
     std::fs::remove_file(&ws_bin)

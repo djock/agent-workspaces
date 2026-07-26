@@ -83,10 +83,10 @@ const COOLDOWN_SECS: u64 = 300;
 fn stop() {
     let ws = match current_ws() {
         Some(w) => w,
-        None => {
-            println!("{}", hookio::decision_approve());
-            return;
-        }
+        // Stop hooks allow the turn to end by exiting successfully without a
+        // decision. Claude only accepts `decision: "block"` for this event;
+        // emitting the old `decision: "approve"` shape is invalid.
+        None => return,
     };
     let _ = hookio::read_stdin(); // drain stdin; Stop payload is unused
 
@@ -107,7 +107,6 @@ fn stop() {
     };
 
     if approve {
-        println!("{}", hookio::decision_approve());
         return;
     }
 

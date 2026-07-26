@@ -16,6 +16,23 @@ fn setup_installs_codex_hooks_and_prompts_when_codex_present() {
     assert!(body.contains("session-start.sh"));
     // namespaced codex prompt installed
     assert!(env.home.path().join(".codex/prompts/ws-summary.md").is_file());
+
+    // Codex's native footer uses the same compact information as Claude's.
+    let config = std::fs::read_to_string(env.home.path().join(".codex/config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    let items = parsed["tui"]["status_line"].as_array().unwrap();
+    let items = items.iter().map(|value| value.as_str().unwrap()).collect::<Vec<_>>();
+    assert_eq!(
+        items,
+        vec![
+            "model-with-reasoning",
+            "git-branch",
+            "context-used",
+            "five-hour-limit",
+            "weekly-limit",
+        ]
+    );
+    assert_eq!(parsed["tui"]["status_line_use_colors"].as_bool(), Some(true));
 }
 
 #[test]

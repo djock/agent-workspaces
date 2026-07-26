@@ -14,6 +14,8 @@ Most importantly, the same workspace works with both Claude Code and Codex. If y
 - Switches agents while preserving the project context.
 - Lists, searches, tags, archives, and removes workspaces.
 - Installs hooks and reusable prompts for both supported agents.
+- Configures matching Claude and Codex status bars with model, branch, context,
+  5-hour usage, and weekly usage.
 - Shows available usage-limit information.
 
 `ws` is still under active development. Back up important work and review changes before relying on it for critical projects.
@@ -91,7 +93,7 @@ ws <name> --handoff       Include the latest handoff
 ws -search <text>         Search workspace content
 ws -limits                Show known usage limits
 ws -doctor                Check the installation
-ws setup                  Install or refresh hooks and prompts
+ws setup                  Install or refresh hooks, prompts, and status bars
 ws --version              Show the installed version
 ```
 

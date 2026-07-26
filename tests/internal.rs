@@ -143,25 +143,27 @@ fn stop_reminds_then_cools_down() {
         .stdout(predicates::str::contains("\"decision\":\"block\""))
         .stdout(predicates::str::contains("notebook"));
 
-    // Second stop immediately after → cooldown holds → approve
+    // Second stop immediately after → cooldown holds → allow with no output.
+    // Stop's only valid decision is "block"; "approve" is invalid JSON for
+    // this event.
     env.cmd()
         .env("WS_WORKSPACE", "nb").env("WS_DIR", &proj)
         .args(["internal", "stop"])
         .write_stdin("{}")
         .assert()
         .success()
-        .stdout(predicates::str::contains("\"decision\":\"approve\""));
+        .stdout(predicates::str::is_empty());
 }
 
 #[test]
-fn stop_approves_outside_workspace() {
+fn stop_allows_silently_outside_workspace() {
     let env = Env::new();
     env.cmd()
         .args(["internal", "stop"])
         .write_stdin("{}")
         .assert()
         .success()
-        .stdout(predicates::str::contains("\"decision\":\"approve\""));
+        .stdout(predicates::str::is_empty());
 }
 
 #[test]
