@@ -6,6 +6,12 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-26
+
+- Quote hook and status-line executable paths so macOS configuration paths containing spaces work.
+- Keep hook setup idempotent for both old unquoted and new quoted registrations.
+- Silence expected process-probe errors when reclaiming stale workspace locks.
+
 ## [0.1.0] - 2026-07-26
 
 - Create, resume, adopt, list, search, tag, archive, and remove workspaces.
@@ -17,5 +23,6 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Provide an interactive terminal dashboard.
 - Add installation, update, uninstall, diagnostics, CI, and release packaging.
 
-[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/djock/agent-workspaces/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/djock/agent-workspaces/releases/tag/v0.1.0

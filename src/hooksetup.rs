@@ -36,10 +36,18 @@ pub fn codex_hooks_path() -> PathBuf {
         .join("hooks.json")
 }
 
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn shell_command(path: &Path) -> String {
+    shell_quote(&path.to_string_lossy())
+}
+
 fn render_shim(ws_bin: &Path, handler: &str) -> String {
     format!(
-        "#!/bin/sh\n# ws hook — thin shim (no jq/python); ws does the work.\nexec \"{}\" internal {}\n",
-        ws_bin.display(),
+        "#!/bin/sh\n# ws hook — thin shim (no jq/python); ws does the work.\nexec {} internal {}\n",
+        shell_command(ws_bin),
         handler
     )
 }
@@ -106,7 +114,7 @@ fn register_settings(settings_path: &Path, hooks_dir: &Path) -> Result<()> {
         // drop stale ws entries (command under our hooks dir), keep everything else
         arr.retain(|group| !group_is_ws(group, hooks_dir));
 
-        let command = hooks_dir.join(spec.script).to_string_lossy().to_string();
+        let command = shell_command(&hooks_dir.join(spec.script));
         let mut group = serde_json::Map::new();
         if let Some(m) = spec.matcher {
             group.insert("matcher".into(), json!(m));
@@ -148,9 +156,10 @@ pub fn register_statuslines(ws_bin: &Path) -> Result<()> {
     // back up any prior commands (so cs-statusline is recoverable)
     let mut backup = serde_json::Map::new();
     let ws_prefix = format!("{} ", ws_bin.display());
+    let quoted_ws_prefix = format!("{} ", shell_command(ws_bin));
     for key in ["statusLine", "subagentStatusLine"] {
         if let Some(cmd) = root.get(key).and_then(|v| v.get("command")).and_then(|c| c.as_str()) {
-            if !cmd.starts_with(&ws_prefix) {
+            if !cmd.starts_with(&ws_prefix) && !cmd.starts_with(&quoted_ws_prefix) {
                 backup.insert(key.to_string(), json!(cmd));
             }
         }
@@ -177,11 +186,11 @@ pub fn register_statuslines(ws_bin: &Path) -> Result<()> {
     let obj = root.as_object_mut().unwrap();
     obj.insert(
         "statusLine".into(),
-        json!({ "type": "command", "command": format!("{} statusline", ws_bin.display()), "refreshInterval": 1 }),
+        json!({ "type": "command", "command": format!("{} statusline", shell_command(ws_bin)), "refreshInterval": 1 }),
     );
     obj.insert(
         "subagentStatusLine".into(),
-        json!({ "type": "command", "command": format!("{} subagent-statusline", ws_bin.display()) }),
+        json!({ "type": "command", "command": format!("{} subagent-statusline", shell_command(ws_bin)) }),
     );
 
     crate::atomic::atomic_write(&settings_path, serde_json::to_string_pretty(&root)?)?;
@@ -196,7 +205,12 @@ fn group_is_ws(group: &Value, hooks_dir: &Path) -> bool {
             hs.iter().any(|h| {
                 h.get("command")
                     .and_then(|c| c.as_str())
-                    .map(|c| Path::new(c).starts_with(hooks_dir))
+                    .map(|command| {
+                        HOOKS.iter().any(|spec| {
+                            let path = hooks_dir.join(spec.script);
+                            command == path.to_string_lossy() || command == shell_command(&path)
+                        })
+                    })
                     .unwrap_or(false)
             })
         })
@@ -263,15 +277,17 @@ pub fn unregister_statuslines(ws_bin: &Path) -> Result<usize> {
     let owned: Vec<&str> = ["statusLine", "subagentStatusLine"]
         .into_iter()
         .filter(|key| {
-            let expected = if *key == "statusLine" {
-                format!("{} statusline", ws_bin.display())
+            let suffix = if *key == "statusLine" {
+                "statusline"
             } else {
-                format!("{} subagent-statusline", ws_bin.display())
+                "subagent-statusline"
             };
+            let expected = format!("{} {suffix}", ws_bin.display());
+            let quoted_expected = format!("{} {suffix}", shell_command(ws_bin));
             root.get(*key)
                 .and_then(|v| v.get("command"))
                 .and_then(Value::as_str)
-                .is_some_and(|command| command == expected)
+                .is_some_and(|command| command == expected || command == quoted_expected)
         })
         .collect();
     if owned.is_empty() {
@@ -372,7 +388,8 @@ mod tests {
         let ss = &settings["hooks"]["SessionStart"];
         assert!(ss.is_array());
         let cmd = ss[0]["hooks"][0]["command"].as_str().unwrap();
-        assert!(cmd.ends_with("session-start.sh"));
+        assert!(cmd.contains("session-start.sh"));
+        assert!(cmd.starts_with('\'') && cmd.ends_with('\''));
         // Bash matcher preserved
         assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "Bash");
     }
@@ -393,9 +410,34 @@ mod tests {
         let arr = settings["hooks"]["SessionStart"].as_array().unwrap();
         // exactly one foreign + exactly one ws entry (idempotent)
         let foreign = arr.iter().filter(|g| g["hooks"][0]["command"].as_str().unwrap().contains("/cs/")).count();
-        let ours = arr.iter().filter(|g| g["hooks"][0]["command"].as_str().unwrap().ends_with("session-start.sh") && !g["hooks"][0]["command"].as_str().unwrap().contains("/cs/")).count();
+        let ours = arr.iter().filter(|g| g["hooks"][0]["command"].as_str().unwrap().contains("session-start.sh") && !g["hooks"][0]["command"].as_str().unwrap().contains("/cs/")).count();
         assert_eq!(foreign, 1);
         assert_eq!(ours, 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn commands_with_spaces_are_quoted_executable_and_idempotent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let d = TempDir::new().unwrap();
+        std::env::set_var("HOME", d.path());
+        std::env::set_var("XDG_CONFIG_HOME", d.path().join("Application Support"));
+        let ws_bin = d.path().join("bin with spaces/ws");
+        std::fs::create_dir_all(ws_bin.parent().unwrap()).unwrap();
+        std::fs::write(&ws_bin, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&ws_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        install_hooks_for(&claude_settings_path(), &ws_bin).unwrap();
+        install_hooks_for(&claude_settings_path(), &ws_bin).unwrap();
+
+        let settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(claude_settings_path()).unwrap()).unwrap();
+        let groups = settings["hooks"]["SessionEnd"].as_array().unwrap();
+        assert_eq!(groups.len(), 1, "re-running setup must replace, not duplicate, the quoted hook");
+        let command = groups[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(command.starts_with('\'') && command.ends_with('\''));
+        assert!(std::process::Command::new("sh").arg("-c").arg(command).status().unwrap().success());
     }
 
     #[test]
