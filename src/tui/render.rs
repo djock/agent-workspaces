@@ -13,6 +13,12 @@ use crate::tui::app::{App, InputField, Mode};
 /// `config.nerd_fonts` glyphs are a Phase 9 concern.
 pub const LIVE_MARK: &str = "*";
 
+/// Shown in the status column of an archived row once `A` reveals it. Archived
+/// and active rows otherwise render identically, which makes `a` a coin flip
+/// between archiving and unarchiving. Wording matches `ws -list`'s `[archived]`
+/// so the two surfaces agree.
+pub const ARCHIVED_MARK: &str = "[archived]";
+
 fn limits_cell(r: &WorkspaceRow, now: i64) -> String {
     match &r.limits {
         Some(s) => format!(
@@ -25,10 +31,18 @@ fn limits_cell(r: &WorkspaceRow, now: i64) -> String {
 }
 
 fn state_cell(r: &WorkspaceRow) -> String {
-    match &r.state {
+    let state = match &r.state {
         RowState::Ok => r.status.clone().unwrap_or_default(),
         RowState::Missing => "(missing)".into(),
         RowState::Corrupt(_) => "(corrupt)".into(),
+    };
+    // Archived rows are only ever on screen because `A` revealed them, so the
+    // marker leads: it is why the row is visible at all. Any status text the
+    // user set still follows it.
+    match (r.archived, state.is_empty()) {
+        (false, _) => state,
+        (true, true) => ARCHIVED_MARK.to_string(),
+        (true, false) => format!("{ARCHIVED_MARK} {state}"),
     }
 }
 
@@ -62,14 +76,21 @@ pub fn render_list(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 Style::default()
             };
+            // An archived row is dimmed whole, so a revealed one reads as
+            // secondary at a glance rather than sitting among the active
+            // workspaces looking identical to them.
+            let row_style = if r.archived { dim } else { Style::default() };
             Row::new(vec![
-                Cell::from(r.name.clone()),
-                Cell::from(r.agent.clone()),
+                Cell::from(Span::styled(r.name.clone(), row_style)),
+                Cell::from(Span::styled(r.agent.clone(), row_style)),
                 Cell::from(Span::styled(
                     if r.live_pid.is_some() { LIVE_MARK.to_string() } else { " ".into() },
                     Style::new().fg(app.theme.live),
                 )),
-                Cell::from(Span::styled(state_cell(r), state_style)),
+                Cell::from(Span::styled(
+                    state_cell(r),
+                    if r.archived { dim } else { state_style },
+                )),
                 Cell::from(Span::styled(r.tags.join(","), dim)),
                 Cell::from(Span::styled(
                     r.last_activity.map(|t| ago(t, app.now)).unwrap_or_else(|| "—".into()),
@@ -347,6 +368,38 @@ mod tests {
         app.on_key(ratatui::crossterm::event::KeyCode::Char('A'));
         app.message = None; // the toggle's own confirmation would occupy the footer
         assert!(draw(&app, 100, 12).contains("A hide archived"), "shown → offer to hide");
+    }
+
+    /// `A` reveals archived workspaces into the same list as the active ones.
+    /// Without a marker they are indistinguishable, so `a` on a revealed row is
+    /// a coin flip between archiving and unarchiving — and the user has no way
+    /// to tell which rows the default view was hiding from them.
+    #[test]
+    fn a_revealed_archived_row_is_marked_and_dimmed() {
+        let mut archived = row("alpha", "claude");
+        archived.archived = true;
+        let mut app = crate::tui::app::App::new(vec![archived, row("beta", "codex")], 0);
+        app.on_key(ratatui::crossterm::event::KeyCode::Char('A'));
+        app.message = None; // the toggle's confirmation would occupy the footer
+
+        let mut term = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        term.draw(|f| render(f, &app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+
+        assert!(text.contains("alpha"), "the archived row is revealed: {text}");
+        assert!(text.contains("beta"), "beside the active one: {text}");
+        assert!(text.contains(ARCHIVED_MARK), "and is marked: {text}");
+        assert_eq!(
+            fg_of(&buf, "alpha"),
+            Some(app.theme.dim),
+            "the archived row reads as secondary"
+        );
+        assert_ne!(
+            fg_of(&buf, "beta"),
+            Some(app.theme.dim),
+            "while the active row does not — the marker must discriminate"
+        );
     }
 
     #[test]
