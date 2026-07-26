@@ -9,11 +9,24 @@ use crate::queue::{self, Task, TaskState};
 /// Consecutive failures that stop a drain. See the plan's Safety Model.
 const BREAKER_LIMIT: usize = 2;
 
+/// Hard ceiling on tasks attempted in one `drive()` call. The circuit breaker
+/// only trips on consecutive *failures*, but a drained agent inherits
+/// WS_WORKSPACE/WS_DIR and can run `ws -queue add` itself — a task whose
+/// prompt leads it to enqueue a follow-up produces an unbounded loop where
+/// every iteration "succeeds" and the breaker never engages. This cap is the
+/// only thing that stops unbounded *success*; it is not expected to be hit by
+/// a well-behaved queue.
+const MAX_DRAIN_ITERATIONS: usize = 50;
+
 #[derive(Debug, PartialEq)]
 pub struct Outcome {
     pub ran: usize,
     pub failed: usize,
     pub tripped: bool,
+    /// True if the drain stopped because it hit MAX_DRAIN_ITERATIONS, not
+    /// because the queue emptied or the breaker tripped. Remaining tasks are
+    /// left pending, same as a breaker trip.
+    pub capped: bool,
 }
 
 fn journal(path: &Path, line: &str) -> Result<()> {
@@ -42,8 +55,9 @@ where
         journal(journal_path, &format!("reaped {reaped} interrupted task(s) as failed"))?;
     }
 
-    let mut out = Outcome { ran: 0, failed: 0, tripped: false };
+    let mut out = Outcome { ran: 0, failed: 0, tripped: false, capped: false };
     let mut consecutive = 0usize;
+    let mut iterations = 0usize;
 
     // Re-read pending each iteration: a task's own run may have appended more.
     loop {
@@ -51,6 +65,17 @@ where
             Some(t) => t,
             None => break,
         };
+        if iterations >= MAX_DRAIN_ITERATIONS {
+            out.capped = true;
+            journal(
+                journal_path,
+                &format!(
+                    "iteration cap ({MAX_DRAIN_ITERATIONS}) reached — stopping drain, remaining task(s) left pending"
+                ),
+            )?;
+            break;
+        }
+        iterations += 1;
         queue::set_state(tasks_path, &next.id, TaskState::Running, None)?;
         journal(journal_path, &format!("start: {}", next.text))?;
 
@@ -128,7 +153,7 @@ pub fn run(name: Option<String>, reset: bool) -> Result<()> {
     }
 
     // force=false: never steal a lock for an unattended run.
-    let _guard = crate::lock::acquire(&ws.lock_file(), false)?;
+    let guard = crate::lock::acquire(&ws.lock_file(), false)?;
     let actor = crate::actors::actor_slug_in(&ws.root);
     crate::timeline::record(&ws.timeline(), "drain-start", &actor, serde_json::json!({}))?;
 
@@ -140,16 +165,28 @@ pub fn run(name: Option<String>, reset: bool) -> Result<()> {
             sessions_root: config::sessions_root(&cfg),
         };
         first = false;
-        let mut cmd = agent.headless(&ws, &task.text, &ctx)?;
+        // A per-attempt, per-process-unique scratch path: codex's
+        // `headless_succeeded` reads the agent's final message from here
+        // instead of trusting stdout (C1). Not created by us — the agent
+        // (or nothing, on refusal) writes it.
+        let out_file = ws.local_dir().join(format!("headless-out-{}.json", uuid::Uuid::new_v4()));
+        let mut cmd = agent.headless(&ws, &task.text, &ctx, &out_file)?;
         let out = cmd.output().with_context(|| format!("cannot run {agent_id}"))?;
-        Ok(agent.headless_succeeded(&out))
+        let ok = agent.headless_succeeded(&out, &out_file);
+        let _ = std::fs::remove_file(&out_file); // best-effort; never block on cleanup
+        Ok(ok)
     })?;
 
     crate::timeline::record(
         &ws.timeline(),
         "drain-end",
         &actor,
-        serde_json::json!({ "ran": outcome.ran, "failed": outcome.failed, "tripped": outcome.tripped }),
+        serde_json::json!({
+            "ran": outcome.ran,
+            "failed": outcome.failed,
+            "tripped": outcome.tripped,
+            "capped": outcome.capped,
+        }),
     )?;
 
     if outcome.tripped {
@@ -160,7 +197,20 @@ pub fn run(name: Option<String>, reset: bool) -> Result<()> {
             outcome.failed,
             ws.queue_journal().display()
         );
+        // I3: `process::exit` does not unwind, so `LockGuard::drop` would
+        // never run and `.ws/local/lock` would survive holding a now-dead
+        // pid. Release it explicitly before the non-unwinding exit — the
+        // exit status still needs to be non-zero, so this can't just
+        // `return Err(..)` and let `main` unwind for us.
+        drop(guard);
         std::process::exit(1);
+    }
+    if outcome.capped {
+        println!(
+            "drained {} task(s), {} failed — stopped at the {MAX_DRAIN_ITERATIONS}-task iteration cap; remaining task(s) left pending",
+            outcome.ran, outcome.failed
+        );
+        return Ok(());
     }
     println!("drained {} task(s), {} failed", outcome.ran, outcome.failed);
     Ok(())
@@ -255,8 +305,12 @@ mod tests {
         .unwrap();
     }
 
+    /// Minor 2: bare `"one"`/`"two"` substrings already appear in the
+    /// `start:` lines, so they don't distinguish "the outcome was recorded"
+    /// from "the task was merely started". Assert the composed outcome lines
+    /// instead — these only exist if the ok/failed journal write actually ran.
     #[test]
-    fn the_journal_records_every_attempt() {
+    fn the_journal_records_every_attempts_outcome() {
         let (td, tasks) = setup();
         queue::add(&tasks, "one", "alice").unwrap();
         queue::add(&tasks, "two", "alice").unwrap();
@@ -265,10 +319,8 @@ mod tests {
         drive(&tasks, &journal, |t| Ok(t.text == "one")).unwrap();
 
         let log = std::fs::read_to_string(&journal).unwrap();
-        assert!(log.contains("one"), "journal names the task: {log}");
-        assert!(log.contains("two"), "journal names the task: {log}");
-        assert!(log.contains("ok"), "journal records the outcome: {log}");
-        assert!(log.contains("failed"), "journal records the outcome: {log}");
+        assert!(log.contains("ok: one"), "task one's outcome is recorded: {log}");
+        assert!(log.contains("failed: two"), "task two's outcome is recorded: {log}");
     }
 
     #[test]
@@ -296,5 +348,31 @@ mod tests {
         let out = drive(&tasks, &td.path().join(".ws/local/journal.log"), |_| Ok(true)).unwrap();
         assert_eq!(out.ran, 0);
         assert!(!out.tripped);
+    }
+
+    /// I4. A drained agent has WS_WORKSPACE/WS_DIR and can run `ws -queue
+    /// add` itself; every self-enqueue "succeeds", so the breaker (which
+    /// only counts consecutive failures) never engages. Simulate exactly
+    /// that: every task succeeds AND enqueues one more task from inside
+    /// `exec`. Without a cap this loops forever; with it, `drive` must stop
+    /// at MAX_DRAIN_ITERATIONS, report `capped`, and leave work pending.
+    #[test]
+    fn a_self_enqueuing_agent_is_stopped_by_the_iteration_cap() {
+        let (td, tasks) = setup();
+        queue::add(&tasks, "seed", "alice").unwrap();
+        let tasks_for_closure = tasks.clone();
+
+        let out = drive(&tasks, &td.path().join(".ws/local/journal.log"), move |t| {
+            queue::add(&tasks_for_closure, &format!("child-of-{}", t.text), "alice").unwrap();
+            Ok(true)
+        })
+        .unwrap();
+
+        assert!(out.capped, "the cap must be the reason this drain stopped");
+        assert!(!out.tripped, "every task succeeded — the breaker must never engage");
+        assert_eq!(out.ran, MAX_DRAIN_ITERATIONS, "must stop at exactly the cap");
+
+        let remaining = queue::pending(&tasks).unwrap();
+        assert!(!remaining.is_empty(), "the self-enqueued surplus must be left pending, not silently dropped");
     }
 }

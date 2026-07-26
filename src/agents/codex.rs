@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::path::Path;
 use std::process::Command;
 
 use crate::agents::{Agent, LaunchCtx};
@@ -72,17 +73,32 @@ impl Agent for CodexAgent {
         Ok(cmd)
     }
 
-    fn headless(&self, ws: &Workspace, prompt: &str, ctx: &LaunchCtx) -> Result<Command> {
+    fn headless(&self, ws: &Workspace, prompt: &str, ctx: &LaunchCtx, out_file: &Path) -> Result<Command> {
         let mut cmd = Command::new(self.binary());
         cmd.arg("exec");
         if !ctx.fresh && marker_present(ws) {
             cmd.arg("resume").arg("--last");
+        } else if ctx.fresh {
+            // Mirror `launch`'s fresh path: record the marker ourselves so
+            // task 2..N of THIS drain resume it, instead of every task
+            // running fresh because no prior *interactive* launch happened
+            // to record one.
+            record_marker(ws)?;
         }
         cmd.arg(prompt)
             .arg("-C")
             .arg(&ws.root)
             .arg("--color")
-            .arg("never");
+            .arg("never")
+            // C1: `codex exec` prints its banner and the model's reasoning to
+            // stdout and exits 0 whenever the CLI itself didn't error — even
+            // when the model refused the task outright. `--json -o <file>`
+            // is the only channel that carries a real success signal: the
+            // final assistant message, written to `out_file` and nowhere
+            // else. `headless_succeeded` reads that file, never stdout.
+            .arg("--json")
+            .arg("-o")
+            .arg(out_file);
         cmd.current_dir(&ws.root)
             .env("WS_WORKSPACE", &ws.name)
             .env("WS_DIR", &ws.root)
@@ -90,11 +106,19 @@ impl Agent for CodexAgent {
         Ok(cmd)
     }
 
-    fn headless_succeeded(&self, out: &std::process::Output) -> bool {
-        // codex exec has no machine-readable success field on stdout; a clean
-        // exit with some final output is the signal. Empty output means the run
-        // produced nothing, which is a failure, not a quiet success.
-        out.status.success() && !out.stdout.is_empty()
+    fn headless_succeeded(&self, out: &std::process::Output, out_file: &Path) -> bool {
+        // Safety Model rule 6: failure is "non-zero exit, OR the
+        // --output-last-message file missing or empty". `codex exec` exits 0
+        // and writes a chatty stdout banner even on an outright refusal, so
+        // stdout carries no signal at all — only `out_file`, which the CLI
+        // itself writes, can be trusted.
+        if !out.status.success() {
+            return false;
+        }
+        match std::fs::read(out_file) {
+            Ok(bytes) => !bytes.is_empty(),
+            Err(_) => false,
+        }
     }
 }
 
@@ -196,9 +220,14 @@ mod tests {
         let td = TempDir::new().unwrap();
         let ws = ws_at(td.path());
         let ctx = LaunchCtx { fresh: true, sessions_root: td.path().to_path_buf() };
-        let a = args(&CodexAgent.headless(&ws, "do the thing", &ctx).unwrap());
+        let out_file = td.path().join("out.txt");
+        let a = args(&CodexAgent.headless(&ws, "do the thing", &ctx, &out_file).unwrap());
         assert_eq!(a.first().map(String::as_str), Some("exec"));
         assert!(a.contains(&"do the thing".to_string()), "{a:?}");
+        // C1: the success signal is the --output-last-message file, not stdout.
+        assert!(a.contains(&"--json".to_string()), "{a:?}");
+        assert!(a.windows(2).any(|w| w[0] == "-o" && w[1] == out_file.to_string_lossy()),
+                "-o must point at out_file: {a:?}");
         for forbidden in ["--dangerously-bypass-approvals-and-sandbox",
                           "--dangerously-bypass-hook-trust", "-s", "--sandbox"] {
             assert!(!a.iter().any(|x| x == forbidden), "{forbidden} must never be passed: {a:?}");
@@ -210,15 +239,83 @@ mod tests {
         let td = TempDir::new().unwrap();
         let ws = ws_at(td.path());
         record_marker(&ws).unwrap();
+        let out_file = td.path().join("out.txt");
 
         let resumed = args(&CodexAgent
-            .headless(&ws, "next", &LaunchCtx { fresh: false, sessions_root: td.path().into() })
+            .headless(&ws, "next", &LaunchCtx { fresh: false, sessions_root: td.path().into() }, &out_file)
             .unwrap());
         assert_eq!(resumed.get(1).map(String::as_str), Some("resume"), "{resumed:?}");
 
         let first = args(&CodexAgent
-            .headless(&ws, "next", &LaunchCtx { fresh: true, sessions_root: td.path().into() })
+            .headless(&ws, "next", &LaunchCtx { fresh: true, sessions_root: td.path().into() }, &out_file)
             .unwrap());
         assert_ne!(first.get(1).map(String::as_str), Some("resume"), "{first:?}");
+    }
+
+    /// I1 (mild, codex side). `headless` on the fresh path must record the
+    /// marker itself, so task 2 of a drain resumes task 1's headless session
+    /// instead of running fresh because no *interactive* launch happened to
+    /// record one first.
+    #[test]
+    fn headless_records_the_marker_on_the_fresh_path_so_task_two_resumes() {
+        let td = TempDir::new().unwrap();
+        let ws = ws_at(td.path());
+        let out_file = td.path().join("out.txt");
+        assert!(!CodexAgent.has_prior_session(&ws), "no prior session before task 1");
+
+        CodexAgent
+            .headless(&ws, "one", &LaunchCtx { fresh: true, sessions_root: td.path().into() }, &out_file)
+            .unwrap();
+        assert!(CodexAgent.has_prior_session(&ws), "task 1's headless run must record the marker itself");
+
+        let second = args(&CodexAgent
+            .headless(&ws, "two", &LaunchCtx { fresh: false, sessions_root: td.path().into() }, &out_file)
+            .unwrap());
+        assert_eq!(second.get(1).map(String::as_str), Some("resume"), "{second:?}");
+    }
+
+    /// C1 (critical). This is the discriminator: exit 0 with a full,
+    /// realistic stdout banner (exactly what `codex exec` prints on a
+    /// refusal) must still be a failure when `out_file` is absent or empty.
+    /// If `headless_succeeded` regresses to `status.success() &&
+    /// !out.stdout.is_empty()`, this test fails.
+    #[test]
+    fn headless_succeeded_reads_the_output_file_not_stdout() {
+        use std::os::unix::process::ExitStatusExt;
+        let td = TempDir::new().unwrap();
+        let out_file = td.path().join("out.txt");
+        let ok = |code: i32, stdout: &str| std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        };
+
+        // Exit 0, chatty non-empty stdout, no output file at all: the exact
+        // shape of a refusal. The old `!out.stdout.is_empty()` heuristic
+        // called this a success; it must be a failure.
+        assert!(
+            !CodexAgent.headless_succeeded(
+                &ok(0, "codex banner\nreasoning...\nI won't do that."),
+                &out_file
+            ),
+            "a clean exit with chatty stdout but no output file must be a failure"
+        );
+
+        // File exists but is empty.
+        std::fs::write(&out_file, "").unwrap();
+        assert!(!CodexAgent.headless_succeeded(&ok(0, "banner"), &out_file), "empty output file is a failure");
+
+        // File has real content: success, regardless of what stdout says.
+        std::fs::write(&out_file, "final assistant message").unwrap();
+        assert!(
+            CodexAgent.headless_succeeded(&ok(0, ""), &out_file),
+            "a non-empty output file with a clean exit is success"
+        );
+
+        // Non-zero exit trumps a good file.
+        assert!(
+            !CodexAgent.headless_succeeded(&ok(1, ""), &out_file),
+            "non-zero exit is a failure regardless of the output file"
+        );
     }
 }

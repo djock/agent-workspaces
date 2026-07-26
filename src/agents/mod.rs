@@ -36,11 +36,25 @@ pub trait Agent {
     /// Build a non-interactive Command that runs `prompt` to completion.
     /// Implementations MUST NOT pass any permission-escalation flag: the drain
     /// runs unattended, and an agent that needed approval should fail, not proceed.
-    fn headless(&self, ws: &Workspace, prompt: &str, ctx: &LaunchCtx) -> anyhow::Result<Command>;
+    ///
+    /// `out_file` is a per-attempt scratch path under the workspace's
+    /// `local_dir()` that the caller has *not* created. Implementations that
+    /// have no reliable stdout success signal (codex) MUST have the CLI write
+    /// its final result there and check it in `headless_succeeded`; an
+    /// implementation with a trustworthy stdout signal (claude) may ignore it.
+    fn headless(
+        &self,
+        ws: &Workspace,
+        prompt: &str,
+        ctx: &LaunchCtx,
+        out_file: &std::path::Path,
+    ) -> anyhow::Result<Command>;
 
-    /// Whether a finished headless run counts as success. Unreadable output is
-    /// always a failure.
-    fn headless_succeeded(&self, out: &std::process::Output) -> bool;
+    /// Whether a finished headless run counts as success. Unreadable output —
+    /// on stdout or, for agents that use it, `out_file` — is always a failure,
+    /// never an assumed success. `out_file` is the same path passed to
+    /// `headless`.
+    fn headless_succeeded(&self, out: &std::process::Output, out_file: &std::path::Path) -> bool;
 }
 
 pub fn for_id(id: &str) -> anyhow::Result<Box<dyn Agent>> {
