@@ -322,18 +322,12 @@ pub fn whoami() -> Result<()> {
 }
 
 pub fn who(name: Option<String>) -> Result<()> {
-    let cfg = config::load();
-    let ws = match name {
-        Some(n) => crate::workspace::resolve(&n, &cfg),
-        None => {
-            let dir = std::env::current_dir()?;
-            crate::workspace::Workspace { name: "here".into(), root: dir }
-        }
-    };
-    if !ws.exists() {
-        anyhow::bail!("no workspace at {}", ws.root.display());
-    }
-    let ranked = crate::actors::who(&ws.ws_dir())?;
+    // current_or_named is the established resolution for "this workspace or the
+    // named one": it honours $WS_WORKSPACE, which matters because -who is most
+    // often run from inside an agent session. Every command in this phase that
+    // takes an optional workspace name uses it — do not hand-roll a second path.
+    let (_name, root) = current_or_named(name)?;
+    let ranked = crate::actors::who(&root.join(".ws"))?;
     if ranked.is_empty() {
         println!("no commits to .ws/ yet");
         return Ok(());
@@ -683,17 +677,9 @@ pub fn msg(cmd: crate::cli::MsgCmd) -> Result<()> {
             Ok(())
         }
         MsgCmd::Log { name } => {
-            let ws = match name {
-                Some(n) => crate::workspace::resolve(&n, &cfg),
-                None => crate::workspace::Workspace {
-                    name: "here".into(),
-                    root: std::env::current_dir()?,
-                },
-            };
-            if !ws.exists() {
-                anyhow::bail!("no workspace at {}", ws.root.display());
-            }
-            let msgs = crate::mail::all(&ws.mail_dir())?;
+            // Same resolution as every other optional-name command (Task 1).
+            let (_n, root) = current_or_named(name)?;
+            let msgs = crate::mail::all(&root.join(".ws/mail"))?;
             if msgs.is_empty() {
                 println!("no mail");
                 return Ok(());
@@ -1274,8 +1260,9 @@ pub fn queue(cmd: crate::cli::QueueCmd) -> Result<()> {
             Ok(())
         }
         QueueCmd::List { name } => {
-            let ws = ws_here_or(name, &cfg)?;
-            let tasks = crate::queue::tasks(&ws.queue_tasks())?;
+            // current_or_named: honours $WS_WORKSPACE, same as Task 1's -who.
+            let (_n, root) = current_or_named(name)?;
+            let tasks = crate::queue::tasks(&root.join(".ws/queue/tasks.jsonl"))?;
             if tasks.is_empty() {
                 println!("queue is empty");
                 return Ok(());
@@ -1288,21 +1275,6 @@ pub fn queue(cmd: crate::cli::QueueCmd) -> Result<()> {
         }
         QueueCmd::Drain { name, reset } => crate::drain::run(name, reset),
     }
-}
-
-/// Resolve a named workspace, or the one containing the cwd when no name given.
-fn ws_here_or(name: Option<String>, cfg: &Config) -> Result<crate::workspace::Workspace> {
-    let ws = match name {
-        Some(n) => crate::workspace::resolve(&n, cfg),
-        None => crate::workspace::Workspace {
-            name: "here".into(),
-            root: std::env::current_dir()?,
-        },
-    };
-    if !ws.exists() {
-        anyhow::bail!("no workspace at {}", ws.root.display());
-    }
-    Ok(ws)
 }
 ```
 
@@ -1854,16 +1826,11 @@ Append to `src/drain.rs` (above the tests):
 /// while the circuit breaker is open.
 pub fn run(name: Option<String>, reset: bool) -> Result<()> {
     let cfg = config::load();
-    let ws = match name {
-        Some(n) => crate::workspace::resolve(&n, &cfg),
-        None => crate::workspace::Workspace {
-            name: "here".into(),
-            root: std::env::current_dir()?,
-        },
-    };
-    if !ws.exists() {
-        anyhow::bail!("no workspace at {}", ws.root.display());
-    }
+    // Same resolution as -queue list and -who: honours $WS_WORKSPACE. Expose
+    // commands::current_or_named to the crate (make it `pub(crate)`) rather than
+    // hand-rolling a second lookup here.
+    let (ws_name, root) = crate::commands::current_or_named(name)?;
+    let ws = crate::workspace::Workspace { name: ws_name, root };
 
     let marker = ws.circuit_marker();
     if reset {
