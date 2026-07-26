@@ -1019,6 +1019,35 @@ pub fn migrate_cs(names: Vec<String>, all: bool, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn whoami() -> Result<()> {
+    let dir = std::env::current_dir()?;
+    println!("{}", crate::actors::actor_slug_in(&dir));
+    Ok(())
+}
+
+pub fn who(name: Option<String>) -> Result<()> {
+    let cfg = config::load();
+    let ws = match name {
+        Some(n) => workspace::resolve(&n, &cfg),
+        None => {
+            let dir = std::env::current_dir()?;
+            workspace::Workspace { name: "here".into(), root: dir }
+        }
+    };
+    if !ws.exists() {
+        anyhow::bail!("no workspace at {}", ws.root.display());
+    }
+    let ranked = crate::actors::who(&ws.ws_dir())?;
+    if ranked.is_empty() {
+        println!("no commits to .ws/ yet");
+        return Ok(());
+    }
+    for (actor, n) in ranked {
+        println!("{actor}  {n}");
+    }
+    Ok(())
+}
+
 pub fn search(query: String, include_archived: bool) -> Result<()> {
     let hits = crate::search::search_all(&query, include_archived)?;
     if hits.is_empty() {

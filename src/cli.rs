@@ -25,6 +25,8 @@ pub enum Cmd {
     Update { check: bool, force: bool },
     Uninstall { force: bool },
     Tui,
+    Whoami,
+    Who { name: Option<String> },
 }
 
 #[derive(Debug, PartialEq)]
@@ -77,6 +79,19 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         "-list" | "-ls" => parse_list(it.collect()),
         "-limits" => Ok(Cmd::Limits),
         "-doctor" => Ok(Cmd::Doctor),
+        "-whoami" => {
+            if it.next().is_some() {
+                bail!("usage: ws -whoami");
+            }
+            Ok(Cmd::Whoami)
+        }
+        "-who" => {
+            let name = it.next();
+            if it.next().is_some() {
+                bail!("usage: ws -who [<name>]");
+            }
+            Ok(Cmd::Who { name })
+        }
         "-update" => {
             let mut check = false;
             let mut force = false;
@@ -541,6 +556,18 @@ mod tests {
         assert_eq!(p(&["-uninstall"]), Cmd::Uninstall { force: false });
         assert_eq!(p(&["-uninstall", "--force"]), Cmd::Uninstall { force: true });
         assert!(parse(vec!["-uninstall".into(), "--unknown".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_whoami_and_who() {
+        assert_eq!(p(&["-whoami"]), Cmd::Whoami);
+        assert_eq!(p(&["-who"]), Cmd::Who { name: None });
+        assert_eq!(p(&["-who", "proj"]), Cmd::Who { name: Some("proj".into()) });
+    }
+
+    #[test]
+    fn who_rejects_a_second_name() {
+        assert!(parse(vec!["-who".into(), "a".into(), "b".into()]).is_err());
     }
 
     #[test]

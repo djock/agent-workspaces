@@ -57,6 +57,8 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
         Cmd::SubagentStatusline => statusline::run_subagent(),
         Cmd::Limits => commands::limits()?,
         Cmd::Doctor => commands::doctor()?,
+        Cmd::Whoami => commands::whoami()?,
+        Cmd::Who { name } => commands::who(name)?,
         Cmd::Secrets(c) => commands::secrets(c)?,
         Cmd::Search { query, include_archived } => commands::search(query, include_archived)?,
         Cmd::MigrateCs { names, all, dry_run } => commands::migrate_cs(names, all, dry_run)?,
@@ -96,6 +98,8 @@ fn print_help() {
          ws -status \"<text>\" | --clear\n\
          ws -archive | -unarchive <name>...\n\
          ws -search <query>   search all workspaces (--include-archived)\n\
+         ws -whoami              print your actor slug\n\
+         ws -who [<name>]        actors who have worked in a workspace\n\
          ws -update           install the latest release (--check, --force)\n\
          ws -uninstall        remove ws integrations and binary (--force)\n\
          ws migrate-cs <name>...|--all   import cs sessions (--dry-run)\n\
