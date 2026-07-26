@@ -126,7 +126,7 @@ cargo test --all-targets --all-features
 cargo build --release --locked
 ```
 
-Releases use semantic versioning. A tag such as `v0.1.0` runs the release workflow and creates a draft GitHub release with a signed-off checksum file and an Apple Silicon binary archive.
+Releases use semantic versioning. A tag such as `v0.1.0` runs the release workflow and creates a draft GitHub release with a SHA-256 checksum file and an Apple Silicon binary archive.
 
 ## License
 
