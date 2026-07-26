@@ -19,7 +19,9 @@ pub struct Detail {
     /// Tail of `timeline.jsonl`, oldest first — the workspace's conversation chain.
     pub chain: Vec<ChainEntry>,
     pub queue: usize,
-    pub mail: usize,
+    /// Unread count, or None when the mailbox could not be read. Rendering "?"
+    /// for unreadable beats rendering "0", which would be a lie.
+    pub mail: Option<usize>,
 }
 
 fn count_files(dir: &std::path::Path) -> usize {
@@ -82,7 +84,9 @@ pub fn gather(row: &WorkspaceRow, max_lines: usize) -> Detail {
         chain,
         // Phase 8 creates these; until then they are absent and count as zero.
         queue: count_files(&ws.join("queue")),
-        mail: count_files(&ws.join("mail")),
+        mail: crate::mail::unread(&ws.join("mail"), &ws.join("local/mail-seen"))
+            .ok()
+            .map(|m| m.len()),
     }
 }
 
@@ -125,7 +129,7 @@ mod tests {
         assert_eq!(det.chain.len(), 2);
         assert_eq!(det.chain[1].kind, "opened", "newest last");
         assert_eq!(det.queue, 0);
-        assert_eq!(det.mail, 0);
+        assert_eq!(det.mail, Some(0));
     }
 
     #[test]
@@ -159,9 +163,23 @@ mod tests {
         std::fs::create_dir_all(ws.join("mail")).unwrap();
         std::fs::write(ws.join("queue/task-1.md"), "x").unwrap();
         std::fs::write(ws.join("queue/task-2.md"), "x").unwrap();
-        std::fs::write(ws.join("mail/msg.json"), "x").unwrap();
+        crate::mail::send(&ws.join("mail"), "alice", "hi there").unwrap();
         let det = gather(&ws_at(d.path().to_path_buf()), 5);
         assert_eq!(det.queue, 2);
-        assert_eq!(det.mail, 1);
+        assert_eq!(det.mail, Some(1));
+    }
+
+    #[test]
+    fn counts_unread_mail_and_reports_unreadable_as_none() {
+        let td = TempDir::new().unwrap();
+        let ws = td.path().join(".ws");
+        std::fs::create_dir_all(ws.join("local")).unwrap();
+        crate::mail::send(&ws.join("mail"), "alice", "hi").unwrap();
+        let det = gather(&ws_at(td.path().to_path_buf()), 5);
+        assert_eq!(det.mail, Some(1));
+
+        std::fs::write(ws.join("mail/bad.json"), "{not json").unwrap();
+        let det = gather(&ws_at(td.path().to_path_buf()), 5);
+        assert_eq!(det.mail, None, "a corrupt message reads as unknown, not as zero");
     }
 }

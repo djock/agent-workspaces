@@ -27,6 +27,13 @@ pub enum Cmd {
     Tui,
     Whoami,
     Who { name: Option<String> },
+    Msg(MsgCmd),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum MsgCmd {
+    Send { to: String, body: String },
+    Log { name: Option<String> },
 }
 
 #[derive(Debug, PartialEq)]
@@ -119,6 +126,7 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         }
         "-secrets" => parse_secrets(it.collect()),
         "-tag" => parse_tag(it.collect()),
+        "-msg" => parse_msg(it.collect()),
         "-status" => parse_status(it.collect()),
         "-archive" => parse_archive(it.collect(), true),
         "-unarchive" => parse_archive(it.collect(), false),
@@ -262,6 +270,25 @@ fn take_workspace(args: Vec<String>) -> Result<(Option<String>, Vec<String>)> {
         }
     }
     Ok((name, rest))
+}
+
+fn parse_msg(args: Vec<String>) -> Result<Cmd> {
+    let mut it = args.into_iter();
+    let first = it
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("usage: ws -msg <name> <body> | ws -msg log [<name>]"))?;
+    if first == "log" {
+        let name = it.next();
+        if it.next().is_some() {
+            bail!("usage: ws -msg log [<name>]");
+        }
+        return Ok(Cmd::Msg(MsgCmd::Log { name }));
+    }
+    let rest: Vec<String> = it.collect();
+    if rest.is_empty() {
+        bail!("usage: ws -msg <name> <body>");
+    }
+    Ok(Cmd::Msg(MsgCmd::Send { to: first, body: rest.join(" ") }))
 }
 
 fn parse_tag(args: Vec<String>) -> Result<Cmd> {
@@ -581,5 +608,20 @@ mod tests {
             Cmd::Archive { names: vec!["a".into()], archived: false }
         );
         assert!(parse(vec!["-archive".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_msg_send_and_log() {
+        assert_eq!(
+            p(&["-msg", "proj", "ship it"]),
+            Cmd::Msg(MsgCmd::Send { to: "proj".into(), body: "ship it".into() })
+        );
+        assert_eq!(p(&["-msg", "log"]), Cmd::Msg(MsgCmd::Log { name: None }));
+        assert_eq!(p(&["-msg", "log", "proj"]), Cmd::Msg(MsgCmd::Log { name: Some("proj".into()) }));
+    }
+
+    #[test]
+    fn msg_send_requires_a_body() {
+        assert!(parse(vec!["-msg".into(), "proj".into()]).is_err());
     }
 }

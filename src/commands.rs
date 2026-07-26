@@ -1176,3 +1176,39 @@ pub fn search(query: String, include_archived: bool) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn msg(cmd: crate::cli::MsgCmd) -> Result<()> {
+    use crate::cli::MsgCmd;
+    let cfg = config::load();
+    match cmd {
+        MsgCmd::Send { to, body } => {
+            let target = crate::workspace::resolve(&to, &cfg);
+            if !target.exists() {
+                anyhow::bail!("no workspace named {to}");
+            }
+            let from = crate::actors::actor_slug_in(&std::env::current_dir()?);
+            let id = crate::mail::send(&target.mail_dir(), &from, &body)?;
+            crate::timeline::record(
+                &target.timeline(),
+                "mail",
+                &from,
+                serde_json::json!({ "id": id }),
+            )?;
+            println!("sent to {to}");
+            Ok(())
+        }
+        MsgCmd::Log { name } => {
+            // Same resolution as every other optional-name command (Task 1).
+            let (_n, root) = current_or_named(name)?;
+            let msgs = crate::mail::all(&root.join(".ws/mail"))?;
+            if msgs.is_empty() {
+                println!("no mail");
+                return Ok(());
+            }
+            for m in msgs {
+                println!("{}  {}  {}", m.ts, m.from, m.body);
+            }
+            Ok(())
+        }
+    }
+}

@@ -56,6 +56,15 @@ fn session_start() {
 
     // build injected context
     let context = build_context(&ws);
+
+    // One atomic_write per session start, not one per message: this is a hook
+    // path and atomic_write fsyncs twice.
+    if let Ok(msgs) = crate::mail::unread(&ws.mail_dir(), &ws.mail_seen()) {
+        if let Some(newest) = msgs.last() {
+            let _ = crate::mail::mark_seen(&ws.mail_seen(), &newest.id);
+        }
+    }
+
     println!("{}", hookio::additional_context("SessionStart", &context));
 }
 
@@ -226,6 +235,22 @@ fn build_context(ws: &Workspace) -> String {
             s.push_str("Notebook files (append findings to your own): ");
             s.push_str(&names.join(", "));
             s.push_str("\n\n");
+        }
+    }
+
+    // Unread mail. A read error is reported, not swallowed: silently showing an
+    // empty mailbox would be indistinguishable from having no mail.
+    match crate::mail::unread(&ws.mail_dir(), &ws.mail_seen()) {
+        Ok(msgs) if !msgs.is_empty() => {
+            s.push_str(&format!("Unread mail ({}):\n", msgs.len()));
+            for m in &msgs {
+                s.push_str(&format!("- from {}: {}\n", m.from, m.body));
+            }
+            s.push('\n');
+        }
+        Ok(_) => {}
+        Err(e) => {
+            s.push_str(&format!("Mail could not be read ({e}); check .ws/mail/.\n\n"));
         }
     }
 
@@ -453,5 +478,21 @@ mod tests {
             before,
             "the original manifest must survive untouched, not be replaced by one missing FIRST_SECRET"
         );
+    }
+
+    #[test]
+    fn build_context_lists_unread_mail_and_says_nothing_when_there_is_none() {
+        let td = TempDir::new().unwrap();
+        let ws = Workspace { name: "proj".into(), root: td.path().to_path_buf() };
+        std::fs::create_dir_all(ws.ws_dir()).unwrap();
+
+        let quiet = build_context(&ws);
+        assert!(!quiet.contains("Unread mail"), "no mail: no mail section");
+
+        crate::mail::send(&ws.mail_dir(), "alice", "please review the plan").unwrap();
+        let loud = build_context(&ws);
+        assert!(loud.contains("Unread mail (1)"), "count is shown: {loud}");
+        assert!(loud.contains("please review the plan"), "body is shown: {loud}");
+        assert!(loud.contains("alice"), "sender is shown: {loud}");
     }
 }

@@ -35,6 +35,14 @@ impl Workspace {
     pub fn notebook_dir(&self) -> PathBuf {
         self.ws_dir().join("notebook")
     }
+    pub fn mail_dir(&self) -> PathBuf {
+        self.ws_dir().join("mail")
+    }
+    /// Marker for the newest message already surfaced. Lives under local/ because
+    /// "what I have read" is per-checkout, not shared state to merge.
+    pub fn mail_seen(&self) -> PathBuf {
+        self.local_dir().join("mail-seen")
+    }
     pub fn timeline(&self) -> PathBuf {
         self.ws_dir().join("timeline.jsonl")
     }

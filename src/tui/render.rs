@@ -208,7 +208,11 @@ fn render_detail(f: &mut Frame, area: Rect, app: &App) {
     }
     lines.push(Line::raw(det.objective.clone().unwrap_or_else(|| "(no objective yet)".into())));
     lines.push(Line::styled(
-        format!("queue {}   mail {}", det.queue, det.mail),
+        format!(
+            "queue {}   mail {}",
+            det.queue,
+            det.mail.map(|n| n.to_string()).unwrap_or_else(|| "?".into())
+        ),
         Style::new().fg(app.theme.dim),
     ));
     if !det.notebook.is_empty() {
