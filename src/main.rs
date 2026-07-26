@@ -30,6 +30,7 @@ mod timeline;
 mod tui;
 mod update;
 mod workspace;
+mod worktree;
 
 use cli::Cmd;
 
@@ -77,6 +78,16 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
             // agent from here, replacing this process.
             tui::Outcome::Launch(name) => commands::launch(name, None, false, false, false)?,
         },
+        Cmd::Worktree { spec, merge } => {
+            let s = worktree::parse_name(&spec)
+                .ok_or_else(|| anyhow::anyhow!("not a worktree spec: {spec}"))?;
+            if merge {
+                worktree::merge(&s)?
+            } else {
+                let path = worktree::create(&s)?;
+                println!("created {} at {}", s.workspace_name(), path.display());
+            }
+        }
     }
     Ok(())
 }
@@ -116,6 +127,8 @@ fn print_help() {
          ws -update           install the latest release (--check, --force)\n\
          ws -uninstall        remove ws integrations and binary (--force)\n\
          ws migrate-cs <name>...|--all   import cs sessions (--dry-run)\n\
+         ws <base>@<feature>     create a git worktree workspace off <base>\n\
+         ws <base>@<feature> --merge   merge it back (--no-ff) and remove it\n\
          ws config ...        get/set/list config\n\
          ws --version"
     );

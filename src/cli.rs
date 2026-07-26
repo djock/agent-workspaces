@@ -30,6 +30,7 @@ pub enum Cmd {
     Msg(MsgCmd),
     Queue(QueueCmd),
     Spawn { name: String, task: Option<String> },
+    Worktree { spec: String, merge: bool },
 }
 
 #[derive(Debug, PartialEq)]
@@ -222,6 +223,16 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         "subagent-statusline" => Ok(Cmd::SubagentStatusline),
         other if other.starts_with('-') => {
             bail!("unknown command: {other}\ntry: ws -list | ws -adopt | ws -rm | ws config | ws <name>");
+        }
+        name if crate::worktree::parse_name(name).is_some() => {
+            let mut merge = false;
+            for a in it {
+                match a.as_str() {
+                    "--merge" => merge = true,
+                    other => bail!("unexpected argument: {other}"),
+                }
+            }
+            Ok(Cmd::Worktree { spec: name.to_string(), merge })
         }
         name => {
             // launch: ws <name> [-claude|-codex] [-resume|-fresh|--fresh] [--agent X] [--force] [--handoff]
@@ -446,6 +457,29 @@ mod tests {
 
     fn p(s: &[&str]) -> Cmd {
         parse(s.iter().map(|x| x.to_string()).collect()).unwrap()
+    }
+
+    #[test]
+    fn a_name_with_an_at_parses_as_a_worktree_not_a_launch() {
+        assert_eq!(p(&["api@retry"]), Cmd::Worktree { spec: "api@retry".into(), merge: false });
+        assert_eq!(p(&["api@retry", "--merge"]), Cmd::Worktree { spec: "api@retry".into(), merge: true });
+    }
+
+    #[test]
+    fn a_plain_name_still_launches() {
+        assert_eq!(
+            p(&["api"]),
+            Cmd::Launch { name: "api".into(), agent: None, fresh: false, force: false, handoff: false }
+        );
+    }
+
+    #[test]
+    fn a_malformed_worktree_spec_is_treated_as_an_ordinary_name() {
+        // "api@" is not a worktree spec; it must not silently become one.
+        match p(&["api@"]) {
+            Cmd::Launch { name, .. } => assert_eq!(name, "api@"),
+            other => panic!("expected a launch, got {other:?}"),
+        }
     }
 
     #[test]
