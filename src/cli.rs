@@ -29,6 +29,7 @@ pub enum Cmd {
     Who { name: Option<String> },
     Msg(MsgCmd),
     Queue(QueueCmd),
+    Spawn { name: String, task: Option<String> },
 }
 
 #[derive(Debug, PartialEq)]
@@ -136,6 +137,26 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         "-tag" => parse_tag(it.collect()),
         "-msg" => parse_msg(it.collect()),
         "-queue" => parse_queue(it.collect()),
+        "-spawn" => {
+            let mut it = it;
+            let name = it
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("usage: ws -spawn <name> [--task <text>]"))?;
+            let mut task = None;
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--task" => {
+                        let rest: Vec<String> = it.by_ref().collect();
+                        if rest.is_empty() {
+                            bail!("usage: ws -spawn <name> --task <text>");
+                        }
+                        task = Some(rest.join(" "));
+                    }
+                    other => bail!("unexpected argument: {other}"),
+                }
+            }
+            Ok(Cmd::Spawn { name, task })
+        }
         "-status" => parse_status(it.collect()),
         "-archive" => parse_archive(it.collect(), true),
         "-unarchive" => parse_archive(it.collect(), false),
@@ -698,5 +719,20 @@ mod tests {
     #[test]
     fn an_unknown_queue_subcommand_is_rejected() {
         assert!(parse(vec!["-queue".into(), "flush".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_spawn_with_and_without_a_task() {
+        assert_eq!(p(&["-spawn", "proj"]), Cmd::Spawn { name: "proj".into(), task: None });
+        assert_eq!(
+            p(&["-spawn", "proj", "--task", "write the docs"]),
+            Cmd::Spawn { name: "proj".into(), task: Some("write the docs".into()) }
+        );
+    }
+
+    #[test]
+    fn spawn_requires_a_name_and_a_task_body() {
+        assert!(parse(vec!["-spawn".into()]).is_err());
+        assert!(parse(vec!["-spawn".into(), "proj".into(), "--task".into()]).is_err());
     }
 }

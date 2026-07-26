@@ -23,6 +23,7 @@ mod registry;
 mod rows;
 mod search;
 mod secrets;
+mod spawn;
 mod statusline;
 mod term;
 mod timeline;
@@ -64,6 +65,7 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
         Cmd::Who { name } => commands::who(name)?,
         Cmd::Msg(c) => commands::msg(c)?,
         Cmd::Queue(c) => commands::queue(c)?,
+        Cmd::Spawn { name, task } => spawn::run(name, task)?,
         Cmd::Secrets(c) => commands::secrets(c)?,
         Cmd::Search { query, include_archived } => commands::search(query, include_archived)?,
         Cmd::MigrateCs { names, all, dry_run } => commands::migrate_cs(names, all, dry_run)?,
@@ -110,6 +112,7 @@ fn print_help() {
          ws -queue add <name> <text>   add a task to a workspace's queue\n\
          ws -queue list [<name>]       show the queue\n\
          ws -queue drain [<name>]      run pending tasks through the agent\n\
+         ws -spawn <name> [--task <text>]   open a workspace in a tmux window\n\
          ws -update           install the latest release (--check, --force)\n\
          ws -uninstall        remove ws integrations and binary (--force)\n\
          ws migrate-cs <name>...|--all   import cs sessions (--dry-run)\n\
