@@ -212,7 +212,7 @@ pub fn adopt(name: Option<String>) -> Result<()> {
 
 /// Resolve which workspace a metadata command applies to: an explicit name,
 /// else $WS_WORKSPACE, else the current directory if it is a workspace.
-fn current_or_named(name: Option<String>) -> Result<(String, std::path::PathBuf)> {
+pub(crate) fn current_or_named(name: Option<String>) -> Result<(String, std::path::PathBuf)> {
     if let Some(n) = name {
         let path = registry::lookup(&n)
             .ok_or_else(|| anyhow::anyhow!("no such workspace: {n}"))?;
@@ -1026,18 +1026,12 @@ pub fn whoami() -> Result<()> {
 }
 
 pub fn who(name: Option<String>) -> Result<()> {
-    let cfg = config::load();
-    let ws = match name {
-        Some(n) => workspace::resolve(&n, &cfg),
-        None => {
-            let dir = std::env::current_dir()?;
-            workspace::Workspace { name: "here".into(), root: dir }
-        }
-    };
-    if !ws.exists() {
-        anyhow::bail!("no workspace at {}", ws.root.display());
-    }
-    let ranked = crate::actors::who(&ws.ws_dir())?;
+    // current_or_named is the established resolution for "this workspace or the
+    // named one": it honours $WS_WORKSPACE, which matters because -who is most
+    // often run from inside an agent session. Every command in this phase that
+    // takes an optional workspace name uses it — do not hand-roll a second path.
+    let (_name, root) = current_or_named(name)?;
+    let ranked = crate::actors::who(&root.join(".ws"))?;
     if ranked.is_empty() {
         println!("no commits to .ws/ yet");
         return Ok(());
@@ -1046,6 +1040,93 @@ pub fn who(name: Option<String>) -> Result<()> {
         println!("{actor}  {n}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod who_tests {
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    // who() resolves through current_or_named(), which reads the process-global
+    // WS_WORKSPACE env var, XDG_CONFIG_HOME-scoped registry, and current_dir.
+    // Serialize explicitly rather than leaning on the RUST_TEST_THREADS pin
+    // (see registry.rs, rows.rs, remove_tests above): this module changes the
+    // process cwd, which no other module here does.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    // Discriminates the Important review finding: who(None) must resolve the
+    // workspace the same way tag/status/archive do, i.e. via current_or_named
+    // and therefore via $WS_WORKSPACE, not by treating the bare cwd as "the"
+    // workspace. Before the fix, `who` built `Workspace { name: "here", root: cwd }`
+    // directly, ignored $WS_WORKSPACE entirely, and this test failed with "not
+    // in a workspace" because the cwd used here deliberately is not one.
+    #[test]
+    fn who_with_no_name_honours_ws_workspace_env_var() {
+        let _g = lock_env();
+        let config_dir = TempDir::new().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", config_dir.path());
+
+        // The registered workspace: a real git repo with a .ws dir, so
+        // actors::who() has real history to read.
+        let ws_dir = TempDir::new().unwrap();
+        let root = ws_dir.path();
+        run_git(root, &["init", "-q"]);
+        run_git(root, &["config", "user.email", "someone@example.com"]);
+        run_git(root, &["config", "user.name", "Someone"]);
+        std::fs::create_dir_all(root.join(".ws")).unwrap();
+        std::fs::write(root.join(".ws/marker.txt"), "x").unwrap();
+        run_git(root, &["add", ".ws/marker.txt"]);
+        run_git(root, &["commit", "-q", "-m", "seed"]);
+        crate::registry::register("envres", root).unwrap();
+
+        // The cwd: deliberately NOT the registered workspace and not a
+        // workspace at all, so resolution can only succeed via $WS_WORKSPACE.
+        let elsewhere = TempDir::new().unwrap();
+        let orig_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(elsewhere.path()).unwrap();
+        std::env::set_var("WS_WORKSPACE", "envres");
+
+        let result = super::who(None);
+
+        std::env::set_current_dir(&orig_cwd).unwrap();
+        std::env::remove_var("WS_WORKSPACE");
+
+        assert!(
+            result.is_ok(),
+            "who(None) must resolve via $WS_WORKSPACE like tag/status/archive do: {result:?}"
+        );
+    }
+
+    #[test]
+    fn who_with_no_name_and_no_env_var_in_a_non_workspace_cwd_errors() {
+        let _g = lock_env();
+        let config_dir = TempDir::new().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", config_dir.path());
+        std::env::remove_var("WS_WORKSPACE");
+
+        let elsewhere = TempDir::new().unwrap();
+        let orig_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(elsewhere.path()).unwrap();
+
+        let result = super::who(None);
+
+        std::env::set_current_dir(&orig_cwd).unwrap();
+
+        assert!(result.is_err(), "with no name and no env var, a non-workspace cwd must error, not print empty");
+    }
 }
 
 pub fn search(query: String, include_archived: bool) -> Result<()> {
