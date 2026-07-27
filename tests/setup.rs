@@ -10,10 +10,39 @@ fn setup_installs_codex_hooks_and_prompts_when_codex_present() {
         .stdout(predicates::str::contains("codex"))
         .stdout(predicates::str::contains("/hooks")); // trust note surfaced
 
-    // ~/.codex/hooks.json got the ws SessionStart hook
+    // ~/.codex/hooks.json got the ws hooks — asserted on the *parsed* document.
+    //
+    // This used to be `body.contains("session-start.sh")`, which passes for any
+    // schema and any matcher. It passed for two releases while Codex secret
+    // redaction was dead, because the matcher was Claude's `Write|Edit` and Codex
+    // reports `apply_patch`. Assert the structure and the matcher, or this class
+    // of bug is invisible again.
     let hooks = env.home.path().join(".codex/hooks.json");
-    let body = std::fs::read_to_string(&hooks).unwrap();
-    assert!(body.contains("session-start.sh"));
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&hooks).unwrap()).unwrap();
+
+    let by_event = doc["hooks"].as_object().expect("hooks must be a JSON object");
+    for event in ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "SessionEnd", "PostToolUse"] {
+        assert!(by_event.contains_key(event), "{event} not registered: {doc}");
+    }
+    assert_eq!(
+        doc["hooks"]["SessionStart"][0]["hooks"][0]["type"], "command",
+        "per-event entries must be matcher-groups holding a command list"
+    );
+    assert!(doc["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        .as_str().unwrap().contains("session-start.sh"));
+
+    // The matchers must be Codex's tool names, not Claude's. Verified against
+    // Codex CLI 0.145.0: shell arrives as `Bash`, a file edit as `apply_patch`.
+    assert_eq!(doc["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+    let redact = doc["hooks"]["PostToolUse"][0]["matcher"].as_str().unwrap();
+    assert!(
+        redact.contains("apply_patch"),
+        "Codex secret redaction must match apply_patch or it never fires; got {redact:?}"
+    );
+    // Events with no tool scope must carry no matcher at all.
+    assert!(doc["hooks"]["SessionStart"][0].get("matcher").is_none());
+
     // namespaced codex prompt installed
     assert!(env.home.path().join(".codex/prompts/ws-summary.md").is_file());
 
@@ -51,6 +80,16 @@ fn setup_installs_hooks_and_prompts() {
     let settings = env.home.path().join(".claude/settings.json");
     let body = std::fs::read_to_string(&settings).unwrap();
     assert!(body.contains("session-start.sh"));
+
+    // Claude keeps Claude's tool names. The point of the per-agent matcher is
+    // that fixing Codex did not silently change Claude's registration.
+    let doc: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(doc["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+    assert_eq!(doc["hooks"]["PostToolUse"][0]["matcher"], "Write|Edit");
+    assert!(
+        !doc["hooks"]["PostToolUse"][0]["matcher"].as_str().unwrap().contains("apply_patch"),
+        "Claude has no apply_patch tool; its matcher must not carry Codex's name"
+    );
 
     // namespaced prompts installed
     assert!(env.home.path().join(".claude/commands/ws/summary.md").is_file());

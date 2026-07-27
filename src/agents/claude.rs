@@ -42,6 +42,14 @@ impl Agent for ClaudeAgent {
         crate::hooksetup::claude_settings_path()
     }
 
+    fn tool_matcher(&self, kind: crate::hooksetup::ToolKind) -> &'static str {
+        use crate::hooksetup::ToolKind;
+        match kind {
+            ToolKind::Shell => "Bash",
+            ToolKind::FileWrite => "Write|Edit",
+        }
+    }
+
     fn prompts_dir(&self) -> std::path::PathBuf {
         crate::prompts::commands_dir()
     }

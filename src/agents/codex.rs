@@ -79,6 +79,23 @@ impl Agent for CodexAgent {
         crate::hooksetup::codex_hooks_path()
     }
 
+    /// Verified against Codex CLI 0.145.0 by capturing real hook payloads
+    /// (`docs/2026-07-27-codex-hook-contract-verified.md`): a shell call arrives
+    /// as `tool_name: "Bash"` — the same name Claude uses — but a file edit
+    /// arrives as `"apply_patch"`, never as `Write` or `Edit`. `Write|Edit` alone
+    /// therefore never matched, and secret redaction never ran on Codex.
+    ///
+    /// `Write|Edit` is kept in the alternation rather than replaced: it costs
+    /// nothing, and if Codex later grows a direct file-write tool the hook keeps
+    /// working instead of silently going dead again.
+    fn tool_matcher(&self, kind: crate::hooksetup::ToolKind) -> &'static str {
+        use crate::hooksetup::ToolKind;
+        match kind {
+            ToolKind::Shell => "Bash",
+            ToolKind::FileWrite => "Write|Edit|apply_patch",
+        }
+    }
+
     fn prompts_dir(&self) -> std::path::PathBuf {
         dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join(".codex").join("prompts")
     }

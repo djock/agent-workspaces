@@ -24,6 +24,16 @@ pub trait Agent {
 
     /// Where this agent's hooks config lives (a JSON file with a top-level `hooks` object).
     fn hooks_config_path(&self) -> PathBuf;
+
+    /// The `tool_name` regex this agent uses for a given kind of tool.
+    ///
+    /// Hook matchers are regexes over the payload's `tool_name`, and the agents
+    /// do not agree on what tools are called. Deliberately has **no default**:
+    /// a shared const carrying Claude's names is exactly what silently disabled
+    /// secret redaction on Codex, so every agent must state its own mapping and
+    /// a newly added agent cannot inherit one by accident.
+    fn tool_matcher(&self, kind: crate::hooksetup::ToolKind) -> &'static str;
+
     /// Where this agent's ws-installed prompts/commands live.
     fn prompts_dir(&self) -> PathBuf;
     /// File name (under `prompts_dir()`) for a given prompt base name (e.g. "summary").
