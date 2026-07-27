@@ -9,7 +9,7 @@
 >
 > The audit below is a **point-in-time record and is deliberately not rewritten**.
 > Several findings have since been fixed on the `audit-fixes` branch. Test count
-> went 366 → 383, clippy clean.
+> went 366 → 386, clippy clean under `-D warnings`.
 >
 > **Fixed:** Stage 0 (the Codex hook contract is now empirically verified —
 > `docs/2026-07-27-codex-hook-contract-verified.md`); Stage 1 (per-agent hook
@@ -31,12 +31,27 @@
 > stands reflects the corrected finding; §1.3's "still unproven" list is now
 > largely resolved and superseded by the verification doc.
 >
-> **Not started:** Stage 4 (interprocess transactions — the `lock::acquire` TOCTOU
-> and the unused `fs2` dependency), Stage 5 (Linux CI, public repo, authenticated
-> releases, shell completions, `cargo fmt` gate — repo-wide formatting still
-> fails), Stage 6 (conversation lineage, checkpoints, `-limits` staleness check),
-> Stage 7 (managed-block refresh path, injection instrumentation), Stage 8.
-> M3 and M6 remain open.
+> **Stage 4, partial:** the `lock::acquire` TOCTOU is **closed** — the lock file is
+> now created with `create_new` (`O_CREAT|O_EXCL`) and the stale-reclaim path goes
+> back through the same primitive, so the kernel picks the winner. `fs2` turned out
+> never to have been committed, so that open decision is moot. The broader
+> `transaction(path, f)` layer over the registry, config, meta, state, mail and
+> queue appends is **not** done: those read-modify-write sequences are still
+> atomic-rename-only, which is not a transaction.
+>
+> One testing note worth carrying forward: the obvious concurrency test for that
+> fix (N threads, assert one winner) **passed against the buggy code** and is not a
+> discriminator, because sibling threads share a pid and the liveness check
+> rejects them regardless of atomicity. The real proof is a deterministic test of
+> the `O_EXCL` primitive. Assume a concurrency test proves nothing until it has
+> been run against the unfixed version.
+>
+> **Not started:** Stage 5 (Linux CI, public repo, authenticated releases, shell
+> completions, `cargo fmt` gate — repo-wide formatting still fails, deliberately
+> left alone so these changes are not buried in a formatting diff), Stage 6
+> (conversation lineage, checkpoints, `-limits` staleness check), Stage 7
+> (managed-block refresh path, injection instrumentation), Stage 8. M3 and M6
+> remain open.
 
 ---
 

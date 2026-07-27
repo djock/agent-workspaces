@@ -29,6 +29,10 @@ The project follows [Semantic Versioning](https://semver.org/).
   stderr instead of being swallowed.
 - Refuse to overwrite a corrupt `artifacts/MANIFEST.json` instead of resetting it
   to `{}`, which silently discarded every recorded redaction (M7).
+- Close the lock-acquisition race. `acquire` tested `exists()` and then wrote, so
+  two processes could both take a workspace. The lock file is now created with
+  `O_CREAT|O_EXCL`, and the stale-reclaim path goes back through the same
+  primitive so two callers that both judge a lock stale cannot both win.
 
 ### Changed
 
