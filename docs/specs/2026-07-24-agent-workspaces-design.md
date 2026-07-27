@@ -1,7 +1,16 @@
 # agent-workspaces (`ws`) — Design
 
 Date: 2026-07-24
-Status: draft for user review
+Status: **SUPERSEDED — historical only. Do not treat as a description of `ws`.**
+
+> This was the pre-implementation design draft and it no longer describes the
+> shipped tool. Known divergences: Gemini CLI is documented as a first-class
+> agent but was removed in `85f355f`; parsing is hand-rolled, not clap; there is
+> no `src/doctor.rs`; `-live`, `-usage`, `-conversations` and `completions` do
+> not exist; `prompt_on_launch` and `nerd_fonts` were removed as inert config
+> keys; and the referenced `.superpowers/sdd/…` ledger files are not in this
+> repo. For what `ws` actually does, read `README.md` and `ws --help`. For the
+> current gap list, read `docs/2026-07-27-cs-vs-ws-independent-audit.md`.
 Repo: `agent-workspaces` · Binary: `ws` · Concept: **workspace** · Metadata dir: `.ws/` · Root: `~/.agent-workspaces/`
 
 ## 1. Purpose

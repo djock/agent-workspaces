@@ -6,6 +6,47 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- Fix a command injection in `ws -spawn`. The tmux command was built as a single
+  shell string, which tmux runs through `sh -c`, so shell metacharacters in a
+  workspace name were executable; `-adopt` never validated names, making it
+  reachable. The command is now passed to tmux as argv, which tmux `execvp`s
+  directly. Also fixes `-spawn` for install paths containing a space.
+- Validate workspace names against an allowlist (letters, digits, `-`, `_`, `.`,
+  `@`), enforced in `contract::init` **and** `registry::register` so `-adopt`,
+  `migrate-cs` and worktree creation cannot bypass it. The previous denylist
+  admitted spaces, `;`, `$`, backticks, quotes, newlines and control characters.
+- Fix secret redaction on Codex, which never ran. Hook matchers are now resolved
+  per agent through `Agent::tool_matcher`: Codex reports a file edit as
+  `apply_patch`, so Claude's `Write|Edit` matcher could never fire. The handler
+  also reads `apply_patch`'s patch envelope, since those payloads carry no
+  `tool_input.file_path`, and redacts every file a multi-file patch writes.
+  Verified against Codex CLI 0.145.0 — see
+  `docs/2026-07-27-codex-hook-contract-verified.md`.
+- Stop discarding redaction failures. A failed file rewrite (secret stored but
+  plaintext still on disk) and a failed manifest write are now reported on
+  stderr instead of being swallowed.
+- Refuse to overwrite a corrupt `artifacts/MANIFEST.json` instead of resetting it
+  to `{}`, which silently discarded every recorded redaction (M7).
+
+### Changed
+
+- `ws --help` now documents the whole command surface, including `-limits`,
+  `-doctor`, `-secrets`, `setup` and every launch flag. A test fails if a command
+  exists that the help text does not mention.
+- `config set statusline false` now actually prevents `ws setup` from registering
+  a status line. It was previously settable and read nowhere.
+
+### Removed
+
+- `prompt_on_launch` and `nerd_fonts` config keys. Both were settable, listed by
+  `config list`, and read nowhere, so setting them reported success and did
+  nothing. `config set` now rejects them. Existing `config.toml` files still load;
+  the stale keys are ignored.
+- The `-resume` launch flag, which parsed and did nothing — resuming is the
+  default. It is now an error explaining that, rather than a silent no-op.
+
 ## [0.2.0] - 2026-07-27
 
 - Add actor identity and contributor history with `ws -whoami` and `ws -who`.
