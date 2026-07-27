@@ -75,7 +75,7 @@ pub fn setup() -> Result<()> {
         if !agent.is_installed() {
             continue;
         }
-        let nh = crate::hooksetup::install_hooks_for(&agent.hooks_config_path(), &ws_bin)?;
+        let nh = crate::hooksetup::install_hooks_for(&agent.hooks_config_path(), &ws_bin, agent.as_ref())?;
         let np = crate::prompts::install_for(&agent.prompts_dir(), |b| agent.prompt_filename(b))?;
         println!(
             "ws setup [{}]: installed {nh} hook(s) → {}\n            installed {np} prompt(s) → {}",
@@ -87,7 +87,14 @@ pub fn setup() -> Result<()> {
             println!("  note: {note}");
         }
     }
-    // Configure each installed agent's status bar with the same core fields.
+    // Configure each installed agent's status bar with the same core fields —
+    // unless the user turned it off. `statusline` used to be settable and read
+    // nowhere, so `ws config set statusline false` reported success and the next
+    // `ws setup` claimed the status bar anyway.
+    if !config::load().statusline {
+        println!("skipped status line registration (config statusline = false)");
+        return Ok(());
+    }
     if crate::agents::for_id("claude")?.is_installed() {
         crate::hooksetup::register_statuslines(&ws_bin)?;
         println!("registered Claude statusline + subagent-statusline");

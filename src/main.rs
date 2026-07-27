@@ -103,34 +103,90 @@ pub fn now_iso() -> String {
         .unwrap_or_default()
 }
 
+/// The full command surface.
+///
+/// This used to omit `-limits`, `-doctor`, `-secrets`, `setup` and **every**
+/// launch flag, while the README said it was "the complete command summary".
+/// `help_covers_every_command` in the tests below now fails if a command exists
+/// that this text does not mention, so the two cannot drift apart again.
 fn print_help() {
-    println!(
-        "ws — agent workspace manager\n\n\
-         ws <name>            create or resume a workspace (launch Claude)\n\
-         ws                   open the workspace dashboard (TUI)\n\
-         ws -tui              same, explicitly\n\
-         ws -list | -ls       list workspaces (--tag <t>, --archived)\n\
-         ws -adopt [<name>]   adopt the current directory\n\
-         ws -rm <name>...     remove workspace(s)\n\
-         ws -tag add|rm|list [--workspace <n>] <tag>...\n\
-         ws -status \"<text>\" | --clear\n\
-         ws -archive | -unarchive <name>...\n\
-         ws -search <query>   search all workspaces (--include-archived)\n\
-         ws -whoami              print your actor slug\n\
-         ws -who [<name>]        actors who have worked in a workspace\n\
-         ws -msg <name> <body>   send a message to another workspace\n\
-         ws -msg log [<name>]    read the message history\n\
-         ws -queue add <name> <text>   add a task to a workspace's queue\n\
-         ws -queue list [<name>]       show the queue\n\
-         ws -queue drain [<name>]      run pending tasks through the agent\n\
-         ws -spawn <name>        open a workspace in a tmux window\n\
-         ws -spawn <name> --task <text>   queue it, then drain the WHOLE queue there\n\
-         ws -update           install the latest release (--check, --force)\n\
-         ws -uninstall        remove ws integrations and binary (--force)\n\
-         ws migrate-cs <name>...|--all   import cs sessions (--dry-run)\n\
-         ws <base>@<feature>     create a git worktree workspace off <base>\n\
-         ws <base>@<feature> --merge   merge it back (--no-ff) and remove it\n\
-         ws config ...        get/set/list config\n\
-         ws --version"
-    );
+    println!("{}", help_text());
+}
+
+fn help_text() -> &'static str {
+    "ws — agent workspace manager\n\
+         \n\
+         Launch\n\
+         \x20 ws <name>                    create or resume a workspace\n\
+         \x20 ws <name> -claude | -codex   choose the agent for this launch\n\
+         \x20 ws <name> --agent <id>       same, by id\n\
+         \x20 ws <name> --fresh            start a new agent session, not a resume\n\
+         \x20 ws <name> --handoff          point the agent at the latest handoff\n\
+         \x20 ws <name> --force            take over a workspace another process holds\n\
+         \n\
+         Browse\n\
+         \x20 ws                           open the workspace dashboard (TUI)\n\
+         \x20 ws -tui                      same, explicitly\n\
+         \x20 ws -list | -ls               list workspaces (--tag <t>, --archived)\n\
+         \x20 ws -search <query>           search all workspaces (--include-archived)\n\
+         \n\
+         Manage\n\
+         \x20 ws -adopt [<name>]           adopt the current directory\n\
+         \x20 ws -rm <name>...             remove workspace(s) (--force)\n\
+         \x20 ws -archive | -unarchive <name>...\n\
+         \x20 ws -tag add|rm|list [--workspace <n>] <tag>...\n\
+         \x20 ws -status \"<text>\" | --clear\n\
+         \n\
+         Worktrees\n\
+         \x20 ws <base>@<feature>          create a git worktree workspace off <base>\n\
+         \x20 ws <base>@<feature> --merge  merge it back (--no-ff) and remove it\n\
+         \n\
+         Coordinate\n\
+         \x20 ws -whoami                   print your actor slug\n\
+         \x20 ws -who [<name>]             actors who have worked in a workspace\n\
+         \x20 ws -msg <name> <body>        send a message to another workspace\n\
+         \x20 ws -msg log [<name>]         read the message history\n\
+         \x20 ws -queue add <name> <text>  add a task to a workspace's queue\n\
+         \x20 ws -queue list [<name>]      show the queue\n\
+         \x20 ws -queue drain [<name>]     run pending tasks unattended (--reset)\n\
+         \x20 ws -spawn <name>             open a workspace in a tmux window\n\
+         \x20 ws -spawn <name> --task <text>  queue it, then drain the WHOLE queue there\n\
+         \n\
+         Inspect\n\
+         \x20 ws -limits                   usage limits captured from the status line\n\
+         \x20 ws -doctor                   check agents, hooks and shims\n\
+         \n\
+         Secrets\n\
+         \x20 ws -secrets set|get|rm <name>\n\
+         \x20 ws -secrets list|purge|export|backend\n\
+         \n\
+         Setup\n\
+         \x20 ws setup                     install hooks, prompts and status lines\n\
+         \x20 ws config list|get|set       read or change configuration\n\
+         \x20 ws migrate-cs <name>...|--all   import cs sessions (--dry-run)\n\
+         \x20 ws -update                   install the latest release (--check, --force)\n\
+         \x20 ws -uninstall                remove ws integrations and binary (--force)\n\
+         \x20 ws --version"
+}
+
+#[cfg(test)]
+mod tests {
+    /// The help text is the only user-facing documentation of the command
+    /// surface, and it silently fell a third of that surface behind while the
+    /// README called it complete. Anything a user can type must appear in it; a
+    /// new command that forgets to is a test failure, not a docs bug someone
+    /// notices two releases later.
+    #[test]
+    fn help_covers_every_command() {
+        let help = super::help_text();
+        for token in [
+            "-tui", "-list", "-ls", "-adopt", "-rm", "-tag", "-status", "-archive", "-unarchive",
+            "-search", "-limits", "-doctor", "-whoami", "-who", "-msg", "-queue", "-spawn",
+            "-secrets", "-update", "-uninstall", "setup", "config", "migrate-cs",
+            "--version", "-claude", "-codex", "--agent", "--fresh", "--handoff", "--force",
+            "--merge", "--reset", "--dry-run", "--include-archived", "--archived",
+        ] {
+            assert!(help.contains(token), "`ws --help` never mentions {token:?}");
+        }
+    }
 }

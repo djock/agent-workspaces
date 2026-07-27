@@ -2,16 +2,26 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Every field here must be read by something. `prompt_on_launch` and
+/// `nerd_fonts` were removed rather than kept: both were settable, listed by
+/// `config list`, and read nowhere, so `ws config set nerd_fonts true` reported
+/// success and changed nothing. A config key that silently does nothing is worse
+/// than a missing one — the user believes they configured something. They are now
+/// unknown keys, so `config set` rejects them with the list of real keys.
+///
+/// Unknown keys in an existing `config.toml` are ignored by serde, so a config
+/// written by an older ws still loads; the stale lines are simply inert until the
+/// next `config set` rewrites the file without them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub default_agent: String,
-    pub prompt_on_launch: bool,
     pub limit_warn_5h: u8,
     pub limit_warn_week: u8,
     pub theme: String,
+    /// Whether `ws setup` registers ws's status line with the agents.
+    /// Honored in `commands::setup`; set it false to keep your own.
     pub statusline: bool,
-    pub nerd_fonts: bool,
     pub sessions_root: String,
     pub limit_action: String,
     pub secrets_backend: String,
@@ -21,12 +31,10 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             default_agent: "claude".into(),
-            prompt_on_launch: false,
             limit_warn_5h: 85,
             limit_warn_week: 90,
             theme: "auto".into(),
             statusline: true,
-            nerd_fonts: false,
             sessions_root: "~/.agent-workspaces".into(),
             limit_action: "handoff-stop".into(),
             secrets_backend: "auto".into(),
@@ -102,12 +110,10 @@ pub fn load() -> Config {
 pub fn list(cfg: &Config) -> Vec<(String, String)> {
     vec![
         ("default_agent".into(), cfg.default_agent.clone()),
-        ("prompt_on_launch".into(), cfg.prompt_on_launch.to_string()),
         ("limit_warn_5h".into(), cfg.limit_warn_5h.to_string()),
         ("limit_warn_week".into(), cfg.limit_warn_week.to_string()),
         ("theme".into(), cfg.theme.clone()),
         ("statusline".into(), cfg.statusline.to_string()),
-        ("nerd_fonts".into(), cfg.nerd_fonts.to_string()),
         ("sessions_root".into(), cfg.sessions_root.clone()),
         ("limit_action".into(), cfg.limit_action.clone()),
         ("secrets_backend".into(), cfg.secrets_backend.clone()),
@@ -142,12 +148,10 @@ pub fn set(key: &str, value: &str) -> Result<()> {
     };
     match key {
         "default_agent" => cfg.default_agent = value.to_string(),
-        "prompt_on_launch" => cfg.prompt_on_launch = parse_bool(value)?,
         "limit_warn_5h" => cfg.limit_warn_5h = value.parse()?,
         "limit_warn_week" => cfg.limit_warn_week = value.parse()?,
         "theme" => cfg.theme = value.to_string(),
         "statusline" => cfg.statusline = parse_bool(value)?,
-        "nerd_fonts" => cfg.nerd_fonts = parse_bool(value)?,
         // C3: `sessions_root` is the base of `remove_one`'s "is this a
         // workspace ws created?" test. `remove_one` no longer trusts it, but
         // an empty or relative root is a misconfiguration in its own right —
@@ -211,7 +215,6 @@ mod tests {
     fn defaults_are_spec_values() {
         let c = Config::default();
         assert_eq!(c.default_agent, "claude");
-        assert!(!c.prompt_on_launch);
         assert_eq!(c.limit_warn_5h, 85);
         assert_eq!(c.limit_warn_week, 90);
     }

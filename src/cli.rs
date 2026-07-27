@@ -242,10 +242,15 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             Ok(Cmd::Worktree { spec: name.to_string(), merge })
         }
         name => {
-            // launch: ws <name> [-claude|-codex] [-resume|-fresh|--fresh] [--agent X] [--force] [--handoff]
+            // launch: ws <name> [-claude|-codex] [--fresh|-fresh] [--agent X] [--force] [--handoff]
+            //
+            // `-resume` was accepted here and did nothing: resuming is already
+            // the default, so the flag only existed to be mutually exclusive
+            // with `-fresh`. Rather than keep a no-op that reads like a feature,
+            // it is rejected with a message saying why — silently accepting it
+            // would leave users believing they had opted into something.
             let mut agent = None;
             let mut fresh = false;
-            let mut resume = false;
             let mut force = false;
             let mut handoff = false;
             while let Some(a) = it.next() {
@@ -254,14 +259,14 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
                     "-claude" => agent = Some("claude".into()),
                     "-codex" => agent = Some("codex".into()),
                     "--fresh" | "-fresh" => fresh = true,
-                    "-resume" => resume = true,
                     "--force" => force = true,
                     "--handoff" => handoff = true,
+                    "-resume" | "--resume" => bail!(
+                        "-resume is not a flag: resuming is the default. \
+                         Use `ws {name}` to resume, or `ws {name} --fresh` to start a new session."
+                    ),
                     other => bail!("unexpected argument: {other}"),
                 }
-            }
-            if fresh && resume {
-                bail!("-fresh and -resume are mutually exclusive");
             }
             Ok(Cmd::Launch { name: name.to_string(), agent, fresh, force, handoff })
         }
@@ -512,12 +517,12 @@ mod tests {
     }
 
     #[test]
-    fn resume_and_fresh_and_handoff() {
-        match p(&["proj", "-resume", "-codex"]) {
+    fn agent_fresh_and_handoff_parse() {
+        match p(&["proj", "-codex"]) {
             Cmd::Launch { name, agent, fresh, handoff, .. } => {
                 assert_eq!(name, "proj");
                 assert_eq!(agent.as_deref(), Some("codex"));
-                assert!(!fresh);
+                assert!(!fresh, "resuming is the default");
                 assert!(!handoff);
             }
             _ => panic!(),
@@ -531,9 +536,19 @@ mod tests {
         }
     }
 
+    /// `-resume` parsed and did nothing — resuming is already the default, so the
+    /// flag existed only to be mutually exclusive with `-fresh`. Accepting a
+    /// no-op silently tells the user they opted into something they did not, so
+    /// it is now an error that explains the default.
     #[test]
-    fn resume_and_fresh_conflict_errors() {
-        assert!(parse(vec!["proj".into(), "-resume".into(), "-fresh".into()]).is_err());
+    fn resume_is_rejected_with_an_explanation_rather_than_silently_ignored() {
+        for args in [vec!["proj", "-resume"], vec!["proj", "--resume"], vec!["proj", "-resume", "-codex"]] {
+            let err = parse(args.iter().map(|x| x.to_string()).collect())
+                .expect_err("-resume must not be silently accepted")
+                .to_string();
+            assert!(err.contains("default"), "the error must say resuming is the default: {err}");
+            assert!(err.contains("--fresh"), "and point at the flag that does something: {err}");
+        }
     }
 
     #[test]
