@@ -30,15 +30,21 @@ changes before relying on it for critical projects. Being specific about what
 that means, because "under active development" is not an honest summary on its
 own:
 
-- **Shared state is not transactionally locked.** Concurrent `ws` processes
-  mutating the same workspace can lose an update, and launch-lock acquisition
-  still has a race. One workspace, one `ws` at a time is the safe assumption.
+- **Most shared state is now transactionally locked, but not all of it.** The
+  registry, config, `workspace.toml`, `state.toml` and the encrypted secret store
+  hold an interprocess lock across their whole read-modify-write. Append-only
+  files (`timeline.jsonl`, the queue, notebooks) rely on `O_APPEND` instead, which
+  is correct for appends but means anything that ever needs to *rewrite* one of
+  them would need a lock added first.
 - **Agent session identity is not exact.** Codex resume depends on
   `resume --last`, so lineage is inferred rather than addressed.
 - **Queue completion is not schema-validated.** A drained task is judged by exit
   status plus a per-agent heuristic, not by a required agent disposition.
-- **macOS Apple Silicon only.** Linux is not built or tested, though most of the
-  code is portable.
+- **Linux is built and tested in CI but has had no human use.** Every
+  macOS-specific call is `#[cfg]`-gated and the suite runs on `ubuntu-24.04`, and
+  releases now ship a statically linked `x86_64-unknown-linux-musl` binary
+  alongside Apple Silicon. Treat Linux as working-but-unproven; macOS arm64 is the
+  platform that has actually been used.
 - **Releases are not yet authenticated** beyond TLS, and the updater bootstrap
   is unverified.
 - **A workspace whose name contains `@` cannot be launched by name**, because
@@ -52,7 +58,7 @@ list against `cs`, including everything above.
 
 ## Requirements
 
-- macOS on Apple Silicon for the prebuilt release.
+- macOS on Apple Silicon, or Linux x86_64, for the prebuilt release.
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Codex](https://developers.openai.com/codex/cli).
 - [GitHub CLI](https://cli.github.com/) authenticated with access to the private repository.
 - Rust and Cargo only if you choose to build from source.
@@ -128,6 +134,7 @@ ws -adopt [<name>]             Adopt the current directory
 ws -rm | -archive | -unarchive Remove or hide workspaces
 ws -tag | -status              Label a workspace
 ws -whoami | -who [<name>]     Actor identity and contributor history
+ws -conversations [<name>]     Conversation lineage: rotations and agent switches
 ws -msg <name> <body>          Message another workspace
 ws -queue add|list|drain       Task queue and unattended draining
 ws -spawn <name> [--task <t>]  Open a workspace in a tmux window

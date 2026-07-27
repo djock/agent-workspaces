@@ -74,13 +74,22 @@ else
         exit 1
     }
 
+    # Resolve the release target from the host rather than hard-refusing
+    # anything that is not Darwin/arm64. The release workflow now publishes a
+    # statically linked Linux binary alongside the Apple Silicon one, so the
+    # installer has to be able to ask for it.
     OS="$(uname -s)"
     ARCH="$(uname -m)"
-    if [ "$OS" != "Darwin" ] || [ "$ARCH" != "arm64" ]; then
-        echo "install.sh: no prebuilt v0.1 release for $OS/$ARCH" >&2
-        echo "Use: ./install.sh --build-from-source" >&2
-        exit 1
-    fi
+    case "$OS/$ARCH" in
+        Darwin/arm64)        TARGET="aarch64-apple-darwin" ;;
+        Linux/x86_64)        TARGET="x86_64-unknown-linux-musl" ;;
+        *)
+            echo "install.sh: no prebuilt binary for $OS/$ARCH" >&2
+            echo "Supported: Darwin/arm64, Linux/x86_64." >&2
+            echo "Use: ./install.sh --build-from-source" >&2
+            exit 1
+            ;;
+    esac
 
     if [ -n "$REQUESTED_VERSION" ]; then
         case "$REQUESTED_VERSION" in
@@ -92,7 +101,7 @@ else
     fi
 
     VERSION="${TAG#v}"
-    ASSET="ws-v${VERSION}-aarch64-apple-darwin.tar.gz"
+    ASSET="ws-v${VERSION}-${TARGET}.tar.gz"
     TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ws-install.XXXXXX")"
     trap 'rm -rf "$TEMP_DIR"' EXIT HUP INT TERM
 

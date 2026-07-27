@@ -34,6 +34,22 @@ The project follows [Semantic Versioning](https://semver.org/).
   `O_CREAT|O_EXCL`, and the stale-reclaim path goes back through the same
   primitive so two callers that both judge a lock stale cannot both win.
 
+### Added
+
+- `ws -conversations [<name>]` shows conversation lineage: which agent session
+  replaced which and why, and where work moved between Claude and Codex. Launch
+  now records a `rotated` timeline event carrying from/to/reason, and
+  `agent-switch` records `from` and the handoff seeded, not just `to`.
+- Interprocess transactions (`txn::transaction`) over every shared
+  read-modify-write: the registry, config, `workspace.toml`, `state.toml` and the
+  encrypted secret store. An atomic rename makes a write all-or-nothing but does
+  not stop two processes each reading, changing and renaming — the second
+  silently discarding the first.
+- Linux is built and tested in CI (`ubuntu-24.04`), and releases now publish a
+  statically linked `x86_64-unknown-linux-musl` binary alongside Apple Silicon.
+  `install.sh` resolves the asset for the host instead of refusing anything that
+  is not Darwin/arm64.
+
 ### Changed
 
 - `ws --help` now documents the whole command surface, including `-limits`,
