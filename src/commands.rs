@@ -338,9 +338,25 @@ pub fn list(tag: Option<String>, archived: bool) -> Result<()> {
     Ok(())
 }
 
+/// One `-limits` row.
+///
+/// Two things are stated that this used to leave implied. The **agent** the
+/// numbers describe: limits are captured only as a side effect of rendering
+/// Claude's status line, so every row is Claude's, and a reader with a Codex
+/// workspace open would otherwise reasonably read them as covering both. And the
+/// **age**: `stamped_at` was recorded and never read, so a week-old reading was
+/// printed in exactly the same format as a live one.
 fn print_limits_row(label: &str, snap: &limits::LimitsSnapshot, now: i64) {
+    let agent = if snap.agent.is_empty() { "?" } else { &snap.agent };
+    let freshness = match limits::age_secs(snap, now) {
+        Some(age) if age > limits::STALE_AFTER_SECS => {
+            format!("\tSTALE ({} old)", limits::humanize_age(age))
+        }
+        Some(_) => String::new(),
+        None => "\tSTALE (age unknown)".to_string(),
+    };
     println!(
-        "{label}\t5h {}% (resets in {})\twk {}% (resets in {})",
+        "{label}\t[{agent}]\t5h {}% (resets in {})\twk {}% (resets in {}){freshness}",
         snap.five_hour.used_pct.round() as i64,
         limits::countdown(snap.five_hour.resets_at, now),
         snap.seven_day.used_pct.round() as i64,
@@ -351,6 +367,7 @@ fn print_limits_row(label: &str, snap: &limits::LimitsSnapshot, now: i64) {
 pub fn limits() -> Result<()> {
     let now = limits::now_epoch();
     let mut shown = 0;
+    let mut any_stale = false;
     for (name, path) in crate::registry::all() {
         let m = crate::meta::read(&path.join(".ws/workspace.toml"));
         if m.archived {
@@ -358,17 +375,35 @@ pub fn limits() -> Result<()> {
         }
         let lp = path.join(".ws/local/limits.json");
         if let Some(snap) = limits::read(&lp) {
+            any_stale |= limits::is_stale(&snap, now);
             print_limits_row(&name, &snap, now);
             shown += 1;
         }
     }
     if shown == 0 {
         if let Some(snap) = limits::read(&limits::global_path()) {
+            any_stale |= limits::is_stale(&snap, now);
             print_limits_row("(global)", &snap, now);
         } else {
             println!("no limit data yet (run a ws session so the statusline can sense them)");
+            return Ok(());
         }
     }
+    if any_stale {
+        println!(
+            "\nSTALE means the reading predates the 5-hour window it describes, so it may have \
+             reset since. Open the workspace in Claude to refresh it."
+        );
+    }
+    // Say this once, unconditionally, rather than letting an all-Claude table
+    // imply coverage it does not have. There is nowhere to read Codex usage from:
+    // Codex renders its own limits natively in its status bar and exposes them to
+    // no hook, so ws cannot capture them at all — see
+    // docs/2026-07-27-codex-hook-contract-verified.md.
+    println!(
+        "note: these are Claude's limits only. Codex shows its own in its status bar; \
+         it exposes them to no hook, so ws cannot record them."
+    );
     Ok(())
 }
 

@@ -50,6 +50,49 @@ pub fn countdown(resets_at: i64, now: i64) -> String {
     format!("{h}h{m}m")
 }
 
+/// Beyond this, a snapshot is reported as stale rather than current.
+///
+/// The 5-hour window is the shortest thing these numbers describe, so anything
+/// older than roughly one window has had time to reset completely and the
+/// percentages may bear no relation to reality. `stamped_at` was always recorded
+/// and never read, which meant `-limits` printed week-old figures in exactly the
+/// same format as live ones.
+pub const STALE_AFTER_SECS: i64 = 5 * 3600;
+
+/// How old a snapshot is, and whether that is too old to present as current.
+/// `None` when the snapshot has no usable timestamp — treated as stale, since an
+/// unknown age is not evidence of freshness.
+pub fn age_secs(snap: &LimitsSnapshot, now: i64) -> Option<i64> {
+    if snap.stamped_at <= 0 || now < snap.stamped_at {
+        return None;
+    }
+    Some(now - snap.stamped_at)
+}
+
+pub fn is_stale(snap: &LimitsSnapshot, now: i64) -> bool {
+    match age_secs(snap, now) {
+        Some(age) => age > STALE_AFTER_SECS,
+        None => true,
+    }
+}
+
+/// "3h20m" / "2d4h" for display next to a stale reading.
+pub fn humanize_age(secs: i64) -> String {
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let d = secs / 86_400;
+    let h = (secs % 86_400) / 3600;
+    let m = (secs % 3600) / 60;
+    if d > 0 {
+        format!("{d}d{h}h")
+    } else if h > 0 {
+        format!("{h}h{m}m")
+    } else {
+        format!("{m}m")
+    }
+}
+
 pub fn now_epoch() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -103,5 +146,41 @@ mod tests {
     #[test]
     fn read_missing_is_none() {
         assert!(read(std::path::Path::new("/no/such/limits.json")).is_none());
+    }
+
+    /// `stamped_at` was recorded and never read, so `-limits` printed a week-old
+    /// reading in the same format as a live one. The boundary is the 5-hour
+    /// window: past it, the numbers describe a window that has had time to reset.
+    #[test]
+    fn staleness_is_judged_against_the_window_the_numbers_describe() {
+        let s = snap(40.0, 50.0); // stamped_at = 500_000
+        assert!(!is_stale(&s, 500_000), "just written is fresh");
+        assert!(!is_stale(&s, 500_000 + STALE_AFTER_SECS), "at the boundary is still fresh");
+        assert!(is_stale(&s, 500_000 + STALE_AFTER_SECS + 1), "one second past is stale");
+        assert!(is_stale(&s, 500_000 + 7 * 86_400), "a week old is stale");
+    }
+
+    /// An unknown or impossible age must read as stale, not fresh. A missing
+    /// `stamped_at` deserialises to 0, and `now_iso`'s old empty-string failure
+    /// mode shows this family of bug is not hypothetical.
+    #[test]
+    fn an_unusable_timestamp_is_treated_as_stale_not_fresh() {
+        let mut s = snap(40.0, 50.0);
+        s.stamped_at = 0;
+        assert_eq!(age_secs(&s, 1_000_000), None);
+        assert!(is_stale(&s, 1_000_000), "no timestamp is not evidence of freshness");
+
+        // A clock that moved backwards, or a snapshot from another machine.
+        let s2 = snap(40.0, 50.0);
+        assert_eq!(age_secs(&s2, 400_000), None, "future stamp has no meaningful age");
+        assert!(is_stale(&s2, 400_000));
+    }
+
+    #[test]
+    fn age_is_humanized_at_each_scale() {
+        assert_eq!(humanize_age(30), "30s");
+        assert_eq!(humanize_age(90), "1m");
+        assert_eq!(humanize_age(3 * 3600 + 20 * 60), "3h20m");
+        assert_eq!(humanize_age(2 * 86_400 + 4 * 3600), "2d4h");
     }
 }
