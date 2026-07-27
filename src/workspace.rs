@@ -29,11 +29,33 @@ impl Workspace {
     pub fn workspace_toml(&self) -> PathBuf {
         self.ws_dir().join("workspace.toml")
     }
+    pub fn queue_dir(&self) -> PathBuf {
+        self.ws_dir().join("queue")
+    }
+    pub fn queue_tasks(&self) -> PathBuf {
+        self.queue_dir().join("tasks.jsonl")
+    }
+    /// Drain journal: per-checkout run output, not shared state.
+    pub fn queue_journal(&self) -> PathBuf {
+        self.local_dir().join("queue-journal.log")
+    }
+    /// Present when the circuit breaker has tripped. Cleared by `--reset`.
+    pub fn circuit_marker(&self) -> PathBuf {
+        self.local_dir().join("queue-circuit-open")
+    }
     pub fn readme(&self) -> PathBuf {
         self.ws_dir().join("README.md")
     }
     pub fn notebook_dir(&self) -> PathBuf {
         self.ws_dir().join("notebook")
+    }
+    pub fn mail_dir(&self) -> PathBuf {
+        self.ws_dir().join("mail")
+    }
+    /// Marker for the newest message already surfaced. Lives under local/ because
+    /// "what I have read" is per-checkout, not shared state to merge.
+    pub fn mail_seen(&self) -> PathBuf {
+        self.local_dir().join("mail-seen")
     }
     pub fn timeline(&self) -> PathBuf {
         self.ws_dir().join("timeline.jsonl")

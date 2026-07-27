@@ -25,6 +25,25 @@ pub enum Cmd {
     Update { check: bool, force: bool },
     Uninstall { force: bool },
     Tui,
+    Whoami,
+    Who { name: Option<String> },
+    Msg(MsgCmd),
+    Queue(QueueCmd),
+    Spawn { name: String, task: Option<String> },
+    Worktree { spec: String, merge: bool },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum QueueCmd {
+    Add { name: String, text: String },
+    List { name: Option<String> },
+    Drain { name: Option<String>, reset: bool },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum MsgCmd {
+    Send { to: String, body: String },
+    Log { name: Option<String> },
 }
 
 #[derive(Debug, PartialEq)]
@@ -77,6 +96,19 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         "-list" | "-ls" => parse_list(it.collect()),
         "-limits" => Ok(Cmd::Limits),
         "-doctor" => Ok(Cmd::Doctor),
+        "-whoami" => {
+            if it.next().is_some() {
+                bail!("usage: ws -whoami");
+            }
+            Ok(Cmd::Whoami)
+        }
+        "-who" => {
+            let name = it.next();
+            if it.next().is_some() {
+                bail!("usage: ws -who [<name>]");
+            }
+            Ok(Cmd::Who { name })
+        }
         "-update" => {
             let mut check = false;
             let mut force = false;
@@ -104,6 +136,28 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         }
         "-secrets" => parse_secrets(it.collect()),
         "-tag" => parse_tag(it.collect()),
+        "-msg" => parse_msg(it.collect()),
+        "-queue" => parse_queue(it.collect()),
+        "-spawn" => {
+            let mut it = it;
+            let name = it
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("usage: ws -spawn <name> [--task <text>]"))?;
+            let mut task = None;
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--task" => {
+                        let rest: Vec<String> = it.by_ref().collect();
+                        if rest.is_empty() {
+                            bail!("usage: ws -spawn <name> --task <text>");
+                        }
+                        task = Some(rest.join(" "));
+                    }
+                    other => bail!("unexpected argument: {other}"),
+                }
+            }
+            Ok(Cmd::Spawn { name, task })
+        }
         "-status" => parse_status(it.collect()),
         "-archive" => parse_archive(it.collect(), true),
         "-unarchive" => parse_archive(it.collect(), false),
@@ -169,6 +223,23 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         "subagent-statusline" => Ok(Cmd::SubagentStatusline),
         other if other.starts_with('-') => {
             bail!("unknown command: {other}\ntry: ws -list | ws -adopt | ws -rm | ws config | ws <name>");
+        }
+        // Known limitation (M1): this arm claims *every* bare name with an
+        // inner `@`, so an adopted workspace literally named `client@acme`
+        // routes here instead of to the launch arm below and cannot be
+        // launched from the CLI. It fails safe — `worktree::create` bails
+        // "already exists" via `lookup_checked` rather than touching
+        // anything — so the workspace is unreachable, never damaged.
+        // Disambiguating would mean consulting the registry from the parser.
+        name if crate::worktree::parse_name(name).is_some() => {
+            let mut merge = false;
+            for a in it {
+                match a.as_str() {
+                    "--merge" => merge = true,
+                    other => bail!("unexpected argument: {other}"),
+                }
+            }
+            Ok(Cmd::Worktree { spec: name.to_string(), merge })
         }
         name => {
             // launch: ws <name> [-claude|-codex] [-resume|-fresh|--fresh] [--agent X] [--force] [--handoff]
@@ -247,6 +318,63 @@ fn take_workspace(args: Vec<String>) -> Result<(Option<String>, Vec<String>)> {
         }
     }
     Ok((name, rest))
+}
+
+fn parse_msg(args: Vec<String>) -> Result<Cmd> {
+    let mut it = args.into_iter();
+    let first = it
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("usage: ws -msg <name> <body> | ws -msg log [<name>]"))?;
+    if first == "log" {
+        let name = it.next();
+        if it.next().is_some() {
+            bail!("usage: ws -msg log [<name>]");
+        }
+        return Ok(Cmd::Msg(MsgCmd::Log { name }));
+    }
+    let rest: Vec<String> = it.collect();
+    if rest.is_empty() {
+        bail!("usage: ws -msg <name> <body>");
+    }
+    Ok(Cmd::Msg(MsgCmd::Send { to: first, body: rest.join(" ") }))
+}
+
+fn parse_queue(args: Vec<String>) -> Result<Cmd> {
+    let mut it = args.into_iter();
+    let sub = it
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("usage: ws -queue add|list|drain ..."))?;
+    match sub.as_str() {
+        "add" => {
+            let name = it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -queue add <name> <text>"))?;
+            let rest: Vec<String> = it.collect();
+            if rest.is_empty() {
+                bail!("usage: ws -queue add <name> <text>");
+            }
+            Ok(Cmd::Queue(QueueCmd::Add { name, text: rest.join(" ") }))
+        }
+        "list" => {
+            let name = it.next();
+            if it.next().is_some() {
+                bail!("usage: ws -queue list [<name>]");
+            }
+            Ok(Cmd::Queue(QueueCmd::List { name }))
+        }
+        "drain" => {
+            let mut name = None;
+            let mut reset = false;
+            for a in it {
+                match a.as_str() {
+                    "--reset" => reset = true,
+                    other if other.starts_with("--") => bail!("unexpected argument: {other}"),
+                    other if name.is_none() => name = Some(other.to_string()),
+                    other => bail!("unexpected argument: {other}"),
+                }
+            }
+            Ok(Cmd::Queue(QueueCmd::Drain { name, reset }))
+        }
+        other => bail!("unknown queue subcommand: {other} (try add, list, drain)"),
+    }
 }
 
 fn parse_tag(args: Vec<String>) -> Result<Cmd> {
@@ -336,6 +464,29 @@ mod tests {
 
     fn p(s: &[&str]) -> Cmd {
         parse(s.iter().map(|x| x.to_string()).collect()).unwrap()
+    }
+
+    #[test]
+    fn a_name_with_an_at_parses_as_a_worktree_not_a_launch() {
+        assert_eq!(p(&["api@retry"]), Cmd::Worktree { spec: "api@retry".into(), merge: false });
+        assert_eq!(p(&["api@retry", "--merge"]), Cmd::Worktree { spec: "api@retry".into(), merge: true });
+    }
+
+    #[test]
+    fn a_plain_name_still_launches() {
+        assert_eq!(
+            p(&["api"]),
+            Cmd::Launch { name: "api".into(), agent: None, fresh: false, force: false, handoff: false }
+        );
+    }
+
+    #[test]
+    fn a_malformed_worktree_spec_is_treated_as_an_ordinary_name() {
+        // "api@" is not a worktree spec; it must not silently become one.
+        match p(&["api@"]) {
+            Cmd::Launch { name, .. } => assert_eq!(name, "api@"),
+            other => panic!("expected a launch, got {other:?}"),
+        }
     }
 
     #[test]
@@ -544,6 +695,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_whoami_and_who() {
+        assert_eq!(p(&["-whoami"]), Cmd::Whoami);
+        assert_eq!(p(&["-who"]), Cmd::Who { name: None });
+        assert_eq!(p(&["-who", "proj"]), Cmd::Who { name: Some("proj".into()) });
+    }
+
+    #[test]
+    fn who_rejects_a_second_name() {
+        assert!(parse(vec!["-who".into(), "a".into(), "b".into()]).is_err());
+    }
+
+    #[test]
     fn archive_and_unarchive() {
         assert_eq!(
             p(&["-archive", "a", "b"]),
@@ -554,5 +717,63 @@ mod tests {
             Cmd::Archive { names: vec!["a".into()], archived: false }
         );
         assert!(parse(vec!["-archive".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_msg_send_and_log() {
+        assert_eq!(
+            p(&["-msg", "proj", "ship it"]),
+            Cmd::Msg(MsgCmd::Send { to: "proj".into(), body: "ship it".into() })
+        );
+        assert_eq!(p(&["-msg", "log"]), Cmd::Msg(MsgCmd::Log { name: None }));
+        assert_eq!(p(&["-msg", "log", "proj"]), Cmd::Msg(MsgCmd::Log { name: Some("proj".into()) }));
+    }
+
+    #[test]
+    fn msg_send_requires_a_body() {
+        assert!(parse(vec!["-msg".into(), "proj".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_queue_subcommands() {
+        assert_eq!(
+            p(&["-queue", "add", "proj", "write the docs"]),
+            Cmd::Queue(QueueCmd::Add { name: "proj".into(), text: "write the docs".into() })
+        );
+        assert_eq!(p(&["-queue", "list", "proj"]), Cmd::Queue(QueueCmd::List { name: Some("proj".into()) }));
+        assert_eq!(
+            p(&["-queue", "drain", "proj"]),
+            Cmd::Queue(QueueCmd::Drain { name: Some("proj".into()), reset: false })
+        );
+        assert_eq!(
+            p(&["-queue", "drain", "proj", "--reset"]),
+            Cmd::Queue(QueueCmd::Drain { name: Some("proj".into()), reset: true })
+        );
+    }
+
+    #[test]
+    fn queue_add_requires_a_target_and_text() {
+        assert!(parse(vec!["-queue".into(), "add".into()]).is_err());
+        assert!(parse(vec!["-queue".into(), "add".into(), "proj".into()]).is_err());
+    }
+
+    #[test]
+    fn an_unknown_queue_subcommand_is_rejected() {
+        assert!(parse(vec!["-queue".into(), "flush".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_spawn_with_and_without_a_task() {
+        assert_eq!(p(&["-spawn", "proj"]), Cmd::Spawn { name: "proj".into(), task: None });
+        assert_eq!(
+            p(&["-spawn", "proj", "--task", "write the docs"]),
+            Cmd::Spawn { name: "proj".into(), task: Some("write the docs".into()) }
+        );
+    }
+
+    #[test]
+    fn spawn_requires_a_name_and_a_task_body() {
+        assert!(parse(vec!["-spawn".into()]).is_err());
+        assert!(parse(vec!["-spawn".into(), "proj".into(), "--task".into()]).is_err());
     }
 }

@@ -6,26 +6,31 @@ mod commands;
 mod config;
 mod context;
 mod contract;
+mod drain;
 mod handoff;
 mod hookio;
 mod hooksetup;
 mod internal;
 mod limits;
 mod lock;
+mod mail;
 mod meta;
 mod migrate;
 mod prompts;
+mod queue;
 mod readme;
 mod registry;
 mod rows;
 mod search;
 mod secrets;
+mod spawn;
 mod statusline;
 mod term;
 mod timeline;
 mod tui;
 mod update;
 mod workspace;
+mod worktree;
 
 use cli::Cmd;
 
@@ -57,6 +62,11 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
         Cmd::SubagentStatusline => statusline::run_subagent(),
         Cmd::Limits => commands::limits()?,
         Cmd::Doctor => commands::doctor()?,
+        Cmd::Whoami => commands::whoami()?,
+        Cmd::Who { name } => commands::who(name)?,
+        Cmd::Msg(c) => commands::msg(c)?,
+        Cmd::Queue(c) => commands::queue(c)?,
+        Cmd::Spawn { name, task } => spawn::run(name, task)?,
         Cmd::Secrets(c) => commands::secrets(c)?,
         Cmd::Search { query, include_archived } => commands::search(query, include_archived)?,
         Cmd::MigrateCs { names, all, dry_run } => commands::migrate_cs(names, all, dry_run)?,
@@ -68,6 +78,16 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
             // agent from here, replacing this process.
             tui::Outcome::Launch(name) => commands::launch(name, None, false, false, false)?,
         },
+        Cmd::Worktree { spec, merge } => {
+            let s = worktree::parse_name(&spec)
+                .ok_or_else(|| anyhow::anyhow!("not a worktree spec: {spec}"))?;
+            if merge {
+                worktree::merge(&s)?
+            } else {
+                let path = worktree::create(&s)?;
+                println!("created {} at {}", s.workspace_name(), path.display());
+            }
+        }
     }
     Ok(())
 }
@@ -96,9 +116,20 @@ fn print_help() {
          ws -status \"<text>\" | --clear\n\
          ws -archive | -unarchive <name>...\n\
          ws -search <query>   search all workspaces (--include-archived)\n\
+         ws -whoami              print your actor slug\n\
+         ws -who [<name>]        actors who have worked in a workspace\n\
+         ws -msg <name> <body>   send a message to another workspace\n\
+         ws -msg log [<name>]    read the message history\n\
+         ws -queue add <name> <text>   add a task to a workspace's queue\n\
+         ws -queue list [<name>]       show the queue\n\
+         ws -queue drain [<name>]      run pending tasks through the agent\n\
+         ws -spawn <name>        open a workspace in a tmux window\n\
+         ws -spawn <name> --task <text>   queue it, then drain the WHOLE queue there\n\
          ws -update           install the latest release (--check, --force)\n\
          ws -uninstall        remove ws integrations and binary (--force)\n\
          ws migrate-cs <name>...|--all   import cs sessions (--dry-run)\n\
+         ws <base>@<feature>     create a git worktree workspace off <base>\n\
+         ws <base>@<feature> --merge   merge it back (--no-ff) and remove it\n\
          ws config ...        get/set/list config\n\
          ws --version"
     );

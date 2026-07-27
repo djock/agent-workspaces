@@ -18,14 +18,11 @@ pub struct Detail {
     pub notebook: Vec<String>,
     /// Tail of `timeline.jsonl`, oldest first — the workspace's conversation chain.
     pub chain: Vec<ChainEntry>,
-    pub queue: usize,
-    pub mail: usize,
-}
-
-fn count_files(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir)
-        .map(|rd| rd.flatten().filter(|e| e.path().is_file()).count())
-        .unwrap_or(0)
+    /// Pending task count, or None when the queue could not be read.
+    pub queue: Option<usize>,
+    /// Unread count, or None when the mailbox could not be read. Rendering "?"
+    /// for unreadable beats rendering "0", which would be a lie.
+    pub mail: Option<usize>,
 }
 
 /// The most recently modified `notebook.<actor>.md`.
@@ -80,9 +77,10 @@ pub fn gather(row: &WorkspaceRow, max_lines: usize) -> Detail {
         objective,
         notebook,
         chain,
-        // Phase 8 creates these; until then they are absent and count as zero.
-        queue: count_files(&ws.join("queue")),
-        mail: count_files(&ws.join("mail")),
+        queue: crate::queue::pending(&ws.join("queue/tasks.jsonl")).ok().map(|t| t.len()),
+        mail: crate::mail::unread(&ws.join("mail"), &ws.join("local/mail-seen"))
+            .ok()
+            .map(|m| m.len()),
     }
 }
 
@@ -124,8 +122,8 @@ mod tests {
                    "the tail, newest last");
         assert_eq!(det.chain.len(), 2);
         assert_eq!(det.chain[1].kind, "opened", "newest last");
-        assert_eq!(det.queue, 0);
-        assert_eq!(det.mail, 0);
+        assert_eq!(det.queue, Some(0));
+        assert_eq!(det.mail, Some(0));
     }
 
     #[test]
@@ -152,16 +150,39 @@ mod tests {
     }
 
     #[test]
-    fn counts_queue_and_mail_when_phase_8_creates_them() {
-        let d = TempDir::new().unwrap();
-        let ws = d.path().join(".ws");
-        std::fs::create_dir_all(ws.join("queue")).unwrap();
-        std::fs::create_dir_all(ws.join("mail")).unwrap();
-        std::fs::write(ws.join("queue/task-1.md"), "x").unwrap();
-        std::fs::write(ws.join("queue/task-2.md"), "x").unwrap();
-        std::fs::write(ws.join("mail/msg.json"), "x").unwrap();
-        let det = gather(&ws_at(d.path().to_path_buf()), 5);
-        assert_eq!(det.queue, 2);
-        assert_eq!(det.mail, 1);
+    fn counts_pending_queue_tasks_and_reports_a_corrupt_queue_as_none() {
+        let td = TempDir::new().unwrap();
+        let ws = td.path().join(".ws");
+        std::fs::create_dir_all(ws.join("local")).unwrap();
+        let tasks = ws.join("queue/tasks.jsonl");
+        let a = crate::queue::add(&tasks, "one", "alice").unwrap();
+        crate::queue::add(&tasks, "two", "alice").unwrap();
+        assert_eq!(gather(&ws_at(td.path().to_path_buf()), 5).queue, Some(2));
+
+        crate::queue::set_state(&tasks, &a, crate::queue::TaskState::Done, None).unwrap();
+        assert_eq!(
+            gather(&ws_at(td.path().to_path_buf()), 5).queue,
+            Some(1),
+            "a finished task is not pending"
+        );
+
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&tasks).unwrap();
+        writeln!(f, "{{not json").unwrap();
+        assert_eq!(gather(&ws_at(td.path().to_path_buf()), 5).queue, None);
+    }
+
+    #[test]
+    fn counts_unread_mail_and_reports_unreadable_as_none() {
+        let td = TempDir::new().unwrap();
+        let ws = td.path().join(".ws");
+        std::fs::create_dir_all(ws.join("local")).unwrap();
+        crate::mail::send(&ws.join("mail"), "alice", "hi").unwrap();
+        let det = gather(&ws_at(td.path().to_path_buf()), 5);
+        assert_eq!(det.mail, Some(1));
+
+        std::fs::write(ws.join("mail/bad.json"), "{not json").unwrap();
+        let det = gather(&ws_at(td.path().to_path_buf()), 5);
+        assert_eq!(det.mail, None, "a corrupt message reads as unknown, not as zero");
     }
 }
