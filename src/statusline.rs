@@ -171,13 +171,18 @@ fn elapsed(start_ms: i64, now_ms: i64) -> String {
 
 pub fn subagent_row(t: &Task, now_ms: i64) -> String {
     let name = if !t.name.is_empty() { &t.name } else { &t.type_ };
+    // An unreported context window rendered as "ctx 0%", which is
+    // indistinguishable from a subagent that genuinely has an empty context —
+    // the same silent-wrong-answer shape as `-limits` printing a stale reading in
+    // the format of a live one. "ctx ?" says "not reported" instead of asserting
+    // a number that happens to look reassuring.
     let ctx = if t.contextWindowSize > 0 {
-        (t.tokenCount.saturating_mul(100) / t.contextWindowSize).clamp(0, 100)
+        format!("{}%", (t.tokenCount.saturating_mul(100) / t.contextWindowSize).clamp(0, 100))
     } else {
-        0
+        "?".to_string()
     };
     format!(
-        "\u{21b7} {}  {} \u{b7} {} \u{b7} ctx {}% \u{b7} {}",
+        "\u{21b7} {}  {} \u{b7} {} \u{b7} ctx {} \u{b7} {}",
         t.model,
         name,
         t.description,
@@ -212,4 +217,56 @@ pub fn run() {
 
     let no_color = std::env::var_os("NO_COLOR").is_some();
     let _ = writeln!(std::io::stdout(), "{}", render(&input, no_color));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(model: &str, tokens: i64, window: i64) -> Task {
+        Task {
+            id: "t1".into(),
+            model: model.into(),
+            name: "explore".into(),
+            type_: "Task".into(),
+            description: "read the auth flow".into(),
+            tokenCount: tokens,
+            contextWindowSize: window,
+            start: 1_000_000,
+        }
+    }
+
+    /// The row answers "which model, how much context" per subagent, so both must
+    /// be present and the percentage must be right.
+    #[test]
+    fn a_subagent_row_names_the_model_and_its_context_share() {
+        let row = subagent_row(&task("sonnet-4-5", 40_000, 200_000), 1_000_000 + 95_000);
+        assert!(row.contains("sonnet-4-5"), "{row}");
+        assert!(row.contains("explore"), "{row}");
+        assert!(row.contains("read the auth flow"), "{row}");
+        assert!(row.contains("ctx 20%"), "40k of 200k is 20%: {row}");
+        assert!(row.contains("1m35s"), "elapsed since start: {row}");
+    }
+
+    /// An unreported context window used to render as `ctx 0%`, which reads as
+    /// "this subagent has used almost nothing" when the truth is "nobody said".
+    /// Same silent-wrong-answer shape as `-limits` printing a stale reading as
+    /// current. Discriminating: asserts the *absence* of a fabricated 0%.
+    #[test]
+    fn an_unreported_context_window_is_a_question_mark_not_zero_percent() {
+        let row = subagent_row(&task("haiku", 1234, 0), 1_000_000);
+        assert!(row.contains("ctx ?"), "must say it does not know: {row}");
+        assert!(!row.contains("ctx 0%"), "must not fabricate a reassuring 0%: {row}");
+    }
+
+    /// A subagent past its window must not report over 100%, and the name falls
+    /// back to the task type when no name was given.
+    #[test]
+    fn context_is_clamped_and_the_name_falls_back_to_the_type() {
+        let mut t = task("opus", 500_000, 200_000);
+        t.name = String::new();
+        let row = subagent_row(&t, 1_000_000);
+        assert!(row.contains("ctx 100%"), "clamped, not 250%: {row}");
+        assert!(row.contains("Task"), "falls back to type when unnamed: {row}");
+    }
 }
