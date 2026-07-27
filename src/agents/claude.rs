@@ -61,8 +61,22 @@ impl Agent for ClaudeAgent {
     fn launch(&self, ws: &Workspace, ctx: &LaunchCtx) -> anyhow::Result<Command> {
         let mut cmd = Command::new(self.binary());
         if ctx.fresh || !self.has_prior_session(ws) {
+            // Read the outgoing id *before* overwriting it: once written, the
+            // link between the old conversation and the new one is unrecoverable,
+            // and that link is the whole of `ws -conversations`. Recording it here
+            // rather than inside `write_session_id` keeps `contract` unaware of
+            // the timeline, and this is the only place a Claude id is minted for
+            // an interactive session.
+            let prior = contract::read_session_id(&ws.state_toml(), self.id());
             let id = uuid::Uuid::new_v4().to_string();
             contract::write_session_id(&ws.state_toml(), self.id(), &id)?;
+            crate::conversations::record_rotation(
+                ws,
+                self.id(),
+                prior.as_deref(),
+                &id,
+                if prior.is_some() { "fresh" } else { "first" },
+            );
             cmd.arg("--session-id").arg(&id);
         } else {
             let id = contract::read_session_id(&ws.state_toml(), self.id()).unwrap();

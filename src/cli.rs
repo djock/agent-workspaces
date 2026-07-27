@@ -27,6 +27,7 @@ pub enum Cmd {
     Tui,
     Whoami,
     Who { name: Option<String> },
+    Conversations { name: Option<String> },
     Msg(MsgCmd),
     Queue(QueueCmd),
     Spawn { name: String, task: Option<String> },
@@ -108,6 +109,13 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
                 bail!("usage: ws -who [<name>]");
             }
             Ok(Cmd::Who { name })
+        }
+        "-conversations" => {
+            let name = it.next();
+            if it.next().is_some() {
+                bail!("usage: ws -conversations [<name>]");
+            }
+            Ok(Cmd::Conversations { name })
         }
         "-update" => {
             let mut check = false;

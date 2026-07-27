@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod context;
 mod contract;
+mod conversations;
 mod drain;
 mod handoff;
 mod hookio;
@@ -65,6 +66,7 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
         Cmd::Doctor => commands::doctor()?,
         Cmd::Whoami => commands::whoami()?,
         Cmd::Who { name } => commands::who(name)?,
+        Cmd::Conversations { name } => conversations::run(name)?,
         Cmd::Msg(c) => commands::msg(c)?,
         Cmd::Queue(c) => commands::queue(c)?,
         Cmd::Spawn { name, task } => spawn::run(name, task)?,
@@ -145,6 +147,7 @@ fn help_text() -> &'static str {
          Coordinate\n\
          \x20 ws -whoami                   print your actor slug\n\
          \x20 ws -who [<name>]             actors who have worked in a workspace\n\
+         \x20 ws -conversations [<name>]   conversation lineage: rotations and agent switches\n\
          \x20 ws -msg <name> <body>        send a message to another workspace\n\
          \x20 ws -msg log [<name>]         read the message history\n\
          \x20 ws -queue add <name> <text>  add a task to a workspace's queue\n\
@@ -182,7 +185,7 @@ mod tests {
         let help = super::help_text();
         for token in [
             "-tui", "-list", "-ls", "-adopt", "-rm", "-tag", "-status", "-archive", "-unarchive",
-            "-search", "-limits", "-doctor", "-whoami", "-who", "-msg", "-queue", "-spawn",
+            "-search", "-limits", "-doctor", "-whoami", "-who", "-conversations", "-msg", "-queue", "-spawn",
             "-secrets", "-update", "-uninstall", "setup", "config", "migrate-cs",
             "--version", "-claude", "-codex", "--agent", "--fresh", "--handoff", "--force",
             "--merge", "--reset", "--dry-run", "--include-archived", "--archived",

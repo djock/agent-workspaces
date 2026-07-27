@@ -889,11 +889,19 @@ pub fn launch(
     if switching {
         let _ = std::fs::remove_file(ws.limit_guard());
         crate::meta::set_default_agent(&ws.workspace_toml(), agent.id())?;
+        // Record `from` and the handoff actually seeded, not just `to`. A switch
+        // event naming only its destination cannot be read as a chain — and the
+        // handoff is the one piece of context that crossed, so it belongs in the
+        // history rather than only in the context file that gets regenerated.
         let _ = crate::timeline::record(
             &ws.timeline(),
             "agent-switch",
             &crate::actors::actor_slug(),
-            serde_json::json!({ "to": agent.id() }),
+            serde_json::json!({
+                "from": recorded_default.as_deref().unwrap_or("?"),
+                "to": agent.id(),
+                "handoff": hint.as_deref(),
+            }),
         );
     }
 
