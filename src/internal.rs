@@ -321,20 +321,70 @@ fn session_end() {
     let _ = timeline::record(&ws.timeline(), "closed", &actors::actor_slug(), serde_json::json!({}));
 }
 
+/// The files a `PostToolUse` payload says were just written.
+///
+/// Claude's `Write`/`Edit` name one file in `tool_input.file_path`. Codex's
+/// `apply_patch` names **zero or more** in an envelope inside
+/// `tool_input.command`, and leaves `file_path` empty — verified against Codex
+/// CLI 0.145.0, where the payload is
+/// `{"tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Add File: /abs/p\n+x\n*** End Patch"}}`.
+/// Reading only `file_path` therefore found nothing to redact on Codex even once
+/// the matcher was fixed, so both halves are needed to close the gap.
+///
+/// `Delete File` is skipped: there is nothing left to scan. `Move to` is
+/// followed, because the content lands at the new path. Relative paths are
+/// resolved against the payload's `cwd`, which is where Codex ran the patch.
+fn written_paths(h: &hookio::HookInput) -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if !h.tool_input.file_path.is_empty() {
+        return vec![PathBuf::from(&h.tool_input.file_path)];
+    }
+    let mut out: Vec<PathBuf> = Vec::new();
+    for line in h.tool_input.command.lines() {
+        let t = line.trim();
+        let rest = t
+            .strip_prefix("*** Add File:")
+            .or_else(|| t.strip_prefix("*** Update File:"))
+            .or_else(|| t.strip_prefix("*** Move to:"));
+        if let Some(raw) = rest {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                continue;
+            }
+            let p = PathBuf::from(raw);
+            let p = if p.is_absolute() { p } else { PathBuf::from(&h.cwd).join(p) };
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
 fn secret_redact() {
     let h = hookio::read_stdin();
     let ws = match current_ws() {
         Some(w) => w,
         None => return,
     };
-    if h.tool_name != "Write" && h.tool_name != "Edit" {
+    // Claude: Write/Edit. Codex: apply_patch. The hook's registered matcher
+    // should already have filtered, but a handler that trusts the matcher blindly
+    // is how the Codex gap stayed invisible — so re-check here too.
+    if h.tool_name != "Write" && h.tool_name != "Edit" && h.tool_name != "apply_patch" {
         return;
     }
-    let path = std::path::PathBuf::from(&h.tool_input.file_path);
-    if h.tool_input.file_path.is_empty() || !path.is_file() {
-        return;
+    for path in written_paths(&h) {
+        if path.is_file() {
+            redact_file(&ws, &path);
+        }
     }
-    let text = match std::fs::read_to_string(&path) {
+}
+
+/// Redact one file in place. Split out of `secret_redact` because a single
+/// `apply_patch` can write several files and each must be handled independently
+/// — one unreadable file must not abandon the rest.
+fn redact_file(ws: &Workspace, path: &std::path::Path) {
+    let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(_) => return,
     };
@@ -387,9 +437,30 @@ fn secret_redact() {
         out.push('\n');
     }
     if changed {
+        // By this point every value in `redacted` is already in the secret store,
+        // so neither of these failures may be swallowed. If the rewrite fails the
+        // file still holds the plaintext while the store says it was captured —
+        // the most dangerous state this function can leave behind — and if the
+        // manifest write fails the record of what was captured is gone. A hook
+        // cannot prompt, so the honest option is a loud stderr line; PostToolUse
+        // stderr is surfaced to the user without blocking the tool call.
         // preserve trailing-newline shape roughly; atomic rewrite
-        let _ = crate::atomic::atomic_write(&path, &out);
-        let _ = note_manifest(&ws, &redacted);
+        if let Err(e) = crate::atomic::atomic_write(path, &out) {
+            eprintln!(
+                "ws: redaction FAILED to rewrite {} ({e}). {} value(s) were stored but the \
+                 plaintext is still in that file — remove it by hand.",
+                path.display(),
+                redacted.len()
+            );
+            return;
+        }
+        if let Err(e) = note_manifest(ws, &redacted) {
+            eprintln!(
+                "ws: redacted {} value(s) from {} but could not record them in the manifest ({e}).",
+                redacted.len(),
+                path.display()
+            );
+        }
     }
 }
 
@@ -420,16 +491,27 @@ fn note_manifest(ws: &Workspace, names: &[String]) -> std::io::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    // Absent → start fresh; unreadable → refuse. Defaulting to an empty
-    // manifest on a read error would write the new entry back over an empty
-    // object, losing every `redacted_secrets` entry already recorded.
+    // Absent → start fresh; unreadable *or unparseable* → refuse. Defaulting on
+    // either would write the new entry back over an empty object, losing every
+    // `redacted_secrets` entry already recorded. A credential record is the one
+    // thing that must never be silently dropped, so a corrupt manifest is an
+    // error the caller reports rather than damage this function papers over.
     let mut val: serde_json::Value = match std::fs::read_to_string(&path) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| serde_json::json!({})),
+        Ok(s) => serde_json::from_str(&s).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} is not valid JSON ({e}); refusing to overwrite it", path.display()),
+            )
+        })?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
         Err(e) => return Err(e),
     };
+    // Valid JSON that is not an object is corruption too, not a fresh start.
     if !val.is_object() {
-        val = serde_json::json!({});
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} is not a JSON object; refusing to overwrite it", path.display()),
+        ));
     }
     let arr = val.as_object_mut().unwrap().entry("redacted_secrets").or_insert_with(|| serde_json::json!([]));
     if let Some(a) = arr.as_array_mut() {
@@ -499,6 +581,108 @@ mod tests {
             before,
             "the original manifest must survive untouched, not be replaced by one missing FIRST_SECRET"
         );
+    }
+
+    /// M7. A manifest that is *readable but corrupt* used to map to `json!({})`
+    /// and get written straight back, silently discarding every recorded
+    /// `redacted_secrets` entry — the exact damage the unreadable-case test
+    /// above pins, arriving through the other door. Truncated JSON is the
+    /// realistic shape here: an interrupted write, not a hand edit.
+    #[test]
+    fn a_corrupt_manifest_is_refused_rather_than_silently_reset() {
+        let d = TempDir::new().unwrap();
+        let ws = Workspace { name: "w".into(), root: d.path().to_path_buf() };
+        let path = ws.ws_dir().join("artifacts").join("MANIFEST.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let corrupt = r#"{"redacted_secrets": [{"name": "FIRST_SECRET", "at": "2026-0"#;
+        std::fs::write(&path, corrupt).unwrap();
+
+        let result = note_manifest(&ws, &["SECOND_SECRET".to_string()]);
+
+        assert!(result.is_err(), "a corrupt manifest must be an error, not a fresh start");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            corrupt,
+            "the corrupt bytes must survive so the prior entry is recoverable by hand"
+        );
+        // Discriminating: the old behaviour left a *valid* file that parsed and
+        // contained SECOND_SECRET but not FIRST_SECRET. Assert that shape is gone.
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("SECOND_SECRET"), "must not have written the new entry");
+        assert!(after.contains("FIRST_SECRET"), "must not have dropped the prior entry");
+    }
+
+    /// Claude's shape: one file, named directly.
+    #[test]
+    fn a_claude_write_payload_names_exactly_the_one_file_it_wrote() {
+        let h = hookio::parse(
+            r#"{"tool_name":"Write","cwd":"/w","tool_input":{"file_path":"/w/.env"}}"#,
+        );
+        assert_eq!(written_paths(&h), vec![std::path::PathBuf::from("/w/.env")]);
+    }
+
+    /// Codex's shape, verbatim from a captured Codex CLI 0.145.0 payload: the
+    /// target is inside the patch envelope and `file_path` is absent entirely.
+    /// Before this, `written_paths` had nothing to return and redaction was a
+    /// no-op on Codex even with the matcher fixed.
+    #[test]
+    fn a_codex_apply_patch_payload_names_the_file_inside_the_envelope() {
+        let h = hookio::parse(
+            r#"{"tool_name":"apply_patch","cwd":"/w","tool_input":{"command":"*** Begin Patch\n*** Add File: /w/.env\n+API_KEY=abc\n*** End Patch"}}"#,
+        );
+        assert_eq!(written_paths(&h), vec![std::path::PathBuf::from("/w/.env")]);
+    }
+
+    /// One patch can touch several files, and a single-path return would silently
+    /// redact the first and leave credentials in the rest.
+    #[test]
+    fn a_multi_file_patch_names_every_written_file_and_skips_deletions() {
+        let patch = "*** Begin Patch\n\
+                     *** Add File: a.env\n+A_KEY=1\n\
+                     *** Update File: /abs/b.env\n+B_TOKEN=2\n\
+                     *** Delete File: c.env\n\
+                     *** Move to: d.env\n\
+                     *** End Patch";
+        let raw = serde_json::json!({
+            "tool_name": "apply_patch",
+            "cwd": "/work",
+            "tool_input": { "command": patch }
+        })
+        .to_string();
+        let got = written_paths(&hookio::parse(&raw));
+
+        // Relative paths resolve against cwd; absolute ones are left alone.
+        assert!(got.contains(&std::path::PathBuf::from("/work/a.env")), "{got:?}");
+        assert!(got.contains(&std::path::PathBuf::from("/abs/b.env")), "{got:?}");
+        assert!(got.contains(&std::path::PathBuf::from("/work/d.env")), "Move to target: {got:?}");
+        // A deleted file has no content left to scan, and scanning it would be an error.
+        assert!(!got.contains(&std::path::PathBuf::from("/work/c.env")), "deletion must be skipped: {got:?}");
+        assert_eq!(got.len(), 3, "exactly the three written files: {got:?}");
+    }
+
+    /// A patch that writes nothing must produce no targets rather than, say, the
+    /// workspace root — which `PathBuf::from(cwd).join("")` would have yielded.
+    #[test]
+    fn a_patch_with_no_file_headers_yields_no_targets() {
+        let h = hookio::parse(
+            r#"{"tool_name":"apply_patch","cwd":"/w","tool_input":{"command":"*** Begin Patch\n*** End Patch"}}"#,
+        );
+        assert!(written_paths(&h).is_empty());
+    }
+
+    /// Valid JSON of the wrong type is corruption too. `[]` used to be replaced
+    /// by `{}` and written back, which is the same silent data loss.
+    #[test]
+    fn a_manifest_that_is_valid_json_but_not_an_object_is_refused() {
+        let d = TempDir::new().unwrap();
+        let ws = Workspace { name: "w".into(), root: d.path().to_path_buf() };
+        let path = ws.ws_dir().join("artifacts").join("MANIFEST.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"["FIRST_SECRET"]"#).unwrap();
+
+        assert!(note_manifest(&ws, &["SECOND".to_string()]).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"["FIRST_SECRET"]"#);
     }
 
     #[test]
