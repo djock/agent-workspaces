@@ -130,11 +130,19 @@ pub fn get(cfg: &Config, key: &str) -> Result<String> {
 
 pub fn set(key: &str, value: &str) -> Result<()> {
     let path = config_path();
+    crate::txn::transaction(&path, || set_locked(&path, key, value))
+}
+
+/// The body of [`set`], run holding the config lock. Split out so the lock spans
+/// the read *and* the write: two `ws config set` calls for different keys would
+/// otherwise each read the same starting config and write back only their own
+/// change, silently dropping the other.
+fn set_locked(path: &std::path::Path, key: &str, value: &str) -> Result<()> {
     // Safe read: absent → defaults; present-but-unparseable → refuse (don't
     // clobber); present-but-unreadable (permission error, I/O error) → refuse
     // too, not default — defaulting here would write the whole config back
     // with only this one key set, over everything already there.
-    let mut cfg: Config = match std::fs::read_to_string(&path) {
+    let mut cfg: Config = match std::fs::read_to_string(path) {
         Ok(s) => toml::from_str(&s).map_err(|e| {
             anyhow::anyhow!(
                 "{} is not valid TOML ({e}); refusing to overwrite it. Fix it or move it aside.",
@@ -176,7 +184,7 @@ pub fn set(key: &str, value: &str) -> Result<()> {
         }
         other => bail!("unknown config key: {other}"),
     }
-    crate::atomic::atomic_write(&path, toml::to_string_pretty(&cfg)?)?;
+    crate::atomic::atomic_write(path, toml::to_string_pretty(&cfg)?)?;
     Ok(())
 }
 

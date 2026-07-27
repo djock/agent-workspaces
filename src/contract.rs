@@ -52,10 +52,15 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
     write_if_absent(&ws.join("handoffs/.gitkeep"), "")?;
     write_if_absent(&ws.join("plans/.gitkeep"), "")?;
 
-    // .ws/.gitignore — never commit local/ or secrets
+    // .ws/.gitignore — never commit local/, secrets, or transaction sidecars.
+    //
+    // `*.lock` covers the `txn` module's sidecar lock files (`workspace.toml.lock`
+    // and friends). They are per-machine coordination state with no meaning in
+    // another checkout, and committing one would put a file in the repo that a
+    // co-developer's ws then locks against for no reason.
     write_if_absent(
         &ws.join(".gitignore"),
-        "local/\n*.enc\n",
+        "local/\n*.enc\n*.lock\n",
     )?;
 
     // .ws/.gitattributes — union-merge every append-only file.
@@ -228,17 +233,47 @@ pub fn write_state_table(state_toml: &Path, t: &toml::Table) -> Result<()> {
     Ok(())
 }
 
+/// Read-modify-write `state.toml` under an interprocess lock.
+///
+/// This is the file the C2 finding is about: `write_session_id` (from hook
+/// handlers) and `agents::codex::record_owner` (from launch) write it from
+/// *different processes*. Merging keys instead of replacing them stopped either
+/// from dropping the other's fields, but merging alone cannot stop a lost update —
+/// both writers can still read the same starting table and rename their own
+/// result into place, and the second silently wins. Every mutation goes through
+/// here so the read and the write are one transaction.
+///
+/// Callers must not nest: `f` may not call another `update_state` on the same
+/// path (see `txn`'s module docs on reentrancy).
+pub fn update_state(state_toml: &Path, f: impl FnOnce(&mut toml::Table)) -> Result<()> {
+    crate::txn::transaction(state_toml, || {
+        let mut t = read_state_table(state_toml)?;
+        f(&mut t);
+        write_state_table(state_toml, &t)
+    })
+}
+
+/// Merge `key`/`value` into the sub-table for `agent`, preserving its other keys.
+pub fn set_agent_field(
+    state_toml: &Path,
+    agent: &str,
+    key: &str,
+    value: toml::Value,
+) -> Result<()> {
+    update_state(state_toml, |t| {
+        // Merge into the agent's existing table rather than replacing it, so a
+        // `session_id` write does not drop the `launched` marker (or vice versa).
+        let mut entry = match t.get(agent).and_then(|v| v.as_table()) {
+            Some(existing) => existing.clone(),
+            None => toml::Table::new(),
+        };
+        entry.insert(key.to_string(), value);
+        t.insert(agent.to_string(), toml::Value::Table(entry));
+    })
+}
+
 pub fn write_session_id(state_toml: &Path, agent: &str, id: &str) -> Result<()> {
-    let mut t = read_state_table(state_toml)?;
-    // Merge into the agent's existing table rather than replacing it, so a
-    // `session_id` write does not drop the `launched` marker (or vice versa).
-    let mut entry = match t.get(agent).and_then(|v| v.as_table()) {
-        Some(existing) => existing.clone(),
-        None => toml::Table::new(),
-    };
-    entry.insert("session_id".into(), toml::Value::String(id.to_string()));
-    t.insert(agent.to_string(), toml::Value::Table(entry));
-    write_state_table(state_toml, &t)
+    set_agent_field(state_toml, agent, "session_id", toml::Value::String(id.to_string()))
 }
 
 #[cfg(test)]

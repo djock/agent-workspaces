@@ -68,19 +68,25 @@ pub fn read(ws_toml: &Path) -> Meta {
 /// Bails if the file exists but cannot be parsed — we never clobber a file we
 /// don't understand.
 pub fn update(ws_toml: &Path, f: impl FnOnce(&mut toml::Table)) -> Result<()> {
-    let mut t = match std::fs::read_to_string(ws_toml) {
-        Ok(s) => toml::from_str(&s).with_context(|| {
-            format!(
-                "{} is corrupt (refusing to overwrite)",
-                ws_toml.display()
-            )
-        })?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
-        Err(e) => return Err(e).context("failed to read workspace.toml"),
-    };
-    f(&mut t);
-    crate::atomic::atomic_write(ws_toml, toml::to_string_pretty(&t)?)?;
-    Ok(())
+    // Locked for the whole read-modify-write: `-tag add`, `-status`, `-archive`
+    // and `default_agent` recording all land here, and two of them running at
+    // once (a tag from one terminal, an archive from another) would otherwise
+    // each write their own change over the other's.
+    crate::txn::transaction(ws_toml, || {
+        let mut t = match std::fs::read_to_string(ws_toml) {
+            Ok(s) => toml::from_str(&s).with_context(|| {
+                format!(
+                    "{} is corrupt (refusing to overwrite)",
+                    ws_toml.display()
+                )
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+            Err(e) => return Err(e).context("failed to read workspace.toml"),
+        };
+        f(&mut t);
+        crate::atomic::atomic_write(ws_toml, toml::to_string_pretty(&t)?)?;
+        Ok(())
+    })
 }
 
 fn write_tags(t: &mut toml::Table, tags: &[String]) {

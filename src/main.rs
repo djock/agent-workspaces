@@ -28,6 +28,7 @@ mod statusline;
 mod term;
 mod timeline;
 mod tui;
+mod txn;
 mod update;
 mod workspace;
 mod worktree;

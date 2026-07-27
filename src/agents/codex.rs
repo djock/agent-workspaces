@@ -51,18 +51,21 @@ fn marker_present(ws: &Workspace) -> bool {
 /// It previously used a fixed `state.toml.tmp`, replaced an unparseable file
 /// with a fresh table, and dropped every other agent's `session_id` on the way.
 fn record_owner(ws: &Workspace, owner: &str) -> Result<()> {
-    let state = ws.state_toml();
-    let mut t = crate::contract::read_state_table(&state)?;
-    let mut e = match t.get("codex").and_then(|v| v.as_table()) {
-        Some(existing) => existing.clone(),
-        None => toml::Table::new(),
-    };
-    // `launched` is kept in step so an older `ws` reading this file still sees
-    // a launched workspace; `last_owner` is what this version consults.
-    e.insert("launched".into(), toml::Value::Boolean(owner == OWNER_INTERACTIVE));
-    e.insert("last_owner".into(), toml::Value::String(owner.to_string()));
-    t.insert("codex".into(), toml::Value::Table(e));
-    crate::contract::write_state_table(&state, &t)
+    // Both keys are set inside one `update_state`, so the read and the write are
+    // a single transaction against the hook-side writer of this same file (C2).
+    // Writing them in two separate calls would also leave a window where
+    // `launched` and `last_owner` disagree.
+    crate::contract::update_state(&ws.state_toml(), |t| {
+        let mut e = match t.get("codex").and_then(|v| v.as_table()) {
+            Some(existing) => existing.clone(),
+            None => toml::Table::new(),
+        };
+        // `launched` is kept in step so an older `ws` reading this file still sees
+        // a launched workspace; `last_owner` is what this version consults.
+        e.insert("launched".into(), toml::Value::Boolean(owner == OWNER_INTERACTIVE));
+        e.insert("last_owner".into(), toml::Value::String(owner.to_string()));
+        t.insert("codex".into(), toml::Value::Table(e));
+    })
 }
 
 impl Agent for CodexAgent {

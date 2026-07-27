@@ -89,11 +89,19 @@ impl FileStore {
 }
 
 impl SecretStore for FileStore {
+    // `set` and `remove` decrypt the whole store, change one entry and re-encrypt.
+    // That is a read-modify-write, so it is transacted: the secret-redaction hook
+    // can store several values in quick succession while the user runs
+    // `ws -secrets set` in another terminal, and an unlocked version would lose
+    // one of them. Losing a credential silently is the worst outcome this file
+    // has, so it gets the lock even though the window is small.
     fn set(&self, name: &str, value: &str) -> Result<()> {
         validate_name(name)?;
-        let mut m = self.load()?;
-        m.insert(name.to_string(), value.to_string());
-        self.save(&m)
+        crate::txn::transaction(&self.path, || {
+            let mut m = self.load()?;
+            m.insert(name.to_string(), value.to_string());
+            self.save(&m)
+        })
     }
     fn get(&self, name: &str) -> Result<Option<String>> {
         Ok(self.load()?.get(name).cloned())
@@ -102,9 +110,11 @@ impl SecretStore for FileStore {
         Ok(self.load()?.keys().cloned().collect())
     }
     fn remove(&self, name: &str) -> Result<()> {
-        let mut m = self.load()?;
-        m.remove(name);
-        self.save(&m)
+        crate::txn::transaction(&self.path, || {
+            let mut m = self.load()?;
+            m.remove(name);
+            self.save(&m)
+        })
     }
     fn purge(&self) -> Result<()> {
         std::fs::remove_file(&self.path).ok();

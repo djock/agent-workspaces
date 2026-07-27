@@ -37,16 +37,24 @@ pub fn register(name: &str, path: &Path) -> Result<()> {
     // and the TUI — `-adopt` on a directory that already has `.ws/` re-registers
     // without going through `init` at all.
     crate::workspace::validate_name(name)?;
-    let mut r = load()?;
-    r.workspaces
-        .insert(name.to_string(), path.to_string_lossy().to_string());
-    save(&r)
+    // load-then-save is a read-modify-write over a file every ws process shares:
+    // two concurrent registrations would each write their own entry over the
+    // other's. `load`/`save` stay unlocked so this is the only lock holder and
+    // cannot deadlock against itself.
+    crate::txn::transaction(&registry_path(), || {
+        let mut r = load()?;
+        r.workspaces
+            .insert(name.to_string(), path.to_string_lossy().to_string());
+        save(&r)
+    })
 }
 
 pub fn unregister(name: &str) -> Result<()> {
-    let mut r = load()?;
-    r.workspaces.remove(name);
-    save(&r)
+    crate::txn::transaction(&registry_path(), || {
+        let mut r = load()?;
+        r.workspaces.remove(name);
+        save(&r)
+    })
 }
 
 /// A corrupt or unreadable registry must not read as quietly empty — that
