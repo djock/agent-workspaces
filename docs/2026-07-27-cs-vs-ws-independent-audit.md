@@ -31,6 +31,18 @@
 > stands reflects the corrected finding; §1.3's "still unproven" list is now
 > largely resolved and superseded by the verification doc.
 >
+> **Second update, same day.** Stage 4 is now **complete**: `txn::transaction` over
+> `fs2` advisory locks wraps the registry, config, `workspace.toml`, `state.toml`
+> and the encrypted secret store. Stage 6's conversation lineage is **done**
+> (`ws -conversations`, plus `rotated` events and a `from`/`handoff`-carrying
+> `agent-switch`). Stage 5 is **partly done**: Linux is built and tested in CI and
+> a musl binary ships, `install.sh` resolves per-host, and `SECURITY.md` exists —
+> still open are signed releases, shell completions, the `cargo fmt` gate, and
+> making the repository public (a GitHub setting, not a code change). Test count
+> 366 → 400.
+>
+> Superseded below: the "Stage 4, partial" note and the "Not started" list.
+>
 > **Stage 4, partial:** the `lock::acquire` TOCTOU is **closed** — the lock file is
 > now created with `create_new` (`O_CREAT|O_EXCL`) and the stale-reclaim path goes
 > back through the same primitive, so the kernel picks the winner. `fs2` turned out
