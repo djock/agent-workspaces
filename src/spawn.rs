@@ -16,15 +16,25 @@ pub struct TmuxPlan {
     pub session: String,
     pub window: String,
     pub dir: PathBuf,
-    pub command: String,
+    /// The command as **argv**, never as one shell string.
+    ///
+    /// M2. tmux runs a single-argument `shell-command` through `sh -c`, so
+    /// `format!("{ws_bin} {ws_name}")` made every metacharacter in a workspace
+    /// name executable: `ws -adopt 'x;rm -rf ~'` then `ws -spawn` ran the `rm`.
+    /// Given two or more arguments tmux `execvp`s them directly with no shell,
+    /// so a `;` stays a literal argument. Verified against tmux 3.7b: the
+    /// string form fires the injection, the argv form does not. This also fixes
+    /// the unrelated bug where an install path containing a space split into two
+    /// words. Keep this a Vec — collapsing it back to a String reopens both.
+    pub command: Vec<String>,
     pub attach: Attach,
 }
 
 pub fn plan(ws_name: &str, dir: &Path, inside_tmux: bool, drain: bool, ws_bin: &str) -> TmuxPlan {
-    let command = if drain {
-        format!("{ws_bin} -queue drain {ws_name}")
+    let command: Vec<String> = if drain {
+        vec![ws_bin.to_string(), "-queue".into(), "drain".into(), ws_name.to_string()]
     } else {
-        format!("{ws_bin} {ws_name}")
+        vec![ws_bin.to_string(), ws_name.to_string()]
     };
     TmuxPlan {
         session: SESSION.to_string(),
@@ -40,15 +50,19 @@ pub fn commands_for(plan: &TmuxPlan, session_exists: bool) -> Vec<Vec<String>> {
     let dir = plan.dir.to_string_lossy().to_string();
     let mut out: Vec<Vec<String>> = Vec::new();
     if session_exists {
-        out.push(vec![
+        let mut c: Vec<String> = vec![
             "new-window".into(), "-t".into(), format!("{}:", plan.session),
-            "-n".into(), plan.window.clone(), "-c".into(), dir, plan.command.clone(),
-        ]);
+            "-n".into(), plan.window.clone(), "-c".into(), dir,
+        ];
+        c.extend(plan.command.iter().cloned());
+        out.push(c);
     } else {
-        out.push(vec![
+        let mut c: Vec<String> = vec![
             "new-session".into(), "-d".into(), "-s".into(), plan.session.clone(),
-            "-n".into(), plan.window.clone(), "-c".into(), dir, plan.command.clone(),
-        ]);
+            "-n".into(), plan.window.clone(), "-c".into(), dir,
+        ];
+        c.extend(plan.command.iter().cloned());
+        out.push(c);
     }
     match plan.attach {
         Attach::AlreadyInside => out.push(vec![
@@ -158,7 +172,7 @@ mod tests {
         let cmds = commands_for(&plan, false);
         assert_eq!(
             cmds[0],
-            vec!["new-session", "-d", "-s", "ws", "-n", "proj", "-c", "/tmp/proj", "ws proj"]
+            vec!["new-session", "-d", "-s", "ws", "-n", "proj", "-c", "/tmp/proj", "ws", "proj"]
         );
         assert_eq!(cmds[1], vec!["attach", "-t", "ws"], "outside tmux we attach");
     }
@@ -169,7 +183,7 @@ mod tests {
         let cmds = commands_for(&plan, true);
         assert_eq!(
             cmds[0],
-            vec!["new-window", "-t", "ws:", "-n", "proj", "-c", "/tmp/proj", "ws proj"]
+            vec!["new-window", "-t", "ws:", "-n", "proj", "-c", "/tmp/proj", "ws", "proj"]
         );
     }
 
@@ -185,17 +199,56 @@ mod tests {
     #[test]
     fn the_task_variant_runs_a_drain_rather_than_an_interactive_launch() {
         let interactive = plan("proj", &dir(), false, false, "ws");
-        assert_eq!(interactive.command, "ws proj");
+        assert_eq!(interactive.command, vec!["ws", "proj"]);
 
         let drained = plan("proj", &dir(), false, true, "ws");
-        assert_eq!(drained.command, "ws -queue drain proj");
+        assert_eq!(drained.command, vec!["ws", "-queue", "drain", "proj"]);
         assert_ne!(drained.command, interactive.command);
     }
 
     #[test]
     fn the_ws_binary_path_is_used_verbatim_so_a_non_path_install_still_works() {
         let plan = plan("proj", &dir(), false, false, "/opt/bin/ws");
-        assert_eq!(plan.command, "/opt/bin/ws proj");
+        assert_eq!(plan.command, vec!["/opt/bin/ws", "proj"]);
+    }
+
+    /// M2. tmux runs a one-argument `shell-command` through `sh -c`. While the
+    /// command was built with `format!`, every shell metacharacter in a
+    /// workspace name was live code, and `-adopt` never validated names — so
+    /// `ws -adopt 'x;touch /tmp/pwned'` followed by `ws -spawn` ran the `touch`.
+    ///
+    /// The assertion that discriminates is *argv boundaries*, not the absence of
+    /// a `;`: the name is allowed to contain one, it just has to arrive as a
+    /// single element that tmux will `execvp` rather than parse. Checking only
+    /// "no semicolon in the joined string" would still pass for the old code.
+    #[test]
+    fn a_name_with_shell_metacharacters_stays_one_argv_element() {
+        let nasty = "x;touch /tmp/pwned";
+        let p = plan(nasty, &dir(), false, false, "ws");
+        assert_eq!(
+            p.command,
+            vec!["ws", nasty],
+            "the whole name must be exactly one argument, metacharacters and all"
+        );
+
+        let cmds = commands_for(&p, false);
+        let last = cmds[0].last().unwrap();
+        assert_eq!(last, nasty, "tmux receives the name as its own final argument");
+        // No element may ever hold the binary and the name fused together —
+        // that fused form is precisely what `sh -c` would re-split.
+        assert!(
+            !cmds[0].iter().any(|a| a.contains("ws ") && a.contains(nasty)),
+            "binary and name must not be concatenated into one word: {cmds:?}"
+        );
+    }
+
+    /// The same argv discipline fixes a plain bug: an install path with a space
+    /// used to split into two words and tmux would try to run the first half.
+    #[test]
+    fn an_install_path_containing_a_space_survives_as_one_argument() {
+        let p = plan("proj", &dir(), false, false, "/Applications/My Tools/ws");
+        assert_eq!(p.command, vec!["/Applications/My Tools/ws", "proj"]);
+        assert_eq!(commands_for(&p, false)[0].last().unwrap(), "proj");
     }
 
     /// I6. `-spawn --task "one thing"` runs a full `-queue drain`. When the

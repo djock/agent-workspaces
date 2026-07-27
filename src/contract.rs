@@ -8,6 +8,10 @@ use crate::registry;
 pub const CONTRACT_VERSION: u32 = 1;
 
 pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
+    // Validate here, not only in `open_or_create`: `-adopt`, `migrate-cs` and
+    // `worktree::create` all reach this function directly, and `-adopt` used to
+    // register an arbitrary name — which `ws -spawn` then executed.
+    crate::workspace::validate_name(name)?;
     let ws = root.join(".ws");
     for sub in ["notebook", "memory", "handoffs", "plans", "local"] {
         std::fs::create_dir_all(ws.join(sub))?;

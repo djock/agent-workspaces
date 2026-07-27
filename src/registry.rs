@@ -32,6 +32,11 @@ fn save(r: &Registry) -> Result<()> {
 }
 
 pub fn register(name: &str, path: &Path) -> Result<()> {
+    // The second chokepoint. `contract::init` validates before writing files;
+    // this one guards the path that makes a name *visible* to `-list`, `-spawn`
+    // and the TUI — `-adopt` on a directory that already has `.ws/` re-registers
+    // without going through `init` at all.
+    crate::workspace::validate_name(name)?;
     let mut r = load()?;
     r.workspaces
         .insert(name.to_string(), path.to_string_lossy().to_string());
