@@ -64,8 +64,75 @@ pub fn secrets(cmd: SecretsCmd) -> Result<()> {
             }
         }
         SecretsCmd::Backend => println!("{}", store.backend_name()),
+        SecretsCmd::Restore(file) => secrets_restore(&ws, store.as_ref(), &file)?,
     }
     Ok(())
+}
+
+/// `ws -secrets restore <file>` — put stored values back where the redaction
+/// hook took them from.
+///
+/// The hook writes `{{ws:secret:NAME}}` placeholders, and until this existed no
+/// code path anywhere resolved one: a redacted `.env` was simply a broken
+/// `.env`, and the only honest advice was to keep the value out of the file
+/// yourself. This is the other half of that feature.
+fn secrets_restore(ws_name: &str, store: &dyn secrets::SecretStore, file: &str) -> Result<()> {
+    let root = workspace_root(ws_name)?;
+    let arg = std::path::Path::new(file);
+    let path = if arg.is_absolute() { arg.to_path_buf() } else { std::env::current_dir()?.join(arg) };
+    // The same containment rule the hook applies, for a sharper reason: this
+    // writes *plaintext credentials*. Resolved rather than compared textually,
+    // so neither `../` nor a symlink can spell its way out of the workspace.
+    let path = crate::internal::contained(&root, &path)
+        .map_err(|reason| anyhow::anyhow!("refusing to restore: {reason}"))?;
+
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    // Capture the mode before the rewrite: a redacted `.env` is commonly 0600,
+    // and restoring the plaintext under the process umask instead would publish
+    // the credential to every account on the machine.
+    let mode = crate::atomic::mode_of(&path);
+    let done = crate::internal::resolve_placeholders(&text, |name| store.get(name))?;
+
+    if done.resolved > 0 {
+        crate::atomic::atomic_write_with_mode(&path, &done.text, mode)
+            .with_context(|| format!("failed to rewrite {}", path.display()))?;
+    }
+    println!("restored {} placeholder(s) in {}", done.resolved, path.display());
+    if !done.missing.is_empty() {
+        // Non-zero exit, and the placeholders stay: a script that pipes this
+        // into a deploy must not proceed with a file that still has holes in it.
+        anyhow::bail!(
+            "no such secret in workspace {ws_name}: {} — those placeholders were left in place",
+            done.missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Where the workspace whose store is open actually lives on disk.
+///
+/// `restore` is the only `-secrets` subcommand that needs the root rather than
+/// the name, because it is the only one that touches a path. Inside a launched
+/// session `$WS_DIR` names it; outside one the registry does (the same lookup
+/// `-msg` and `-queue` use, checked so an unreadable registry is an error
+/// rather than a guess); a workspace directory that was never registered falls
+/// back to the cwd.
+fn workspace_root(name: &str) -> Result<std::path::PathBuf> {
+    if let Some(dir) = std::env::var("WS_DIR").ok().filter(|s| !s.is_empty()) {
+        return Ok(std::path::PathBuf::from(dir));
+    }
+    if let Some(p) = registry::lookup_checked(name)? {
+        return Ok(p);
+    }
+    let cwd = std::env::current_dir()?;
+    if cwd.join(".ws").is_dir() {
+        return Ok(cwd);
+    }
+    anyhow::bail!(
+        "cannot tell where workspace {name} lives \
+         (run this inside the workspace directory, or launch it with `ws {name}` first)"
+    )
 }
 
 pub fn setup() -> Result<()> {
@@ -115,25 +182,71 @@ pub fn doctor() -> Result<()> {
             any_agent = true;
             println!("✓ {id}: installed ({})", agent_version(&agent.binary()));
             let cfg_path = agent.hooks_config_path();
-            let has_hook = std::fs::read_to_string(&cfg_path).ok()
-                .map(|s| s.contains(&crate::hooksetup::hooks_dir().to_string_lossy().to_string()))
-                .unwrap_or(false);
-            println!("  {} ws hooks registered in {}", if has_hook { "✓" } else { "…" }, cfg_path.display());
-            if let Some(note) = agent.hook_trust_note() { println!("  note: {note}"); }
+            // Absent, unreadable and registered are three different answers.
+            // Folding "unreadable" into "not registered" printed the same line
+            // for both — in the one command whose entire job is telling you what
+            // is actually wrong.
+            match crate::io_read::read_or_absent(&cfg_path) {
+                Ok(Some(s))
+                    if s.contains(&crate::hooksetup::hooks_dir().to_string_lossy().to_string()) =>
+                {
+                    println!("  ✓ ws hooks registered in {}", cfg_path.display());
+                }
+                Ok(Some(_)) => println!(
+                    "  … ws hooks not registered in {} — run `ws setup`",
+                    cfg_path.display()
+                ),
+                Ok(None) => println!(
+                    "  … {} does not exist yet — run `ws setup`",
+                    cfg_path.display()
+                ),
+                Err(e) => {
+                    println!("  ✗ cannot read {}: {e:#}", cfg_path.display());
+                    hard_fail = true;
+                }
+            }
+            if let Some(note) = agent.hook_trust_note() {
+                println!("  note: {note}");
+            }
         } else {
             println!("… {id}: not installed");
         }
     }
     // shims present?
     let shim = crate::hooksetup::hooks_dir().join("session-start.sh");
-    if shim.exists() { println!("✓ ws hook scripts present"); }
-    else { println!("… ws hook scripts missing — run `ws setup`"); }
+    if shim.exists() {
+        println!("✓ ws hook scripts present");
+    } else {
+        println!("… ws hook scripts missing — run `ws setup`");
+    }
+
+    // User-defined hooks: an invalid hooks.toml means `ws setup` will refuse, and
+    // the user should hear that here rather than the next time they run setup.
+    let hooks_toml = crate::hooks_user::hooks_toml_path();
+    match crate::hooks_user::load() {
+        Ok(hooks) if hooks.is_empty() => {
+            println!("✓ no user hooks ({})", hooks_toml.display());
+        }
+        Ok(hooks) => {
+            println!("✓ {} user hook(s) in {}", hooks.len(), hooks_toml.display());
+            println!("  see `ws hooks list` for what each agent registers");
+        }
+        Err(e) => {
+            println!("✗ {} is invalid: {e:#}", hooks_toml.display());
+            hard_fail = true;
+        }
+    }
 
     if !any_agent {
         eprintln!("ws: no agent installed (need claude or codex on PATH)");
         hard_fail = true;
     }
-    if hard_fail { std::process::exit(1); }
+    if hard_fail {
+        // A returned error, not `process::exit`: exiting from inside a
+        // `-> Result` skips `main`'s error formatting, and (as `drain` had to
+        // learn) also skips every `Drop`, so any guard held here would leak.
+        anyhow::bail!("doctor found problems (see above)");
+    }
     Ok(())
 }
 
@@ -163,6 +276,13 @@ pub fn uninstall(force: bool) -> Result<()> {
             ws_bin.display()
         );
     }
+    // A cargo build artifact is not an installation, and deleting one is never
+    // what the user meant: the name check above passes for `target/debug/ws`, so
+    // running this in a checkout removed the binary cargo had just built. The
+    // *integrations* are still unregistered either way — they are what `ws setup`
+    // wrote into the user's agent config, and leaving them pointing at a shim
+    // directory that is about to go is worse than doing nothing.
+    let is_build_artifact = ws_bin.components().any(|c| c.as_os_str() == "target");
 
     let mut hooks = 0;
     let mut prompts = 0;
@@ -176,14 +296,22 @@ pub fn uninstall(force: bool) -> Result<()> {
     let statuslines = crate::hooksetup::unregister_statuslines(&ws_bin)?
         + crate::hooksetup::unregister_codex_statusline()?;
     let scripts = crate::hooksetup::remove_hook_scripts()?;
+    println!(
+        "Removed ws integrations ({hooks} hooks, {scripts} scripts, {prompts} prompts, \
+         {statuslines} status lines)."
+    );
+
+    if is_build_artifact {
+        anyhow::bail!(
+            "{} looks like a cargo build artifact, not an installed ws, so it was left in \
+             place. Uninstall the copy on your PATH instead.",
+            ws_bin.display()
+        );
+    }
 
     std::fs::remove_file(&ws_bin)
         .with_context(|| format!("failed to remove {}", ws_bin.display()))?;
-    println!(
-        "Uninstalled ws from {} ({hooks} hooks, {scripts} scripts, {prompts} prompts, \
-         {statuslines} status lines removed).",
-        ws_bin.display()
-    );
+    println!("Uninstalled ws from {}.", ws_bin.display());
     println!("Your workspaces and ws configuration were kept.");
     Ok(())
 }
@@ -215,6 +343,19 @@ pub fn adopt(name: Option<String>) -> Result<()> {
     contract::init(&name, &cwd, &agent, /* commit */ false)?;
     println!("adopted {name} at {}", cwd.display());
     Ok(())
+}
+
+/// The one resolver: which workspace does this command apply to?
+///
+/// There used to be four, and two of them disagreed in a way that silently split
+/// a workspace's data. `current_or_named` reported the name from
+/// `workspace.toml`, while `secrets::workspace_name` used the *current
+/// directory's* name — so for a directory adopted under a different name,
+/// `ws -secrets set` wrote to a different store than `ws -tag`/`-task` named.
+/// Everything now comes through here, so there is one answer to the question.
+pub(crate) fn resolve_named(name: Option<String>) -> Result<crate::workspace::Workspace> {
+    let (name, root) = current_or_named(name)?;
+    Ok(crate::workspace::Workspace { name, root })
 }
 
 /// Resolve which workspace a metadata command applies to: an explicit name,
@@ -252,10 +393,15 @@ pub fn tag(cmd: crate::cli::TagCmd) -> Result<()> {
     let wt = path.join(".ws/workspace.toml");
     match cmd {
         TagCmd::Add { tags, .. } => {
+            // The contract gate covers mutating entry points; List (below)
+            // does not go through it — a read must not refuse just because a
+            // newer `ws` touched this workspace.
+            contract::check_gate(&ws_name, &wt)?;
             let all = crate::meta::add_tags(&wt, &tags)?;
             println!("{ws_name}: {}", all.join(" "));
         }
         TagCmd::Rm { tags, .. } => {
+            contract::check_gate(&ws_name, &wt)?;
             let all = crate::meta::remove_tags(&wt, &tags)?;
             println!("{ws_name}: {}", all.join(" "));
         }
@@ -274,6 +420,7 @@ pub fn tag(cmd: crate::cli::TagCmd) -> Result<()> {
 pub fn status(name: Option<String>, text: Option<String>) -> Result<()> {
     let (ws_name, path) = current_or_named(name)?;
     let wt = path.join(".ws/workspace.toml");
+    contract::check_gate(&ws_name, &wt)?;
     crate::meta::set_status(&wt, text.as_deref())?;
     match text {
         Some(t) => println!("{ws_name}: {t}"),
@@ -293,7 +440,13 @@ pub fn archive(names: Vec<String>, archived: bool) -> Result<()> {
                 continue;
             }
         };
-        if let Err(e) = crate::meta::set_archived(&path.join(".ws/workspace.toml"), archived) {
+        let wt = path.join(".ws/workspace.toml");
+        if let Err(e) = contract::check_gate(&name, &wt) {
+            eprintln!("ws: {e}");
+            failed = true;
+            continue;
+        }
+        if let Err(e) = crate::meta::set_archived(&wt, archived) {
             eprintln!("ws: failed to update {name}: {e}");
             failed = true;
             continue;
@@ -866,10 +1019,7 @@ pub fn config(cmd: ConfigCmd) -> Result<()> {
         ConfigCmd::Get(key) => {
             println!("{}", config::get(&cfg, &key)?);
         }
-        ConfigCmd::Set { key, value, workspace } => {
-            if workspace {
-                anyhow::bail!("per-workspace config is added in a later task");
-            }
+        ConfigCmd::Set { key, value } => {
             config::set(&key, &value)?;
         }
     }
@@ -907,11 +1057,31 @@ pub fn launch(
     // recorded default. None (first launch) means "not switching".
     let switching = recorded_default.as_deref().is_some_and(|d| d != agent.id());
 
-    // 2. Create/resolve.
-    let (ws, _created) = workspace::open_or_create(&name, agent.id(), &cfg)?;
-
-    // 3. Lock.
-    let guard = lock::acquire(&ws.lock_file(), force)?;
+    // 2. Lock, *then* create.
+    //
+    // These used to be the other way round, so two simultaneous `ws newproj` both
+    // ran `contract::init` and both attempted the convenience commit in the same
+    // repository. Taking the lock first makes creation single-writer.
+    //
+    // Acquiring the lock creates `.ws/local/`, so a refused creation (a corrupt
+    // registry, an invalid name) would otherwise leave that skeleton behind in a
+    // directory that never became a workspace. The guard removes the lock file on
+    // drop; the empty directories are cleaned up here.
+    let ws_path = workspace::resolve(&name, &cfg);
+    let guard = lock::acquire(&ws_path.lock_file(), force)?;
+    let (ws, _created) = match workspace::open_or_create(&name, agent.id(), &cfg) {
+        Ok(v) => v,
+        Err(e) => {
+            drop(guard);
+            for dir in [ws_path.local_dir(), ws_path.ws_dir()] {
+                // `remove_dir`, never `remove_dir_all`: only a directory that is
+                // empty because we just made it may go. Anything else is the
+                // user's.
+                let _ = std::fs::remove_dir(&dir);
+            }
+            return Err(e);
+        }
+    };
 
     // 4. Regenerate context file, seeding a handoff pointer when requested or switching.
     let hint = if handoff || switching {
@@ -975,98 +1145,165 @@ fn exec(mut cmd: std::process::Command) -> Result<()> {
     std::process::exit(status.code().unwrap_or(0));
 }
 
-pub fn migrate_cs(names: Vec<String>, all: bool, dry_run: bool) -> Result<()> {
-    let cfg = config::load();
-    let sessions_root = config::sessions_root(&cfg);
-    let cs_root = crate::migrate::cs_root();
-    let (found, broken) = crate::migrate::discover(&cs_root);
+/// Aggregate the timeline into "who did what".
+///
+/// `-who` used to rank actors by `git log --format=%ae -- .ws`, which answers a
+/// different question: who *committed* metadata. That misses everyone whose work
+/// was never committed, and it cannot say what anybody actually did. The timeline
+/// records an actor on every event, so it can — and the git ranking stays as the
+/// fallback for a workspace with no timeline yet.
+pub fn who(name: Option<String>) -> Result<()> {
+    let (_name, root) = current_or_named(name)?;
+    let summaries = crate::timeline::by_actor(&root.join(".ws/timeline.jsonl"))?;
 
-    let mut failed = false;
-    let selected: Vec<(String, std::path::PathBuf)> = if all {
-        if found.is_empty() && broken.is_empty() {
-            anyhow::bail!("no cs sessions found under {}", cs_root.display());
+    if summaries.is_empty() {
+        // No timeline yet: fall back to the commit ranking rather than claiming
+        // nobody has worked here. The fallback *degrades* — a repo with no commits
+        // yet, or no git at all, means there is simply nothing to report, and
+        // surfacing git's complaint would be answering a question the user did not
+        // ask. An unreadable timeline is different, and `by_actor` above already
+        // refuses for that.
+        let ranked = crate::actors::who(&root.join(".ws")).unwrap_or_default();
+        if ranked.is_empty() {
+            println!("no recorded activity yet");
+            return Ok(());
         }
-        // I4: a dangling symlink entry is real but broken — say so, don't
-        // just skip it without a trace.
-        for (name, target) in &broken {
-            println!("{name}: broken symlink (target {} does not exist) — skipping", target.display());
+        println!("(no timeline yet — ranking by commits to .ws/)");
+        for (actor, n) in ranked {
+            println!("{actor}  {n}");
         }
-        found
-    } else {
-        let mut out = Vec::new();
-        for n in &names {
-            if let Some(hit) = found.iter().find(|(name, _)| name == n) {
-                out.push(hit.clone());
-                continue;
-            }
-            if let Some((_, target)) = broken.iter().find(|(name, _)| name == n) {
-                eprintln!(
-                    "ws: {n}: broken symlink (target {} does not exist) — skipping",
-                    target.display()
-                );
-                failed = true;
-                continue;
-            }
-            anyhow::bail!("no cs session named {n} under {}", cs_root.display());
-        }
-        out
-    };
+        return Ok(());
+    }
 
-    // F4: a warning line — anything migrate() reports as data present in the
-    // source but dropped from the destination (a skipped symlink, a
-    // non-regular-file under memory/, a failed best-effort copy step) — must
-    // not be indistinguishable from clean success — count sessions that
-    // produced at least one, and route those lines to stderr so a script
-    // watching stdout can't mistake them for progress noise.
-    let mut warned_sessions = 0usize;
-    for (name, entry) in selected {
-        let plan = match crate::migrate::plan_for(&name, &entry, &sessions_root) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("ws: {name}: {e:#}");
-                failed = true;
-                continue;
-            }
-        };
-        // I5: under --all, a session that's already migrated is a skip, not
-        // a failure — re-running --all after migrating more cs sessions
-        // should not report failure for every one already done. An
-        // explicitly named session that's already migrated still errors
-        // (migrate() below bails), since the user asked for that one.
-        if all && plan.dest.join(".ws").is_dir() {
-            println!("{name}: already migrated (skipping)");
-            continue;
+    for a in summaries {
+        println!("{:<28} {:>4} event(s)  {} … {}", a.actor, a.events, a.first, a.last);
+        if !a.kinds.is_empty() {
+            println!("{:28} {}", "", a.kinds.join(", "));
         }
-        match crate::migrate::migrate(&plan, &cfg.default_agent, dry_run) {
-            Ok(log) => {
-                let mut had_warning = false;
-                for line in log {
-                    if line.trim_start().starts_with("WARNING:") {
-                        eprintln!("{line}");
-                        had_warning = true;
-                    } else {
-                        println!("{line}");
-                    }
-                }
-                if had_warning {
-                    warned_sessions += 1;
-                }
-            }
-            Err(e) => {
-                eprintln!("ws: {name}: {e:#}");
-                failed = true;
-            }
-        }
-    }
-    if failed {
-        anyhow::bail!("some sessions could not be migrated");
-    }
-    if warned_sessions > 0 {
-        anyhow::bail!(
-            "{warned_sessions} session(s) completed with warnings — see stderr for what was skipped"
-        );
     }
     Ok(())
+}
+
+/// Write a handoff skeleton for whoever picks this workspace up next.
+///
+/// The `/ws:rotate` prompt already asks the agent to do this; having it as a
+/// command means a human can too, and that the file's shape is one thing rather
+/// than whatever the model felt like writing.
+pub fn rotate(name: Option<String>) -> Result<()> {
+    let (n, root) = current_or_named(name)?;
+    contract::check_gate(&n, &root.join(".ws/workspace.toml"))?;
+
+    let ws = crate::workspace::Workspace { name: n.clone(), root: root.clone() };
+    let actor = crate::actors::actor_slug_in(&root);
+    let ts = crate::now_iso();
+    let cfg = config::load();
+    let agent = crate::meta::read(&ws.workspace_toml())
+        .default_agent
+        .unwrap_or(cfg.default_agent);
+
+    let objective = std::fs::read_to_string(ws.readme())
+        .ok()
+        .and_then(|r| crate::readme::objective_of(&r))
+        .unwrap_or_else(|| "(none recorded)".to_string());
+    let session = contract::read_session_id(&ws.state_toml(), &agent)
+        .unwrap_or_else(|| "(none recorded)".to_string());
+
+    let dir = ws.ws_dir().join("handoffs");
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("cannot create {}", dir.display()))?;
+    // Colons are legal in a filename but awkward in a shell; the timestamp is
+    // flattened rather than reformatted so it still sorts lexically.
+    let stamp = ts.replace(':', "");
+    let path = dir.join(format!("{stamp}-{actor}.md"));
+
+    let body = format!(
+        "# Handoff — {n}\n\n         - **Written:** {ts}\n         - **By:** {actor}\n         - **Agent:** {agent}\n         - **Session:** {session}\n         - **Objective:** {objective}\n\n         ## What is done\n\n         <!-- what actually landed, not what was attempted -->\n\n         ## What is next\n\n         <!-- the single next action, and anything that would block it -->\n\n         ## Watch out for\n\n         <!-- anything that would mislead someone reading only the code -->\n"
+    );
+    crate::atomic::atomic_write(&path, body)?;
+    let _ = crate::timeline::record(
+        &ws.timeline(),
+        "handoff-written",
+        &actor,
+        serde_json::json!({ "file": path.file_name().and_then(|f| f.to_str()) }),
+    );
+    println!("wrote {}", path.display());
+    println!("`ws {n} --handoff` will point the next session at it.");
+    Ok(())
+}
+
+/// Show or validate the hook registration, built-in and user-defined.
+pub fn hooks(cmd: crate::cli::HooksCmd) -> Result<()> {
+    use crate::cli::HooksCmd;
+    let path = crate::hooks_user::hooks_toml_path();
+    let user = crate::hooks_user::load()?;
+
+    match cmd {
+        HooksCmd::Check => {
+            // Deliberately writes nothing: the point is to review a hooks.toml
+            // before `ws setup` acts on it, since every entry runs a command in
+            // the agent's context.
+            if user.is_empty() {
+                println!("{} — no user hooks", path.display());
+            } else {
+                println!("{} — {} user hook(s), all valid:", path.display(), user.len());
+            }
+            for agent_id in ["claude", "codex"] {
+                let agent = crate::agents::for_id(agent_id)?;
+                let (applies, skipped) = crate::hooks_user::for_agent(&user, agent.as_ref());
+                for h in applies {
+                    let matcher = match h.scope {
+                        crate::hooksetup::Scope::Always => "(every tool)".to_string(),
+                        crate::hooksetup::Scope::Tool(k) => agent.tool_matcher(k).to_string(),
+                    };
+                    println!(
+                        "  would register  {agent_id:<7} {:<20} {matcher:<32} {} ({}s)",
+                        h.event,
+                        h.command.display(),
+                        h.timeout
+                    );
+                }
+                for (h, _) in skipped {
+                    println!(
+                        "  would SKIP      {agent_id:<7} {:<20} — {agent_id} has no such event",
+                        h.event
+                    );
+                }
+            }
+            println!("\nNothing was written. Run `ws setup` to apply.");
+            Ok(())
+        }
+        HooksCmd::List => {
+            for agent_id in ["claude", "codex"] {
+                let agent = crate::agents::for_id(agent_id)?;
+                println!("{agent_id} ({})", agent.hooks_config_path().display());
+                for spec in crate::hooksetup::HOOKS {
+                    let matcher = match spec.scope {
+                        crate::hooksetup::Scope::Always => "(every tool)".to_string(),
+                        crate::hooksetup::Scope::Tool(k) => agent.tool_matcher(k).to_string(),
+                    };
+                    println!("  built-in  {:<20} {matcher:<32} {}", spec.event, spec.handler);
+                }
+                let (applies, skipped) = crate::hooks_user::for_agent(&user, agent.as_ref());
+                for h in applies {
+                    let matcher = match h.scope {
+                        crate::hooksetup::Scope::Always => "(every tool)".to_string(),
+                        crate::hooksetup::Scope::Tool(k) => agent.tool_matcher(k).to_string(),
+                    };
+                    println!(
+                        "  user      {:<20} {matcher:<32} {}",
+                        h.event,
+                        h.command.display()
+                    );
+                }
+                for (h, _) in skipped {
+                    println!("  user      {:<20} skipped — no such event on {agent_id}", h.event);
+                }
+                println!();
+            }
+            println!("user hooks: {}", path.display());
+            Ok(())
+        }
+    }
 }
 
 pub fn whoami() -> Result<()> {
@@ -1075,22 +1312,6 @@ pub fn whoami() -> Result<()> {
     Ok(())
 }
 
-pub fn who(name: Option<String>) -> Result<()> {
-    // current_or_named is the established resolution for "this workspace or the
-    // named one": it honours $WS_WORKSPACE, which matters because -who is most
-    // often run from inside an agent session. Every command in this phase that
-    // takes an optional workspace name uses it — do not hand-roll a second path.
-    let (_name, root) = current_or_named(name)?;
-    let ranked = crate::actors::who(&root.join(".ws"))?;
-    if ranked.is_empty() {
-        println!("no commits to .ws/ yet");
-        return Ok(());
-    }
-    for (actor, n) in ranked {
-        println!("{actor}  {n}");
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
@@ -1227,71 +1448,60 @@ pub fn search(query: String, include_archived: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn msg(cmd: crate::cli::MsgCmd) -> Result<()> {
-    use crate::cli::MsgCmd;
-    let cfg = config::load();
+/// Capture a task without interrupting whatever the agent is doing.
+///
+/// This is the `/btw` shape: the point is to record something and get straight
+/// back to work, so `add` never switches focus, never launches anything, and
+/// defaults to the workspace you are already in.
+pub fn task(cmd: crate::cli::TaskCmd) -> Result<()> {
+    use crate::cli::TaskCmd;
     match cmd {
-        MsgCmd::Send { to, body } => {
-            let target = crate::workspace::resolve(&to, &cfg);
-            if !target.exists() {
-                anyhow::bail!("no workspace named {to}");
-            }
-            let from = crate::actors::actor_slug_in(&std::env::current_dir()?);
-            let id = crate::mail::send(&target.mail_dir(), &from, &body)?;
-            crate::timeline::record(
-                &target.timeline(),
-                "mail",
-                &from,
-                serde_json::json!({ "id": id }),
-            )?;
-            println!("sent to {to}");
-            Ok(())
-        }
-        MsgCmd::Log { name } => {
-            // Same resolution as every other optional-name command (Task 1).
-            let (_n, root) = current_or_named(name)?;
-            let msgs = crate::mail::all(&root.join(".ws/mail"))?;
-            if msgs.is_empty() {
-                println!("no mail");
-                return Ok(());
-            }
-            for m in msgs {
-                println!("{}  {}  {}", m.ts, m.from, m.body);
-            }
-            Ok(())
-        }
-    }
-}
-
-pub fn queue(cmd: crate::cli::QueueCmd) -> Result<()> {
-    use crate::cli::QueueCmd;
-    let cfg = config::load();
-    match cmd {
-        QueueCmd::Add { name, text } => {
-            let ws = crate::workspace::resolve(&name, &cfg);
-            if !ws.exists() {
-                anyhow::bail!("no workspace named {name}");
-            }
+        TaskCmd::Add { name, text } => {
+            let ws = resolve_named(name)?;
+            // Adding is a mutating entry point; list/rm below resolve the same
+            // way but only read, so they must not refuse on a newer contract.
+            contract::check_gate(&ws.name, &ws.workspace_toml())?;
             let actor = crate::actors::actor_slug_in(&ws.root);
-            crate::queue::add(&ws.queue_tasks(), &text, &actor)?;
-            let n = crate::queue::pending(&ws.queue_tasks())?.len();
-            println!("queued for {name} ({n} pending) — run `ws -queue drain {name}` to start");
+            let tasks_path = ws.queue_tasks();
+            crate::queue::add(&tasks_path, &text, &actor)?;
+            let pending = crate::queue::pending(&tasks_path)?.len();
+            println!("noted for {} ({pending} open) — see `ws -task list`", ws.name);
             Ok(())
         }
-        QueueCmd::List { name } => {
-            // current_or_named: honours $WS_WORKSPACE, same as Task 1's -who.
-            let (_n, root) = current_or_named(name)?;
-            let tasks = crate::queue::tasks(&root.join(".ws/queue/tasks.jsonl"))?;
+        TaskCmd::List { name } => {
+            let ws = resolve_named(name)?;
+            let tasks = crate::queue::tasks(&ws.queue_tasks())?;
             if tasks.is_empty() {
-                println!("queue is empty");
+                println!("no tasks");
                 return Ok(());
             }
-            for t in tasks {
-                let note = t.note.map(|n| format!("  ({n})")).unwrap_or_default();
-                println!("{:<8} {}{}", t.state.as_str(), t.text, note);
+            for (i, t) in tasks.iter().enumerate() {
+                let note = t.note.clone().map(|n| format!("  ({n})")).unwrap_or_default();
+                println!("{:>3}  {:<8} {}{}", i + 1, t.state.as_str(), t.text, note);
             }
             Ok(())
         }
-        QueueCmd::Drain { name, reset } => crate::drain::run(name, reset),
+        TaskCmd::Rm { name, index } => {
+            let ws = resolve_named(name)?;
+            contract::check_gate(&ws.name, &ws.workspace_toml())?;
+            let tasks_path = ws.queue_tasks();
+            let tasks = crate::queue::tasks(&tasks_path)?;
+            // 1-based, matching what `-task list` prints. An index the user
+            // cannot see in the listing is a mistake worth refusing rather than
+            // silently dropping the wrong task.
+            let t = index
+                .checked_sub(1)
+                .and_then(|i| tasks.get(i))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no task {index} in {} ({} task(s) — see `ws -task list`)",
+                        ws.name,
+                        tasks.len()
+                    )
+                })?;
+            crate::queue::remove(&tasks_path, &t.id)?;
+            println!("dropped task {index} in {}", ws.name);
+            Ok(())
+        }
     }
 }

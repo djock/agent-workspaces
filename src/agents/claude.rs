@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::process::Command;
 
 use crate::agents::{Agent, LaunchCtx};
@@ -6,12 +5,6 @@ use crate::contract;
 use crate::workspace::Workspace;
 
 pub struct ClaudeAgent;
-
-/// `state.toml` key for a drain's own chained session, kept separate from
-/// the interactive `claude` key that `launch`/`has_prior_session` use. A
-/// headless drain must never `--resume` a session the user started by hand —
-/// it mints and resumes its own lineage under this key instead.
-const DRAIN_SESSION_KEY: &str = "claude-drain";
 
 impl Agent for ClaudeAgent {
     fn id(&self) -> &'static str {
@@ -34,10 +27,6 @@ impl Agent for ClaudeAgent {
         "CLAUDE.local.md"
     }
 
-    fn has_prior_session(&self, ws: &Workspace) -> bool {
-        contract::read_session_id(&ws.state_toml(), self.id()).is_some()
-    }
-
     fn hooks_config_path(&self) -> std::path::PathBuf {
         crate::hooksetup::claude_settings_path()
     }
@@ -46,8 +35,31 @@ impl Agent for ClaudeAgent {
         use crate::hooksetup::ToolKind;
         match kind {
             ToolKind::Shell => "Bash",
-            ToolKind::FileWrite => "Write|Edit",
+            // Every Claude tool that puts content on disk, not just the two
+            // obvious ones: `MultiEdit` and `NotebookEdit` write files exactly
+            // as `Write` does, and secret redaction never saw either of them.
+            ToolKind::FileWrite => "Write|Edit|MultiEdit|NotebookEdit",
         }
+    }
+
+    /// Claude's event set, as of Claude Code 2.x. `PostToolUseFailure` is the
+    /// one Codex lacks, which is why this is asked per agent at all.
+    fn supports_event(&self, event: &str) -> bool {
+        matches!(
+            event,
+            "SessionStart"
+                | "SessionEnd"
+                | "UserPromptSubmit"
+                | "PreToolUse"
+                | "PostToolUse"
+                | "PostToolUseFailure"
+                | "Stop"
+                | "SubagentStart"
+                | "SubagentStop"
+                | "PermissionRequest"
+                | "PreCompact"
+                | "PostCompact"
+        )
     }
 
     fn prompts_dir(&self) -> std::path::PathBuf {
@@ -60,76 +72,57 @@ impl Agent for ClaudeAgent {
 
     fn launch(&self, ws: &Workspace, ctx: &LaunchCtx) -> anyhow::Result<Command> {
         let mut cmd = Command::new(self.binary());
-        if ctx.fresh || !self.has_prior_session(ws) {
-            // Read the outgoing id *before* overwriting it: once written, the
-            // link between the old conversation and the new one is unrecoverable,
-            // and that link is the whole of `ws -conversations`. Recording it here
-            // rather than inside `write_session_id` keeps `contract` unaware of
-            // the timeline, and this is the only place a Claude id is minted for
-            // an interactive session.
-            let prior = contract::read_session_id(&ws.state_toml(), self.id());
-            let id = uuid::Uuid::new_v4().to_string();
-            contract::write_session_id(&ws.state_toml(), self.id(), &id)?;
-            crate::conversations::record_rotation(
-                ws,
-                self.id(),
-                prior.as_deref(),
-                &id,
-                if prior.is_some() { "fresh" } else { "first" },
-            );
-            cmd.arg("--session-id").arg(&id);
-        } else {
-            let id = contract::read_session_id(&ws.state_toml(), self.id()).unwrap();
-            cmd.arg("--resume").arg(&id);
+        // Read the id once and branch on that single value. The previous
+        // version asked `has_prior_session` (a read) whether to resume, then
+        // re-read the same file to get the id to `--resume` with — two reads
+        // of the same file racing a concurrent writer. `read_session_id` maps
+        // every failure (missing, unreadable, corrupt) to `None`, so a writer
+        // that landed between the two reads could flip the second one to
+        // `None` after the first said `Some`, and the `.unwrap()` that used
+        // to sit here panicked mid-launch. One read now feeds both branches,
+        // so there is no window left for the two to disagree.
+        let prior = contract::read_session_id(&ws.state_toml(), self.id());
+        match (ctx.fresh, prior) {
+            (false, Some(id)) => {
+                cmd.arg("--resume").arg(&id);
+            }
+            (_, _prior) => {
+                // Read the outgoing id *before* overwriting it: once written, the
+                // link between the old conversation and the new one is unrecoverable,
+                // and that link is the whole of `ws -conversations`. Recording it here
+                // rather than inside `write_session_id` keeps `contract` unaware of
+                // the timeline, and this is the only place a Claude id is minted for
+                // an interactive session.
+                let id = uuid::Uuid::new_v4().to_string();
+                // The id is recorded here so `--resume` can find it; the
+                // *lineage* is recorded by the SessionStart hook, which is the
+                // only place both agents' ids are observable from one code path.
+                if let Err(e) = contract::write_session_id(&ws.state_toml(), self.id(), &id) {
+                    // `write_session_id` refuses to overwrite a state.toml it
+                    // could not parse, and that protection must not become a
+                    // launch failure: the id above still starts Claude, it just
+                    // cannot be resumed later. Warn and degrade.
+                    eprintln!(
+                        "ws: warning: could not record the new claude session in {} — \
+                         continuing with a fresh session that a later launch will not be \
+                         able to resume until that file is repaired or removed: {e:#}",
+                        ws.state_toml().display()
+                    );
+                }
+                cmd.arg("--session-id").arg(&id);
+            }
         }
         cmd.current_dir(&ws.root)
             .env("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", ws.memory_dir())
             .env("WS_WORKSPACE", &ws.name)
             .env("WS_DIR", &ws.root)
-            .env("WS_ROOT", &ctx.sessions_root);
+            .env("WS_ROOT", &ctx.sessions_root)
+            // The SessionStart hook records the session id under this agent, and
+            // has no other way to know which agent it is running inside.
+            .env("WS_AGENT", self.id());
         Ok(cmd)
     }
 
-    fn headless(
-        &self,
-        ws: &Workspace,
-        prompt: &str,
-        ctx: &LaunchCtx,
-        _out_file: &Path,
-    ) -> anyhow::Result<Command> {
-        let mut cmd = Command::new(self.binary());
-        cmd.arg("-p").arg(prompt).arg("--output-format").arg("json");
-        // Chain onto the prior session so a multi-task drain keeps its
-        // context — but the drain's OWN session, never the interactive one.
-        // The first task of a drain mints a fresh id and records it under
-        // DRAIN_SESSION_KEY; later tasks resume that id. If no drain session
-        // has been minted yet (defensive: `run` always sets `fresh: true` on
-        // task 1), fall back to a fresh run rather than resuming nothing.
-        if ctx.fresh {
-            let id = uuid::Uuid::new_v4().to_string();
-            contract::write_session_id(&ws.state_toml(), DRAIN_SESSION_KEY, &id)?;
-            cmd.arg("--session-id").arg(&id);
-        } else if let Some(id) = contract::read_session_id(&ws.state_toml(), DRAIN_SESSION_KEY) {
-            cmd.arg("--resume").arg(id);
-        }
-        cmd.current_dir(&ws.root)
-            .env("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", ws.memory_dir())
-            .env("WS_WORKSPACE", &ws.name)
-            .env("WS_DIR", &ws.root)
-            .env("WS_ROOT", &ctx.sessions_root);
-        Ok(cmd)
-    }
-
-    fn headless_succeeded(&self, out: &std::process::Output, _out_file: &Path) -> bool {
-        if !out.status.success() {
-            return false;
-        }
-        let text = String::from_utf8_lossy(&out.stdout);
-        match serde_json::from_str::<serde_json::Value>(text.trim()) {
-            Ok(v) => v["is_error"].as_bool() == Some(false),
-            Err(_) => false,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -144,9 +137,11 @@ mod tests {
         std::fs::create_dir_all(dir.join(".ws/local")).unwrap();
         Workspace { name: "proj".into(), root: dir.to_path_buf() }
     }
+    /// The args a launch command would run with, for asserting resume-vs-fresh.
     fn args_of(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect()
     }
+
     fn env_of(cmd: &std::process::Command, key: &str) -> Option<String> {
         cmd.get_envs().find(|(k, _)| *k == OsStr::new(key)).and_then(|(_, v)| v)
             .map(|v| v.to_string_lossy().to_string())
@@ -174,6 +169,61 @@ mod tests {
         assert_eq!(args_of(&cmd), vec!["--resume", "uuid-xyz"]);
     }
 
+    /// Launch-path panic. The old `launch` asked `has_prior_session` (a read)
+    /// whether to resume, then re-read the same file in the `else`-branch to
+    /// get the id — two reads of one file, and `read_session_id` maps every
+    /// failure (missing, unreadable, corrupt) to `None`. The panic itself
+    /// needed a concurrent writer to land between those two reads (a file
+    /// corrupt from the start never reaches the second read at all: the
+    /// first read already says `None`, so the `if` branch — fresh — is
+    /// taken). What this test pins is the half that no longer depends on
+    /// timing: with the double read collapsed into one, a `state.toml` that
+    /// is corrupt from the start deterministically degrades to a fresh
+    /// launch, never a panic, regardless of which of the two old reads it
+    /// would have hit.
+    #[test]
+    fn corrupt_state_toml_falls_back_to_fresh_without_panicking() {
+        let d = TempDir::new().unwrap();
+        let ws = ws_at(d.path());
+        std::fs::write(ws.state_toml(), "not toml {{{").unwrap();
+        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into() };
+        let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
+        let a = args_of(&cmd);
+        assert_eq!(a[0], "--session-id", "a corrupt state.toml must fall back to fresh, not resume or panic: {a:?}");
+    }
+
+    /// Same failure mode, but the file is missing outright rather than
+    /// corrupt: `read_session_id` also maps a missing file to `None`, so
+    /// `ctx.fresh: false` with nothing on disk must still launch fresh.
+    #[test]
+    fn absent_state_toml_with_fresh_false_still_launches_fresh() {
+        let d = TempDir::new().unwrap();
+        let ws = ws_at(d.path());
+        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into() };
+        let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
+        let a = args_of(&cmd);
+        assert_eq!(a[0], "--session-id", "no state.toml at all must fall back to fresh, not panic: {a:?}");
+    }
+
+    /// And unreadable: permission-denied rather than corrupt or absent.
+    /// `std::fs::read_to_string` fails the same way, so this exercises the
+    /// same `None` path through a different OS error.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_state_toml_falls_back_to_fresh_without_panicking() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = TempDir::new().unwrap();
+        let ws = ws_at(d.path());
+        std::fs::write(ws.state_toml(), "[claude]\nsession_id = \"abc\"\n").unwrap();
+        std::fs::set_permissions(ws.state_toml(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into() };
+        let result = ClaudeAgent.launch(&ws, &ctx);
+        // Restore permissions unconditionally so TempDir cleanup can remove the file.
+        std::fs::set_permissions(ws.state_toml(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let a = args_of(&result.unwrap());
+        assert_eq!(a[0], "--session-id", "an unreadable state.toml must fall back to fresh, not panic: {a:?}");
+    }
+
     #[test]
     fn sets_memory_redirect_and_ws_env() {
         let d = TempDir::new().unwrap();
@@ -194,99 +244,7 @@ mod tests {
         assert_eq!(b, "/fake/claude");
     }
 
-    #[test]
-    fn headless_asks_for_json_and_never_escalates_permissions() {
-        let td = TempDir::new().unwrap();
-        let ws = ws_at(td.path());
-        let ctx = LaunchCtx { fresh: true, sessions_root: td.path().to_path_buf() };
-        let out_file = td.path().join("out.txt");
-        let cmd = ClaudeAgent.headless(&ws, "do the thing", &ctx, &out_file).unwrap();
-        let a = args_of(&cmd);
 
-        assert!(a.contains(&"-p".to_string()), "headless mode: {a:?}");
-        assert!(a.contains(&"do the thing".to_string()), "prompt is passed: {a:?}");
-        assert!(a.windows(2).any(|w| w[0] == "--output-format" && w[1] == "json"),
-                "JSON result so failure is detectable: {a:?}");
 
-        // The drain runs with nobody watching. Escalation flags must never
-        // appear, and this assertion is the thing standing between an
-        // unattended agent and the user's filesystem.
-        for forbidden in ["--dangerously-skip-permissions", "--permission-mode",
-                          "--allow-dangerously-skip-permissions"] {
-            assert!(!a.iter().any(|x| x == forbidden), "{forbidden} must never be passed: {a:?}");
-        }
-        assert_eq!(env_of(&cmd, "WS_WORKSPACE").as_deref(), Some("proj"));
-    }
 
-    /// I1. The old version of this test wrote the session id by hand with
-    /// `contract::write_session_id`, which only proved the `--resume` flag is
-    /// emitted when *something* has already populated the file — not that
-    /// `headless` itself ever populates it. Here nothing hand-writes the id:
-    /// task 1 (`fresh: true`) must mint and persist its own session id, and
-    /// task 2 (`fresh: false`) must resume exactly that id.
-    #[test]
-    fn headless_task_two_resumes_the_session_task_one_actually_created() {
-        let td = TempDir::new().unwrap();
-        let ws = ws_at(td.path());
-        let out_file = td.path().join("out.txt");
-
-        let fresh_ctx = LaunchCtx { fresh: true, sessions_root: td.path().to_path_buf() };
-        let first = args_of(&ClaudeAgent.headless(&ws, "one", &fresh_ctx, &out_file).unwrap());
-        let i = first.iter().position(|a| a == "--session-id").expect("task 1 passes --session-id: {first:?}");
-        let minted_id = first[i + 1].clone();
-
-        let resume_ctx = LaunchCtx { fresh: false, sessions_root: td.path().to_path_buf() };
-        let second = args_of(&ClaudeAgent.headless(&ws, "two", &resume_ctx, &out_file).unwrap());
-        assert!(
-            second.windows(2).any(|w| w[0] == "--resume" && w[1] == minted_id),
-            "task 2 must resume task 1's own drain session {minted_id:?}: {second:?}"
-        );
-
-        // The interactive `claude` key (what `launch` reads/writes) must stay
-        // untouched — a drain must never look like it created or continued
-        // the user's own interactive session.
-        assert_eq!(
-            crate::contract::read_session_id(&ws.state_toml(), "claude"),
-            None,
-            "a drain must not touch the interactive session key"
-        );
-    }
-
-    /// I1. A drain must never silently resume a session an *interactive*
-    /// `launch` created — that would mean an unattended agent appending
-    /// turns to a human's own conversation transcript.
-    #[test]
-    fn headless_never_resumes_a_session_an_interactive_launch_created() {
-        let td = TempDir::new().unwrap();
-        let ws = ws_at(td.path());
-        let out_file = td.path().join("out.txt");
-        crate::contract::write_session_id(&ws.state_toml(), "claude", "the-users-own-session").unwrap();
-
-        let ctx = LaunchCtx { fresh: false, sessions_root: td.path().to_path_buf() };
-        let a = args_of(&ClaudeAgent.headless(&ws, "next", &ctx, &out_file).unwrap());
-        assert!(
-            !a.iter().any(|x| x == "the-users-own-session"),
-            "a drain must never resume a session it did not itself create: {a:?}"
-        );
-        assert!(!a.contains(&"--resume".to_string()), "no drain session exists yet: {a:?}");
-    }
-
-    #[test]
-    fn success_requires_both_a_clean_exit_and_is_error_false() {
-        use std::os::unix::process::ExitStatusExt;
-        let ok = |code: i32, stdout: &str| std::process::Output {
-            status: std::process::ExitStatus::from_raw(code << 8),
-            stdout: stdout.as_bytes().to_vec(),
-            stderr: Vec::new(),
-        };
-        let out_file = Path::new("/nonexistent/does-not-matter-for-claude");
-        assert!(ClaudeAgent.headless_succeeded(&ok(0, r#"{"is_error":false,"subtype":"success"}"#), out_file));
-        assert!(!ClaudeAgent.headless_succeeded(&ok(1, r#"{"is_error":false,"subtype":"success"}"#), out_file),
-                "non-zero exit is a failure whatever the body says");
-        assert!(!ClaudeAgent.headless_succeeded(&ok(0, r#"{"is_error":true,"subtype":"error"}"#), out_file),
-                "is_error true is a failure");
-        assert!(!ClaudeAgent.headless_succeeded(&ok(0, "not json at all"), out_file),
-                "output we cannot read is a failure, never an assumed success");
-        assert!(!ClaudeAgent.headless_succeeded(&ok(0, ""), out_file), "empty output is a failure");
-    }
 }

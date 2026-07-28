@@ -155,10 +155,21 @@ fn set_locked(path: &std::path::Path, key: &str, value: &str) -> Result<()> {
         }
     };
     match key {
-        "default_agent" => cfg.default_agent = value.to_string(),
+        // Validated, not stored blindly. An unknown agent used to be accepted
+        // here and only surfaced much later, as `agents::for_id` bailing during a
+        // launch — long after the user believed the setting had taken.
+        "default_agent" => {
+            crate::agents::for_id(value)?;
+            cfg.default_agent = value.to_string();
+        }
         "limit_warn_5h" => cfg.limit_warn_5h = value.parse()?,
         "limit_warn_week" => cfg.limit_warn_week = value.parse()?,
-        "theme" => cfg.theme = value.to_string(),
+        "theme" => {
+            if !matches!(value, "auto" | "light" | "dark") {
+                bail!("theme must be auto, light, or dark");
+            }
+            cfg.theme = value.to_string();
+        }
         "statusline" => cfg.statusline = parse_bool(value)?,
         // C3: `sessions_root` is the base of `remove_one`'s "is this a
         // workspace ws created?" test. `remove_one` no longer trusts it, but
@@ -175,7 +186,16 @@ fn set_locked(path: &std::path::Path, key: &str, value: &str) -> Result<()> {
             }
             cfg.sessions_root = v.to_string();
         }
-        "limit_action" => cfg.limit_action = value.to_string(),
+        // Only `"warn"` was ever honoured (`internal::limit_check`); every other
+        // value behaved as `handoff-stop` while `config set` reported success.
+        // This module's own docs call a key that silently does nothing worse than
+        // a missing one — the same is true of a *value*.
+        "limit_action" => {
+            if !matches!(value, "warn" | "handoff-stop") {
+                bail!("limit_action must be warn or handoff-stop");
+            }
+            cfg.limit_action = value.to_string();
+        }
         "secrets_backend" => {
             if !matches!(value, "auto" | "keyring" | "file") {
                 bail!("secrets_backend must be auto, keyring, or file");

@@ -22,15 +22,25 @@ fn render(workspace_name: &str, handoff_hint: Option<&Path>) -> String {
     }
 }
 
-/// Render the embedded template into `path`, inside <!-- ws:begin -->/<!-- ws:end -->.
-/// Preserves any user content outside the managed block; replaces the block if present.
-pub fn regenerate(path: &Path, workspace_name: &str) -> Result<()> {
-    regenerate_with_handoff(path, workspace_name, None)
-}
-
 /// Like `regenerate`, but when `handoff_hint` is `Some`, prepends a
 /// "START HERE" line pointing at the given handoff file inside the managed block.
+/// Rewrite the managed block in the agent's context file, leaving everything
+/// around it alone.
+///
+/// Transacted: the splice is a read-modify-write, and everything outside the
+/// managed block is the user's own prose. Two launches racing here would each
+/// read the same file and write back only their own version, dropping whatever
+/// the other had spliced — and the atomic write, which only makes each write
+/// all-or-nothing, cannot prevent that.
 pub fn regenerate_with_handoff(
+    path: &Path,
+    workspace_name: &str,
+    handoff_hint: Option<&Path>,
+) -> Result<()> {
+    crate::txn::transaction(path, || regenerate_locked(path, workspace_name, handoff_hint))
+}
+
+fn regenerate_locked(
     path: &Path,
     workspace_name: &str,
     handoff_hint: Option<&Path>,
@@ -80,7 +90,7 @@ mod tests {
     fn creates_file_with_managed_block() {
         let d = TempDir::new().unwrap();
         let f = d.path().join("CLAUDE.local.md");
-        regenerate(&f, "proj").unwrap();
+        regenerate_with_handoff(&f, "proj", None).unwrap();
         let s = std::fs::read_to_string(&f).unwrap();
         assert!(s.contains(BEGIN));
         assert!(s.contains(END));
@@ -96,7 +106,7 @@ mod tests {
             format!("# my notes\nkeep me\n{BEGIN}\nOLD MANAGED\n{END}\ntrailing user text\n"),
         )
         .unwrap();
-        regenerate(&f, "proj").unwrap();
+        regenerate_with_handoff(&f, "proj", None).unwrap();
         let s = std::fs::read_to_string(&f).unwrap();
         assert!(s.contains("keep me"));
         assert!(s.contains("trailing user text"));
@@ -129,7 +139,7 @@ mod tests {
         // mapped to "no existing content" and the file was overwritten with
         // a fresh managed block, silently destroying the original — which
         // for an in-place-migrated workspace is a live project's context file.
-        let result = regenerate(&f, "proj");
+        let result = regenerate_with_handoff(&f, "proj", None);
 
         let mut perms = std::fs::metadata(&f).unwrap().permissions();
         perms.set_mode(0o644);
@@ -162,7 +172,7 @@ mod tests {
         std::fs::write(&f, format!("{prose}{BEGIN}\nOLD\n{END}\n")).unwrap();
         let before = std::fs::metadata(&f).unwrap().ino();
 
-        regenerate(&f, "proj").unwrap();
+        regenerate_with_handoff(&f, "proj", None).unwrap();
 
         let after = std::fs::metadata(&f).unwrap().ino();
         assert_ne!(

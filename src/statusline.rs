@@ -73,19 +73,12 @@ fn git_branch(cwd: &str) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
-    let out = std::process::Command::new("git")
-        .args(["-C", cwd, "--no-optional-locks", "branch", "--show-current"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let b = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if b.is_empty() {
-        None
-    } else {
-        Some(b)
-    }
+    // `--no-optional-locks` because this runs once a second from the status line
+    // and must never contend with the user's own git commands.
+    crate::git::maybe(
+        std::path::Path::new(cwd),
+        &["--no-optional-locks", "branch", "--show-current"],
+    )
 }
 
 pub fn render(input: &StatuslineInput, no_color: bool) -> String {
@@ -135,75 +128,6 @@ fn colorize(seg: String, pct: i64, warn_at: i64, no_color: bool) -> String {
     format!("\x1b[{code}m{seg}\x1b[0m")
 }
 
-#[derive(Debug, Default, Deserialize)]
-pub struct SubagentInput {
-    #[serde(default)]
-    pub tasks: Vec<Task>,
-}
-#[derive(Debug, Default, Deserialize)]
-#[allow(non_snake_case)]
-pub struct Task {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default, rename = "type")]
-    pub type_: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub tokenCount: i64,
-    #[serde(default)]
-    pub contextWindowSize: i64,
-    #[serde(default)]
-    pub start: i64,
-}
-
-fn elapsed(start_ms: i64, now_ms: i64) -> String {
-    if start_ms <= 0 || now_ms <= start_ms {
-        return "0m0s".to_string();
-    }
-    let secs = (now_ms - start_ms) / 1000;
-    format!("{}m{}s", secs / 60, secs % 60)
-}
-
-pub fn subagent_row(t: &Task, now_ms: i64) -> String {
-    let name = if !t.name.is_empty() { &t.name } else { &t.type_ };
-    // An unreported context window rendered as "ctx 0%", which is
-    // indistinguishable from a subagent that genuinely has an empty context —
-    // the same silent-wrong-answer shape as `-limits` printing a stale reading in
-    // the format of a live one. "ctx ?" says "not reported" instead of asserting
-    // a number that happens to look reassuring.
-    let ctx = if t.contextWindowSize > 0 {
-        format!("{}%", (t.tokenCount.saturating_mul(100) / t.contextWindowSize).clamp(0, 100))
-    } else {
-        "?".to_string()
-    };
-    format!(
-        "\u{21b7} {}  {} \u{b7} {} \u{b7} ctx {} \u{b7} {}",
-        t.model,
-        name,
-        t.description,
-        ctx,
-        elapsed(t.start, now_ms)
-    )
-}
-
-pub fn run_subagent() {
-    let raw = std::io::read_to_string(std::io::stdin()).unwrap_or_default();
-    let input: SubagentInput = serde_json::from_str(&raw).unwrap_or_default();
-    let now_ms = std::env::var("WS_SUBAGENT_NOW_MS")
-        .ok()
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or_else(|| limits::now_epoch() * 1000);
-    for t in &input.tasks {
-        let row = serde_json::json!({ "id": t.id, "content": subagent_row(t, now_ms) });
-        let _ = writeln!(std::io::stdout(), "{row}");
-    }
-}
-
 pub fn run() {
     let raw = std::io::read_to_string(std::io::stdin()).unwrap_or_default();
     let input: StatuslineInput = serde_json::from_str(&raw).unwrap_or_default();
@@ -223,50 +147,84 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    fn task(model: &str, tokens: i64, window: i64) -> Task {
-        Task {
-            id: "t1".into(),
-            model: model.into(),
-            name: "explore".into(),
-            type_: "Task".into(),
-            description: "read the auth flow".into(),
-            tokenCount: tokens,
-            contextWindowSize: window,
-            start: 1_000_000,
+    fn input(model: &str, ctx: f64, five: f64, week: f64) -> StatuslineInput {
+        StatuslineInput {
+            model: ModelInfo { display_name: model.into() },
+            effort: EffortInfo::default(),
+            context_window: CtxInfo { used_percentage: ctx },
+            rate_limits: RateLimits {
+                five_hour: LimitWindow { used_percentage: five, resets_at: 0 },
+                seven_day: LimitWindow { used_percentage: week, resets_at: 0 },
+            },
+            workspace: WorkspaceInfo::default(),
+            cwd: String::new(),
         }
     }
 
-    /// The row answers "which model, how much context" per subagent, so both must
-    /// be present and the percentage must be right.
     #[test]
-    fn a_subagent_row_names_the_model_and_its_context_share() {
-        let row = subagent_row(&task("sonnet-4-5", 40_000, 200_000), 1_000_000 + 95_000);
-        assert!(row.contains("sonnet-4-5"), "{row}");
-        assert!(row.contains("explore"), "{row}");
-        assert!(row.contains("read the auth flow"), "{row}");
-        assert!(row.contains("ctx 20%"), "40k of 200k is 20%: {row}");
-        assert!(row.contains("1m35s"), "elapsed since start: {row}");
+    fn renders_the_segments_it_was_given() {
+        let s = render(&input("Sonnet 5", 41.4, 12.0, 45.0), true);
+        assert!(s.contains("Sonnet 5"), "{s}");
+        assert!(s.contains("ctx 41%"), "rounded, not truncated: {s}");
+        assert!(s.contains("5h 12%"), "{s}");
+        assert!(s.contains("wk 45%"), "{s}");
     }
 
-    /// An unreported context window used to render as `ctx 0%`, which reads as
-    /// "this subagent has used almost nothing" when the truth is "nobody said".
-    /// Same silent-wrong-answer shape as `-limits` printing a stale reading as
-    /// current. Discriminating: asserts the *absence* of a fabricated 0%.
     #[test]
-    fn an_unreported_context_window_is_a_question_mark_not_zero_percent() {
-        let row = subagent_row(&task("haiku", 1234, 0), 1_000_000);
-        assert!(row.contains("ctx ?"), "must say it does not know: {row}");
-        assert!(!row.contains("ctx 0%"), "must not fabricate a reassuring 0%: {row}");
+    fn the_effort_level_is_shown_only_when_present() {
+        let mut i = input("Sonnet 5", 0.0, 0.0, 0.0);
+        let model_seg = |s: &str| s.split(" \u{b7} ").next().unwrap().to_string();
+        assert_eq!(model_seg(&render(&i, true)), "Sonnet 5", "no effort, no parens");
+        i.effort = EffortInfo { level: "xhigh".into() };
+        assert_eq!(model_seg(&render(&i, true)), "Sonnet 5 (xhigh)");
     }
 
-    /// A subagent past its window must not report over 100%, and the name falls
-    /// back to the task type when no name was given.
     #[test]
-    fn context_is_clamped_and_the_name_falls_back_to_the_type() {
-        let mut t = task("opus", 500_000, 200_000);
-        t.name = String::new();
-        let row = subagent_row(&t, 1_000_000);
-        assert!(row.contains("ctx 100%"), "clamped, not 250%: {row}");
-        assert!(row.contains("Task"), "falls back to type when unnamed: {row}");
+    fn an_empty_payload_still_renders_something() {
+        // The status line runs on every prompt; a malformed payload must degrade,
+        // never blank the line or panic.
+        let s = render(&StatuslineInput::default(), true);
+        assert!(s.contains("ctx 0%"), "{s}");
+    }
+
+    #[test]
+    fn no_color_emits_no_escape_codes_even_past_the_threshold() {
+        let s = render(&input("m", 0.0, 99.0, 99.0), true);
+        assert!(!s.contains('\x1b'), "NO_COLOR must be absolute: {s:?}");
+    }
+
+    #[test]
+    fn limits_escalate_at_their_thresholds() {
+        assert_eq!(colorize("x".into(), 10, 85, false), "x", "quiet below the warning");
+        assert!(colorize("x".into(), 85, 85, false).contains("33m"), "yellow at the threshold");
+        assert!(colorize("x".into(), 95, 85, false).contains("31m"), "red at 95");
+        assert_eq!(colorize("x".into(), 99, 85, true), "x", "no_color wins");
+    }
+
+    /// The weekly window warns later than the 5-hour one, because a weekly figure
+    /// climbing through 85% is normal mid-week and not worth alarming about.
+    #[test]
+    fn the_weekly_window_has_a_higher_threshold_than_the_five_hour_one() {
+        let s = render(&input("m", 0.0, 88.0, 88.0), false);
+        let five = s.split(" \u{b7} ").find(|p| p.contains("5h")).unwrap();
+        let week = s.split(" \u{b7} ").find(|p| p.contains("wk")).unwrap();
+        assert!(five.contains("33m"), "5h warns at 85: {five:?}");
+        assert!(!week.contains('\x1b'), "wk stays quiet until 90: {week:?}");
+    }
+
+    #[test]
+    fn to_snapshot_carries_both_windows_and_names_the_agent() {
+        let snap = to_snapshot(&input("m", 0.0, 12.5, 45.5));
+        assert_eq!(snap.agent, "claude", "ws can only capture Claude's limits");
+        assert_eq!(snap.five_hour.used_pct, 12.5);
+        assert_eq!(snap.seven_day.used_pct, 45.5);
+        assert!(snap.stamped_at > 0, "a snapshot must be datable or it cannot go stale");
+    }
+
+    #[test]
+    fn git_branch_is_none_outside_a_repo() {
+        let d = tempfile::TempDir::new().unwrap();
+        assert_eq!(git_branch(d.path().to_str().unwrap()), None);
+        assert_eq!(git_branch(""), None, "an empty cwd must not shell out");
     }
 }

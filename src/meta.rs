@@ -10,7 +10,7 @@ use std::path::Path;
 pub struct Meta {
     pub name: String,
     pub created: String,
-    pub contract_version: u32,
+    pub contract_version: i64,
     pub default_agent: Option<String>,
     pub archived: bool,
     pub tags: Vec<String>,
@@ -22,19 +22,33 @@ fn table(ws_toml: &Path) -> Option<toml::Table> {
     toml::from_str(&std::fs::read_to_string(ws_toml).ok()?).ok()
 }
 
+/// The `tags` array out of a parsed table, or empty if absent/malformed.
+/// Shared by `from_table` (display) and `add_tags`/`remove_tags` (the RMW
+/// inside `update`'s locked closure) so both read the same shape the same way.
+fn tags_from_table(t: &toml::Table) -> Vec<String> {
+    t.get("tags")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
 fn from_table(t: &toml::Table) -> Meta {
     let s = |k: &str| t.get(k).and_then(|v| v.as_str()).map(String::from);
     Meta {
         name: s("name").unwrap_or_default(),
         created: s("created").unwrap_or_default(),
-        contract_version: t.get("contract_version").and_then(|v| v.as_integer()).unwrap_or(0) as u32,
+        // `as u32` truncated: `contract_version = 4294967297` wrapped to 1 and
+        // *passed* the gate it exists to trip, and `-1` wrapped to 4294967295 and
+        // reported "created by a newer ws (contract v4294967295)". Kept as i64 and
+        // compared as i64; a negative value is legacy, i.e. 0.
+        contract_version: t
+            .get("contract_version")
+            .and_then(|v| v.as_integer())
+            .unwrap_or(0)
+            .max(0),
         default_agent: s("default_agent"),
         archived: t.get("archived").and_then(|v| v.as_bool()).unwrap_or(false),
-        tags: t
-            .get("tags")
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-            .unwrap_or_default(),
+        tags: tags_from_table(t),
         status: s("status"),
         color: s("color"),
     }
@@ -97,26 +111,43 @@ fn write_tags(t: &mut toml::Table, tags: &[String]) {
 }
 
 /// Add tags (deduped, sorted). Returns the resulting full tag list.
+///
+/// The read of the existing tags happens *inside* `update`'s locked closure,
+/// not before it, so the whole read-modify-write is one transaction — this is
+/// the "moving the read inside the locked closure" the module doc above
+/// promises. Reading out here and only locking for the write (the pre-fix
+/// shape) is exactly the lost-update window `txn::transaction` exists to
+/// close: two concurrent `-tag add`s can both read the same starting list,
+/// and the second `update` call's write silently discards the first tag.
 pub fn add_tags(ws_toml: &Path, tags: &[String]) -> Result<Vec<String>> {
-    let mut all = read(ws_toml).tags;
-    for tag in tags {
-        if !all.iter().any(|t| t == tag) {
-            all.push(tag.clone());
+    let mut out = Vec::new();
+    update(ws_toml, |t| {
+        let mut all = tags_from_table(t);
+        for tag in tags {
+            if !all.iter().any(|x| x == tag) {
+                all.push(tag.clone());
+            }
         }
-    }
-    all.sort();
-    all.dedup();
-    let out = all.clone();
-    update(ws_toml, |t| write_tags(t, &all))?;
+        all.sort();
+        all.dedup();
+        write_tags(t, &all);
+        out = all;
+    })?;
     Ok(out)
 }
 
 /// Remove tags. Removing a tag that isn't there is not an error.
+///
+/// Same reasoning as `add_tags`: the read is inside the locked closure so a
+/// concurrent add/remove pair cannot lose one side's update.
 pub fn remove_tags(ws_toml: &Path, tags: &[String]) -> Result<Vec<String>> {
-    let mut all = read(ws_toml).tags;
-    all.retain(|t| !tags.iter().any(|r| r == t));
-    let out = all.clone();
-    update(ws_toml, |t| write_tags(t, &all))?;
+    let mut out = Vec::new();
+    update(ws_toml, |t| {
+        let mut all = tags_from_table(t);
+        all.retain(|x| !tags.iter().any(|r| r == x));
+        write_tags(t, &all);
+        out = all;
+    })?;
     Ok(out)
 }
 
@@ -230,6 +261,84 @@ mod tests {
         assert_eq!(after, vec!["cli".to_string(), "rust".to_string()]);
         let after = remove_tags(&p, &["cli".into(), "never-there".into()]).unwrap();
         assert_eq!(after, vec!["rust".to_string()]);
+    }
+
+    /// The discriminating test for this fix, modeled directly on
+    /// `txn.rs`'s `concurrent_read_modify_writes_do_not_lose_updates`. Each
+    /// thread adds its own distinct tag; with the read correctly inside
+    /// `update`'s locked closure every one of the N tags must survive. Run
+    /// against the pre-fix code (read outside `update`, only the write
+    /// locked) this loses updates: two threads can both read the same
+    /// starting tag list, and the second `update` call's write silently
+    /// discards the first thread's tag.
+    ///
+    /// Threads suffice despite being one process: `flock` (what `txn`
+    /// wraps) treats two file descriptors for the same file as independent
+    /// even within a process, so these genuinely contend — see txn.rs's
+    /// module docs.
+    #[test]
+    fn add_tags_does_not_lose_concurrent_updates() {
+        use std::sync::{Arc, Barrier};
+
+        let (_d, p) = wt("name = \"proj\"\ntags = []\n");
+
+        const N: usize = 12;
+        let barrier = Arc::new(Barrier::new(N));
+        let mut handles = Vec::with_capacity(N);
+        for i in 0..N {
+            let p = p.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                add_tags(&p, &[format!("tag{i}")]).unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let final_tags = read(&p).tags;
+        assert_eq!(
+            final_tags.len(),
+            N,
+            "every concurrent add_tags call must survive; {} were lost: {:?}",
+            N - final_tags.len(),
+            final_tags
+        );
+    }
+
+    /// Same discriminator, the remove side: each thread removes a distinct
+    /// tag out of a shared starting set, and every removal must stick.
+    #[test]
+    fn remove_tags_does_not_lose_concurrent_updates() {
+        use std::sync::{Arc, Barrier};
+
+        const N: usize = 12;
+        let seed: Vec<String> = (0..N).map(|i| format!("tag{i}")).collect();
+        let (_d, p) = wt(&format!(
+            "name = \"proj\"\ntags = [{}]\n",
+            seed.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ")
+        ));
+
+        let barrier = Arc::new(Barrier::new(N));
+        let mut handles = Vec::with_capacity(N);
+        for i in 0..N {
+            let p = p.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                remove_tags(&p, &[format!("tag{i}")]).unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let final_tags = read(&p).tags;
+        assert!(
+            final_tags.is_empty(),
+            "every concurrent remove_tags call must survive; still present: {final_tags:?}"
+        );
     }
 
     #[test]

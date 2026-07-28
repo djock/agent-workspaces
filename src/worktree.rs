@@ -1,6 +1,5 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spec {
@@ -25,38 +24,6 @@ pub fn parse_name(s: &str) -> Option<Spec> {
     Some(Spec { base: base.to_string(), feature: feature.to_string() })
 }
 
-fn git_raw(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
-    Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .with_context(|| format!("cannot run git {}", args.join(" ")))
-}
-
-/// Both of git's streams, in that order, blank ones dropped.
-///
-/// C1: `git merge` writes its conflict report ("Auto-merging f.txt",
-/// "CONFLICT (content): ...", "Automatic merge failed") to **stdout**, and
-/// only "fatal:"-class errors to stderr. Reporting stderr alone produced
-/// `ws: git merge … failed: ` — an empty reason — on the single path where the
-/// user most needs to be told what happened.
-fn combined(out: &std::process::Output) -> String {
-    [&out.stdout, &out.stderr]
-        .iter()
-        .map(|s| String::from_utf8_lossy(s).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn git_ok(dir: &Path, args: &[&str]) -> Result<String> {
-    let out = git_raw(dir, args)?;
-    if !out.status.success() {
-        bail!("git {} failed: {}", args.join(" "), combined(&out));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
-}
-
 /// Is a merge in progress in `dir`?
 ///
 /// Resolved via `rev-parse --git-path`, never by joining `.git/MERGE_HEAD`
@@ -64,7 +31,7 @@ fn git_ok(dir: &Path, args: &[&str]) -> Result<String> {
 /// pointer, and conflating the two produced a Critical in this project's
 /// Phase 6.
 fn mid_merge(dir: &Path) -> Result<bool> {
-    let raw = git_ok(dir, &["rev-parse", "--git-path", "MERGE_HEAD"])?;
+    let raw = crate::git::ok(dir, &["rev-parse", "--git-path", "MERGE_HEAD"])?;
     let path = PathBuf::from(raw.trim());
     let resolved = if path.is_absolute() { path } else { dir.join(path) };
     Ok(resolved.exists())
@@ -102,7 +69,7 @@ pub fn add_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
         bail!("{} already exists", path.display());
     }
     let path_s = path.to_string_lossy().to_string();
-    git_ok(base, &["worktree", "add", "-b", branch, &path_s])?;
+    crate::git::ok(base, &["worktree", "add", "-b", branch, &path_s])?;
     Ok(())
 }
 
@@ -110,7 +77,7 @@ pub fn add_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
 /// the worktree. Refuses if the worktree has uncommitted work: merging would
 /// leave the change stranded in a directory this function then deletes.
 pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
-    let porcelain = git_ok(path, &["status", "--porcelain"])?;
+    let porcelain = crate::git::ok(path, &["status", "--porcelain"])?;
     let dirty = user_dirt(&porcelain);
     if !dirty.is_empty() {
         bail!(
@@ -135,7 +102,7 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
     // conflict, `merge --abort` cannot promise to reconstruct arbitrary
     // pre-existing changes. Require a clean base, except for ws's exact
     // per-checkout bookkeeping paths.
-    let base_porcelain = git_ok(base, &["status", "--porcelain"])?;
+    let base_porcelain = crate::git::ok(base, &["status", "--porcelain"])?;
     let base_dirty = user_dirt(&base_porcelain);
     if !base_dirty.is_empty() {
         bail!(
@@ -147,9 +114,9 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
 
     // Not through `git_ok`: a failure here has already written into a
     // repository `ws` does not own, and must be undone before we bail.
-    let out = git_raw(base, &["merge", "--no-ff", "-m", &format!("merge {branch}"), branch])?;
+    let out = crate::git::raw(base, &["merge", "--no-ff", "-m", &format!("merge {branch}"), branch])?;
     if !out.status.success() {
-        let detail = combined(&out);
+        let detail = crate::git::combined(&out);
         // C1: on a conflict git leaves MERGE_HEAD set, conflict markers in the
         // user's source files and staged adds in the index. Put the base back
         // the way we found it. When the merge refused *before* touching the
@@ -158,7 +125,7 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
         // Always attempt the abort. A failed merge may have touched the index
         // before MERGE_HEAD becomes observable, and probing first creates a
         // second failure path that can skip the only cleanup operation.
-        let abort = git_raw(base, &["merge", "--abort"]);
+        let abort = crate::git::raw(base, &["merge", "--abort"]);
         let note = match abort {
             Ok(o) if o.status.success() => format!(
                 "\n{} was left untouched (the merge was aborted and rolled back).",
@@ -170,7 +137,7 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
                     "\n!! {} is STILL mid-merge — `git merge --abort` there before anything else{}",
                     base.display(),
                     match other {
-                        Ok(o) => format!(" (git merge --abort failed: {})", combined(&o)),
+                        Ok(o) => format!(" (git merge --abort failed: {})", crate::git::combined(&o)),
                         Err(e) => format!(" ({e})"),
                     }
                 ),
@@ -201,7 +168,7 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
     }
 
     let path_s = path.to_string_lossy().to_string();
-    git_ok(base, &["worktree", "remove", &path_s])?;
+    crate::git::ok(base, &["worktree", "remove", &path_s])?;
     Ok(())
 }
 
@@ -219,23 +186,97 @@ pub fn create(spec: &Spec) -> Result<PathBuf> {
         bail!("{name} already exists");
     }
 
+    // I1: validate BEFORE any git mutation, not after. `contract::init` and
+    // `registry::register` (called from `finish_create` below) both call
+    // `validate_name` too, but by the time either runs, `add_worktree` has
+    // already created a real branch and checkout in the *user's* repository —
+    // a mutation neither of those chokepoints can undo just by returning an
+    // error. `ws 'api@$(x)'` used to leave exactly that behind: a branch and
+    // worktree only `git` could see, with no registry entry naming either.
+    crate::workspace::validate_name(&spec.base)?;
+    crate::workspace::validate_name(&name)?;
+
+    // Same gate every other mutating entry point takes: a base written by a
+    // newer ws must be refused before this binary creates a branch in it.
+    crate::contract::check_gate(&spec.base, &base_path.join(".ws/workspace.toml"))?;
+
     let path = crate::config::sessions_root(&cfg).join(&name);
     add_worktree(&base_path, &path, &spec.feature)?;
 
+    // From here on `add_worktree` has already mutated `base_path`. Any error
+    // in the rest of setup must undo that mutation — best-effort — before
+    // this function returns, or a bootstrap failure (a corrupt registry, an
+    // unusual committed `.ws/` in the base, disk pressure, ...) leaves behind
+    // exactly the kind of orphan the validation above exists to prevent.
+    if let Err(e) = finish_create(spec, &name, &path, &cfg) {
+        rollback_created_worktree(&base_path, &path, &spec.feature, &name);
+        return Err(e);
+    }
+    Ok(path)
+}
+
+/// Everything `create` does after `add_worktree`. Split out so `create` can
+/// wrap the whole sequence in one rollback call instead of repeating cleanup
+/// at every `?`.
+fn finish_create(spec: &Spec, name: &str, path: &Path, cfg: &crate::config::Config) -> Result<()> {
     // Minimal .ws/ bootstrap. commit=false: the contract files land in the
     // worktree's working copy and the user commits them with their own work.
     let agent = cfg.default_agent.clone();
-    crate::contract::init(&name, &path, &agent, false)?;
+    crate::contract::init(name, path, &agent, false)?;
     crate::atomic::atomic_write(&path.join(".ws/base"), format!("{}\n", spec.base).as_bytes())?;
-    crate::registry::register(&name, &path)?;
-    let actor = crate::actors::actor_slug_in(&path);
+    crate::registry::register(name, path)?;
+    let actor = crate::actors::actor_slug_in(path);
     crate::timeline::record(
         &path.join(".ws/timeline.jsonl"),
         "worktree-created",
         &actor,
         serde_json::json!({ "base": spec.base, "branch": spec.feature }),
     )?;
-    Ok(path)
+    Ok(())
+}
+
+/// Best-effort rollback for a `create` abandoned after `add_worktree` already
+/// mutated `base`: removes the checkout and the branch it created, and
+/// unregisters `name` in case `registry::register` (inside `finish_create`)
+/// ran before a later step failed. Every step here is independent of the
+/// others — one failing must not skip the rest — and every failure is a
+/// warning on stderr, never a returned error: the ORIGINAL error from
+/// `create` is always what the caller sees; this function's whole job is to
+/// clean up after it, not to compete with it.
+fn rollback_created_worktree(base: &Path, path: &Path, branch: &str, name: &str) {
+    // `--force`: ws's own not-yet-committed bootstrap files (`create` passes
+    // commit=false to `contract::init`) would otherwise read as "uncommitted
+    // changes" and block a plain `remove`.
+    let path_s = path.to_string_lossy().to_string();
+    match crate::git::raw(base, &["worktree", "remove", "--force", &path_s]) {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => eprintln!(
+            "ws: warning: rollback could not remove worktree {}: {}",
+            path.display(),
+            crate::git::combined(&out)
+        ),
+        Err(e) => eprintln!(
+            "ws: warning: rollback could not run `git worktree remove` for {}: {e:#}",
+            path.display()
+        ),
+    }
+
+    match crate::git::raw(base, &["branch", "-D", branch]) {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => eprintln!(
+            "ws: warning: rollback could not delete branch {branch}: {}",
+            crate::git::combined(&out)
+        ),
+        Err(e) => eprintln!("ws: warning: rollback could not run `git branch -D {branch}`: {e:#}"),
+    }
+
+    // Unregister LAST: while the checkout above still exists, the registry
+    // entry is the only handle `ws -rm` has on it. Dropping the entry first
+    // would turn a failed `git worktree remove` into an orphan ws can no
+    // longer see.
+    if let Err(e) = crate::registry::unregister(name) {
+        eprintln!("ws: warning: rollback could not unregister {name}: {e:#}");
+    }
 }
 
 /// Merge the worktree back into its base and remove it.
@@ -246,10 +287,24 @@ pub fn merge(spec: &Spec) -> Result<()> {
     let base_path = crate::registry::lookup_checked(&spec.base)?
         .ok_or_else(|| anyhow::anyhow!("no workspace named {}", spec.base))?;
 
+    // Merge rewrites both sides; refuse if either was written by a newer ws.
+    crate::contract::check_gate(&name, &path.join(".ws/workspace.toml"))?;
+    crate::contract::check_gate(&spec.base, &base_path.join(".ws/workspace.toml"))?;
+
     // live_pid_checked: this deletes a directory. An unreadable lock must stop
     // us, not read as "nobody home". Takes the lock FILE, not the root.
     if let Some(pid) = crate::lock::live_pid_checked(&path.join(".ws/local/lock"))? {
         bail!("{name} is in use by pid {pid} — close it before merging");
+    }
+    // The BASE side needs checking too, and it did not used to be: a merge
+    // rewrites the base's working tree, so doing it under a live agent pulls
+    // files out from under whoever is editing them. Only the feature side was
+    // ever checked.
+    if let Some(pid) = crate::lock::live_pid_checked(&base_path.join(".ws/local/lock"))? {
+        bail!(
+            "{} is in use by pid {pid} — merging rewrites its working tree, so close it first",
+            spec.base
+        );
     }
 
     merge_worktree(&base_path, &path, &spec.feature)?;
@@ -261,6 +316,11 @@ pub fn merge(spec: &Spec) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // One module-level lock, not one per test fn: fn-local statics are
+    // distinct mutexes, so tests that mutate process-global env (WS_ROOT,
+    // XDG_CONFIG_HOME) would not serialize against each other.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn parses_base_at_feature() {
@@ -299,7 +359,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").args(args).current_dir(dir).output().unwrap();
+        let out = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).to_string()
     }
@@ -462,7 +522,7 @@ mod tests {
         std::fs::write(base.join("feature.txt"), "base\n").unwrap();
         git(&base, &["add", "feature.txt"]);
         git(&base, &["commit", "-q", "-m", "base"]);
-        let conflict = git_raw(&base, &["merge", "other"]).unwrap();
+        let conflict = crate::git::raw(&base, &["merge", "other"]).unwrap();
         assert!(!conflict.status.success(), "the fixture must create a conflict");
         assert!(mid_merge(&base).unwrap(), "the fixture must be mid-merge");
 
@@ -496,7 +556,7 @@ mod tests {
         git(&base, &["add", "feature.txt"]);
         git(&base, &["commit", "-q", "-m", "base"]);
 
-        let conflict = git_raw(&wt, &["merge", base_branch]).unwrap();
+        let conflict = crate::git::raw(&wt, &["merge", base_branch]).unwrap();
         assert!(!conflict.status.success(), "the fixture must create a conflict");
         assert!(wt.join(".git").is_file(), "linked worktree .git is a file");
         assert!(mid_merge(&wt).unwrap(), "MERGE_HEAD must resolve through the gitdir pointer");
@@ -534,7 +594,6 @@ mod tests {
         // TEST_LOCK first so it drops LAST, after the TempDirs: this test
         // mutates process-global env (XDG_CONFIG_HOME, WS_ROOT) that the
         // registry and sessions_root read.
-        static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let home = TempDir::new().unwrap();
@@ -578,6 +637,89 @@ mod tests {
         assert!(!log.trim().is_empty(), "--no-ff produced a merge commit: {log}");
         assert!(!wt.exists(), "the worktree is removed");
         assert_eq!(crate::registry::lookup("api@retry"), None, "and unregistered");
+
+        std::env::remove_var("WS_ROOT");
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    /// I1, part (a). `ws 'api@$(x)'` used to run `add_worktree` — a real
+    /// branch + checkout in the base repo — before `contract::init` ever
+    /// validated the name, leaving an orphan only `git` could see. Validation
+    /// must now happen before any git mutation, so the branch and checkout
+    /// are never created in the first place.
+    #[test]
+    fn create_refuses_an_invalid_name_before_touching_git() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let home = TempDir::new().unwrap();
+        let td = TempDir::new().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+        std::env::set_var("WS_ROOT", td.path());
+
+        let base = td.path().join("api");
+        std::fs::create_dir_all(&base).unwrap();
+        git(td.path(), &["init", "-q", "api"]);
+        git(&base, &["config", "user.email", "dev@example.com"]);
+        git(&base, &["config", "user.name", "Dev"]);
+        crate::contract::init("api", &base, "claude", true).unwrap();
+
+        // The exact repro from the brief: a feature half containing shell
+        // metacharacters. Valid as a git branch name, invalid as a workspace
+        // name — the gap the old ordering fell through.
+        let spec = Spec { base: "api".into(), feature: "$(x)".into() };
+        let err = create(&spec).unwrap_err().to_string();
+        assert!(err.contains("invalid workspace name"), "{err}");
+
+        let wt = td.path().join("api@$(x)");
+        assert!(!wt.exists(), "no worktree directory was ever created: {err}");
+        let branches = git(&base, &["branch", "--list"]);
+        assert!(!branches.contains("$(x)"), "no orphan branch created: {branches}");
+        let worktrees = git(&base, &["worktree", "list"]);
+        assert_eq!(worktrees.lines().count(), 1, "only the base checkout is listed: {worktrees}");
+        assert_eq!(crate::registry::lookup("api@$(x)"), None, "nothing registered");
+
+        std::env::remove_var("WS_ROOT");
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    /// I1, part (b). Once `add_worktree` has mutated the base repository, a
+    /// later failure must undo it — best-effort — rather than leave an
+    /// orphan branch + checkout behind. Forced here by committing
+    /// `.ws/notebook` into the base as a plain FILE rather than the directory
+    /// `contract::init` expects: `add_worktree` succeeds (it only checks out
+    /// whatever the base's HEAD already has), and `contract::init`'s
+    /// `create_dir_all` on that same path then fails because a file already
+    /// occupies it — a bootstrap failure with nothing to do with the name.
+    #[test]
+    fn create_rolls_back_the_branch_and_worktree_when_a_later_step_fails() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let home = TempDir::new().unwrap();
+        let td = TempDir::new().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+        std::env::set_var("WS_ROOT", td.path());
+
+        let base = td.path().join("api");
+        std::fs::create_dir_all(base.join(".ws")).unwrap();
+        git(td.path(), &["init", "-q", "api"]);
+        git(&base, &["config", "user.email", "dev@example.com"]);
+        git(&base, &["config", "user.name", "Dev"]);
+        std::fs::write(base.join(".ws/notebook"), "not a directory\n").unwrap();
+        git(&base, &["add", "."]);
+        git(&base, &["commit", "-q", "-m", "init"]);
+        crate::registry::register("api", &base).unwrap();
+
+        let spec = Spec { base: "api".into(), feature: "retry".into() };
+        let err = create(&spec).unwrap_err().to_string();
+        assert!(!err.trim().is_empty());
+
+        let wt = td.path().join("api@retry");
+        assert!(!wt.exists(), "the worktree directory was rolled back: {err}");
+        let worktrees = git(&base, &["worktree", "list"]);
+        assert_eq!(worktrees.lines().count(), 1, "no dangling worktree entry: {worktrees}");
+        let branches = git(&base, &["branch", "--list", "retry"]);
+        assert!(branches.trim().is_empty(), "the orphan branch was deleted: {branches}");
+        assert_eq!(crate::registry::lookup("api@retry"), None, "and nothing left registered");
 
         std::env::remove_var("WS_ROOT");
         std::env::remove_var("XDG_CONFIG_HOME");

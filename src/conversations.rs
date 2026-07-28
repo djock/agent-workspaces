@@ -99,8 +99,20 @@ pub fn parse(timeline: &str) -> Vec<Link> {
     out
 }
 
+/// First 12 *characters*, not bytes.
+///
+/// `&id[..12]` panicked ("byte index 12 is not a char boundary") for any id whose
+/// 12th byte lands mid-character — and ids arrive from `timeline.jsonl`, which is
+/// `merge=union` across checkouts and appended to by anything. `len()` counts
+/// bytes, so the guard did not guard.
 fn short(id: &str) -> String {
-    if id.len() > 12 { format!("{}…", &id[..12]) } else { id.to_string() }
+    let mut it = id.chars();
+    let head: String = it.by_ref().take(12).collect();
+    if it.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
 }
 
 /// Human-readable lineage. `current` maps agent id → its live session id, so the

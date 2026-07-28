@@ -29,33 +29,15 @@ impl Workspace {
     pub fn workspace_toml(&self) -> PathBuf {
         self.ws_dir().join("workspace.toml")
     }
-    pub fn queue_dir(&self) -> PathBuf {
-        self.ws_dir().join("queue")
-    }
+    /// Captured tasks. Shared, append-only, `merge=union` across checkouts.
     pub fn queue_tasks(&self) -> PathBuf {
-        self.queue_dir().join("tasks.jsonl")
-    }
-    /// Drain journal: per-checkout run output, not shared state.
-    pub fn queue_journal(&self) -> PathBuf {
-        self.local_dir().join("queue-journal.log")
-    }
-    /// Present when the circuit breaker has tripped. Cleared by `--reset`.
-    pub fn circuit_marker(&self) -> PathBuf {
-        self.local_dir().join("queue-circuit-open")
+        self.ws_dir().join("queue").join("tasks.jsonl")
     }
     pub fn readme(&self) -> PathBuf {
         self.ws_dir().join("README.md")
     }
     pub fn notebook_dir(&self) -> PathBuf {
         self.ws_dir().join("notebook")
-    }
-    pub fn mail_dir(&self) -> PathBuf {
-        self.ws_dir().join("mail")
-    }
-    /// Marker for the newest message already surfaced. Lives under local/ because
-    /// "what I have read" is per-checkout, not shared state to merge.
-    pub fn mail_seen(&self) -> PathBuf {
-        self.local_dir().join("mail-seen")
     }
     pub fn timeline(&self) -> PathBuf {
         self.ws_dir().join("timeline.jsonl")
@@ -66,8 +48,13 @@ impl Workspace {
     pub fn limit_guard(&self) -> PathBuf {
         self.local_dir().join("limit-guard")
     }
-    pub fn exists(&self) -> bool {
-        self.ws_dir().is_dir()
+    /// Is this an initialised workspace?
+    ///
+    /// The identity file, not the `.ws/` directory. Those differ: acquiring the
+    /// workspace lock creates `.ws/local/`, so a directory-existence test reported
+    /// "already a workspace" for one that had a lock and nothing else.
+    pub fn is_initialised(&self) -> bool {
+        self.workspace_toml().is_file()
     }
 }
 
@@ -91,7 +78,18 @@ pub fn open_or_create(name: &str, agent: &str, cfg: &Config) -> Result<(Workspac
         None => config::sessions_root(cfg).join(name),
     };
     let ws = Workspace { name: name.to_string(), root };
-    if ws.exists() {
+    // `workspace.toml`, not "does `.ws/` exist": launch acquires the workspace
+    // lock *before* calling this (so creation is single-writer), and acquiring the
+    // lock creates `.ws/local/` — which made `.ws` exist and this function skip
+    // `contract::init` entirely, leaving a workspace with a lock and nothing else.
+    // The identity file is what actually distinguishes an initialised workspace.
+    if ws.is_initialised() {
+        // The contract gate: refuse a workspace a newer `ws` created before this
+        // binary ever touches it (launch regenerates the context file, records
+        // session state, etc). A brand-new workspace skips this — it is about
+        // to be created BY this binary, at CONTRACT_VERSION, so there is
+        // nothing yet to be newer than.
+        contract::check_gate(&ws.name, &ws.workspace_toml())?;
         return Ok((ws, false));
     }
     std::fs::create_dir_all(&ws.root)?;
@@ -155,7 +153,7 @@ mod tests {
         let (_d, cfg) = iso_cfg();
         let (ws, created) = open_or_create("proj", "claude", &cfg).unwrap();
         assert!(created);
-        assert!(ws.exists());
+        assert!(ws.is_initialised());
         assert_eq!(ws.root, resolve("proj", &cfg).root);
 
         // Second open does not recreate.

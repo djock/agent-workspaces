@@ -13,7 +13,6 @@ pub enum Cmd {
     Setup,
     Internal(Vec<String>),
     Statusline,
-    SubagentStatusline,
     Limits,
     Doctor,
     Secrets(SecretsCmd),
@@ -21,30 +20,33 @@ pub enum Cmd {
     Status { name: Option<String>, text: Option<String> },
     Archive { names: Vec<String>, archived: bool },
     Search { query: String, include_archived: bool },
-    MigrateCs { names: Vec<String>, all: bool, dry_run: bool },
     Update { check: bool, force: bool },
     Uninstall { force: bool },
-    Tui,
+    Pick,
     Whoami,
     Who { name: Option<String> },
     Conversations { name: Option<String> },
-    Msg(MsgCmd),
-    Queue(QueueCmd),
-    Spawn { name: String, task: Option<String> },
+    Rotate { name: Option<String> },
+    Task(TaskCmd),
+    Hooks(HooksCmd),
     Worktree { spec: String, merge: bool },
 }
 
+/// Task capture. `add` defaults to the current workspace so `/ws:task` can call
+/// it without knowing where it is; an explicit name is still accepted.
 #[derive(Debug, PartialEq)]
-pub enum QueueCmd {
-    Add { name: String, text: String },
+pub enum TaskCmd {
+    Add { name: Option<String>, text: String },
     List { name: Option<String> },
-    Drain { name: Option<String>, reset: bool },
+    Rm { name: Option<String>, index: usize },
 }
 
 #[derive(Debug, PartialEq)]
-pub enum MsgCmd {
-    Send { to: String, body: String },
-    Log { name: Option<String> },
+pub enum HooksCmd {
+    /// Show what is registered for each agent, built-in and user-defined.
+    List,
+    /// Validate hooks.toml and print what would be written, writing nothing.
+    Check,
 }
 
 #[derive(Debug, PartialEq)]
@@ -63,13 +65,16 @@ pub enum SecretsCmd {
     Purge,
     Export,
     Backend,
+    /// Put stored values back into a file the redaction hook rewrote.
+    /// One positional path; the file is edited in place.
+    Restore(String),
 }
 
 #[derive(Debug, PartialEq)]
 pub enum ConfigCmd {
     List,
     Get(String),
-    Set { key: String, value: String, workspace: bool },
+    Set { key: String, value: String },
 }
 
 /// Parse argv (excluding the program name) into a Cmd.
@@ -78,11 +83,12 @@ pub enum ConfigCmd {
 pub fn parse(args: Vec<String>) -> Result<Cmd> {
     let mut it = args.into_iter();
     let first = match it.next() {
-        // Bare `ws` opens the dashboard interactively; piped or redirected
-        // (scripts, `ws | grep`) it stays the plain list it has always been.
+        // Bare `ws` offers the arrow-key picker interactively; piped or
+        // redirected (scripts, `ws | grep`) it stays the plain list it has
+        // always been.
         None => {
             return Ok(if std::io::stdout().is_terminal() {
-                Cmd::Tui
+                Cmd::Pick
             } else {
                 Cmd::List { tag: None, archived: false }
             })
@@ -93,7 +99,7 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
     match first.as_str() {
         "-V" | "--version" => Ok(Cmd::Version),
         "-h" | "--help" => Ok(Cmd::Help),
-        "-tui" => Ok(Cmd::Tui),
+        "-pick" => Ok(Cmd::Pick),
         "-list" | "-ls" => parse_list(it.collect()),
         "-limits" => Ok(Cmd::Limits),
         "-doctor" => Ok(Cmd::Doctor),
@@ -144,27 +150,25 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         }
         "-secrets" => parse_secrets(it.collect()),
         "-tag" => parse_tag(it.collect()),
-        "-msg" => parse_msg(it.collect()),
-        "-queue" => parse_queue(it.collect()),
-        "-spawn" => {
-            let mut it = it;
-            let name = it
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("usage: ws -spawn <name> [--task <text>]"))?;
-            let mut task = None;
-            while let Some(a) = it.next() {
-                match a.as_str() {
-                    "--task" => {
-                        let rest: Vec<String> = it.by_ref().collect();
-                        if rest.is_empty() {
-                            bail!("usage: ws -spawn <name> --task <text>");
-                        }
-                        task = Some(rest.join(" "));
-                    }
-                    other => bail!("unexpected argument: {other}"),
-                }
+        "-task" => parse_task(it.collect()),
+        "-rotate" => {
+            let name = it.next();
+            if it.next().is_some() {
+                bail!("usage: ws -rotate [<name>]");
             }
-            Ok(Cmd::Spawn { name, task })
+            Ok(Cmd::Rotate { name })
+        }
+        "hooks" => {
+            let sub = it.next().unwrap_or_default();
+            if it.next().is_some() {
+                bail!("usage: ws hooks list|check");
+            }
+            match sub.as_str() {
+                "list" => Ok(Cmd::Hooks(HooksCmd::List)),
+                "check" => Ok(Cmd::Hooks(HooksCmd::Check)),
+                "" => bail!("usage: ws hooks list|check"),
+                other => bail!("unknown hooks subcommand: {other} (want list|check)"),
+            }
         }
         "-status" => parse_status(it.collect()),
         "-archive" => parse_archive(it.collect(), true),
@@ -196,6 +200,14 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             for a in it {
                 match a.as_str() {
                     "--force" => force = true,
+                    // A typo'd flag used to become a workspace *name*: `ws -rm
+                    // --forec myws` tried to delete a workspace literally called
+                    // "--forec", reported "no such workspace", exited 0, and never
+                    // touched myws. Every other parser here rejects unknown `--`
+                    // tokens; this is the destructive command, so it must too.
+                    other if other.starts_with("--") => {
+                        bail!("unexpected argument: {other}\nusage: ws -rm <name>... [--force]")
+                    }
                     _ => names.push(a),
                 }
             }
@@ -205,30 +217,9 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             Ok(Cmd::Rm { names, force })
         }
         "config" => parse_config(it.collect()),
-        "migrate-cs" => {
-            let mut names = Vec::new();
-            let mut all = false;
-            let mut dry_run = false;
-            for a in it {
-                match a.as_str() {
-                    "--all" => all = true,
-                    "--dry-run" => dry_run = true,
-                    other if other.starts_with("--") => bail!("unexpected argument: {other}"),
-                    other => names.push(other.to_string()),
-                }
-            }
-            if names.is_empty() && !all {
-                bail!("usage: ws migrate-cs <name>... | --all [--dry-run]");
-            }
-            if all && !names.is_empty() {
-                bail!("ws migrate-cs: give session names or --all, not both");
-            }
-            Ok(Cmd::MigrateCs { names, all, dry_run })
-        }
         "setup" => Ok(Cmd::Setup),
         "internal" => Ok(Cmd::Internal(it.collect())),
         "statusline" => Ok(Cmd::Statusline),
-        "subagent-statusline" => Ok(Cmd::SubagentStatusline),
         other if other.starts_with('-') => {
             bail!("unknown command: {other}\ntry: ws -list | ws -adopt | ws -rm | ws config | ws <name>");
         }
@@ -292,6 +283,9 @@ fn parse_secrets(args: Vec<String>) -> Result<Cmd> {
         "purge" => SecretsCmd::Purge,
         "export" => SecretsCmd::Export,
         "backend" => SecretsCmd::Backend,
+        "restore" => SecretsCmd::Restore(
+            it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -secrets restore <file>"))?,
+        ),
         other => bail!("unknown -secrets subcommand: {other}"),
     };
     Ok(Cmd::Secrets(cmd))
@@ -333,61 +327,69 @@ fn take_workspace(args: Vec<String>) -> Result<(Option<String>, Vec<String>)> {
     Ok((name, rest))
 }
 
-fn parse_msg(args: Vec<String>) -> Result<Cmd> {
-    let mut it = args.into_iter();
-    let first = it
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("usage: ws -msg <name> <body> | ws -msg log [<name>]"))?;
-    if first == "log" {
-        let name = it.next();
-        if it.next().is_some() {
-            bail!("usage: ws -msg log [<name>]");
-        }
-        return Ok(Cmd::Msg(MsgCmd::Log { name }));
-    }
-    let rest: Vec<String> = it.collect();
-    if rest.is_empty() {
-        bail!("usage: ws -msg <name> <body>");
-    }
-    Ok(Cmd::Msg(MsgCmd::Send { to: first, body: rest.join(" ") }))
-}
-
-fn parse_queue(args: Vec<String>) -> Result<Cmd> {
+/// `ws -task add [<name>] <text>` / `list [<name>]` / `rm [<name>] <index>`.
+///
+/// `add` takes the name **optionally** and before the text, which is ambiguous
+/// on its own — "is the first word a workspace or the start of the task?" It is
+/// resolved by the registry: a first word that names a registered workspace is
+/// the target, anything else starts the text. That keeps `/ws:task` usable
+/// without the agent having to know or pass its own workspace name, which is the
+/// whole point of the command.
+fn parse_task(args: Vec<String>) -> Result<Cmd> {
     let mut it = args.into_iter();
     let sub = it
         .next()
-        .ok_or_else(|| anyhow::anyhow!("usage: ws -queue add|list|drain ..."))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: ws -task add|list|rm ..."))?;
     match sub.as_str() {
         "add" => {
-            let name = it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -queue add <name> <text>"))?;
-            let rest: Vec<String> = it.collect();
-            if rest.is_empty() {
-                bail!("usage: ws -queue add <name> <text>");
+            let words: Vec<String> = it.collect();
+            if words.is_empty() {
+                bail!("usage: ws -task add [<name>] <text>");
             }
-            Ok(Cmd::Queue(QueueCmd::Add { name, text: rest.join(" ") }))
+            let (name, rest) = split_optional_workspace(words);
+            if rest.is_empty() {
+                bail!("usage: ws -task add [<name>] <text>");
+            }
+            Ok(Cmd::Task(TaskCmd::Add { name, text: rest.join(" ") }))
         }
         "list" => {
             let name = it.next();
             if it.next().is_some() {
-                bail!("usage: ws -queue list [<name>]");
+                bail!("usage: ws -task list [<name>]");
             }
-            Ok(Cmd::Queue(QueueCmd::List { name }))
+            Ok(Cmd::Task(TaskCmd::List { name }))
         }
-        "drain" => {
-            let mut name = None;
-            let mut reset = false;
-            for a in it {
-                match a.as_str() {
-                    "--reset" => reset = true,
-                    other if other.starts_with("--") => bail!("unexpected argument: {other}"),
-                    other if name.is_none() => name = Some(other.to_string()),
-                    other => bail!("unexpected argument: {other}"),
-                }
+        "rm" => {
+            let words: Vec<String> = it.collect();
+            if words.is_empty() {
+                bail!("usage: ws -task rm [<name>] <index>");
             }
-            Ok(Cmd::Queue(QueueCmd::Drain { name, reset }))
+            let (name, rest) = split_optional_workspace(words);
+            let idx = rest
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("usage: ws -task rm [<name>] <index>"))?;
+            let index: usize = idx
+                .parse()
+                .map_err(|_| anyhow::anyhow!("task index must be a number, got {idx:?}"))?;
+            if rest.len() > 1 {
+                bail!("usage: ws -task rm [<name>] <index>");
+            }
+            Ok(Cmd::Task(TaskCmd::Rm { name, index }))
         }
-        other => bail!("unknown queue subcommand: {other} (try add, list, drain)"),
+        other => bail!("unknown task subcommand: {other} (want add|list|rm)"),
     }
+}
+
+/// Peel a leading workspace name off `words` when it names one that is actually
+/// registered. Parsing must not consult the registry for *flags*, but for this
+/// one positional ambiguity it is the only honest disambiguator available.
+fn split_optional_workspace(words: Vec<String>) -> (Option<String>, Vec<String>) {
+    if words.len() > 1 && crate::registry::lookup(&words[0]).is_some() {
+        let mut it = words.into_iter();
+        let name = it.next();
+        return (name, it.collect());
+    }
+    (None, words)
 }
 
 fn parse_tag(args: Vec<String>) -> Result<Cmd> {
@@ -449,22 +451,24 @@ fn parse_config(args: Vec<String>) -> Result<Cmd> {
             Ok(Cmd::Config(ConfigCmd::Get(key)))
         }
         Some("set") => {
-            let mut workspace = false;
             let mut rest: Vec<String> = Vec::new();
             for a in it {
-                if a == "--workspace" {
-                    workspace = true;
-                } else {
-                    rest.push(a);
+                // No flags here. `--workspace` used to be accepted, threaded a
+                // bool through the whole call chain, and then always errored
+                // "per-workspace config is added in a later task" — an accepted
+                // flag with no reachable success path. Unknown flags are now
+                // rejected rather than silently becoming a config *key*.
+                if a.starts_with("--") {
+                    bail!("unexpected argument: {a}\nusage: ws config set <key> <value>");
                 }
+                rest.push(a);
             }
             if rest.len() != 2 {
-                bail!("usage: ws config set [--workspace] <key> <value>");
+                bail!("usage: ws config set <key> <value>");
             }
             Ok(Cmd::Config(ConfigCmd::Set {
                 key: rest[0].clone(),
                 value: rest[1].clone(),
-                workspace,
             }))
         }
         Some(other) => bail!("unknown config subcommand: {other}"),
@@ -483,6 +487,132 @@ mod tests {
     fn a_name_with_an_at_parses_as_a_worktree_not_a_launch() {
         assert_eq!(p(&["api@retry"]), Cmd::Worktree { spec: "api@retry".into(), merge: false });
         assert_eq!(p(&["api@retry", "--merge"]), Cmd::Worktree { spec: "api@retry".into(), merge: true });
+    }
+
+    // ---- refocus: the new surface, and proof the old surface is gone ----
+
+    /// `-task add` must work without a workspace name, because `/ws:task` calls
+    /// it from inside a session that does not pass one. An unregistered first
+    /// word is therefore the start of the task text, not a target.
+    #[test]
+    fn task_add_without_a_name_takes_everything_as_text() {
+        assert_eq!(
+            p(&["-task", "add", "write", "the", "docs"]),
+            Cmd::Task(TaskCmd::Add { name: None, text: "write the docs".into() })
+        );
+    }
+
+    #[test]
+    fn task_add_requires_text() {
+        assert!(super::parse(vec!["-task".into(), "add".into()]).is_err());
+    }
+
+    #[test]
+    fn task_list_and_rm_parse() {
+        assert_eq!(p(&["-task", "list"]), Cmd::Task(TaskCmd::List { name: None }));
+        assert_eq!(
+            p(&["-task", "list", "proj"]),
+            Cmd::Task(TaskCmd::List { name: Some("proj".into()) })
+        );
+        assert_eq!(p(&["-task", "rm", "2"]), Cmd::Task(TaskCmd::Rm { name: None, index: 2 }));
+    }
+
+    #[test]
+    fn task_rm_rejects_a_non_numeric_index() {
+        let err = super::parse(vec!["-task".into(), "rm".into(), "second".into()]).unwrap_err();
+        assert!(format!("{err:#}").contains("must be a number"), "{err:#}");
+    }
+
+    #[test]
+    fn an_unknown_task_subcommand_is_rejected() {
+        assert!(super::parse(vec!["-task".into(), "drain".into()]).is_err());
+    }
+
+    #[test]
+    fn rotate_parses_with_and_without_a_name() {
+        assert_eq!(p(&["-rotate"]), Cmd::Rotate { name: None });
+        assert_eq!(p(&["-rotate", "proj"]), Cmd::Rotate { name: Some("proj".into()) });
+        assert!(super::parse(vec!["-rotate".into(), "a".into(), "b".into()]).is_err());
+    }
+
+    #[test]
+    fn hooks_subcommands_parse() {
+        assert_eq!(p(&["hooks", "list"]), Cmd::Hooks(HooksCmd::List));
+        assert_eq!(p(&["hooks", "check"]), Cmd::Hooks(HooksCmd::Check));
+        assert!(super::parse(vec!["hooks".into()]).is_err());
+        assert!(super::parse(vec!["hooks".into(), "install".into()]).is_err());
+    }
+
+    #[test]
+    fn pick_parses_explicitly() {
+        assert_eq!(p(&["-pick"]), Cmd::Pick);
+    }
+
+    /// The destructive command must not turn a flag typo into a workspace name.
+    /// `ws -rm --forec myws` used to try to delete a workspace literally called
+    /// "--forec", report "no such workspace", exit 0, and leave myws untouched.
+    #[test]
+    fn rm_rejects_an_unknown_flag_instead_of_treating_it_as_a_name() {
+        let err = super::parse(vec!["-rm".into(), "--forec".into(), "myws".into()]).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("--forec"), "the error must name the typo: {msg}");
+        assert!(msg.contains("usage:"), "and show the usage: {msg}");
+    }
+
+    #[test]
+    fn rm_still_accepts_names_and_force() {
+        assert_eq!(
+            p(&["-rm", "a", "b", "--force"]),
+            Cmd::Rm { names: vec!["a".into(), "b".into()], force: true }
+        );
+    }
+
+    /// Every dash-prefixed command this refocus removed must now be an error,
+    /// not a silent no-op and not a stale alias.
+    #[test]
+    fn removed_dash_commands_are_rejected() {
+        for argv in [
+            vec!["-tui"],
+            vec!["-msg", "proj", "hello"],
+            vec!["-spawn", "proj"],
+            vec!["-queue", "add", "proj", "x"],
+            vec!["-queue", "drain", "proj"],
+        ] {
+            let owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+            assert!(
+                super::parse(owned).is_err(),
+                "removed command {argv:?} must be rejected"
+            );
+        }
+    }
+
+    /// The two removed *bare-word* commands cannot be rejected by the parser:
+    /// every bare word is a workspace name, and the parser does not consult the
+    /// registry to decide otherwise. They now parse as a launch and fail at
+    /// runtime with "no such workspace", which is the honest outcome — pinned
+    /// here so nobody later mistakes it for the alias still working.
+    #[test]
+    fn removed_bare_word_commands_parse_as_workspace_names() {
+        match p(&["migrate-cs"]) {
+            Cmd::Launch { name, .. } => assert_eq!(name, "migrate-cs"),
+            other => panic!("expected a launch attempt, got {other:?}"),
+        }
+        match p(&["subagent-statusline"]) {
+            Cmd::Launch { name, .. } => assert_eq!(name, "subagent-statusline"),
+            other => panic!("expected a launch attempt, got {other:?}"),
+        }
+        // With their flags they are rejected outright, since a launch takes none.
+        assert!(super::parse(vec!["migrate-cs".into(), "--all".into()]).is_err());
+    }
+
+    /// `config set --workspace` parsed, threaded a bool through the whole call
+    /// chain, and then always errored "added in a later task". Gone.
+    #[test]
+    fn config_set_rejects_the_workspace_flag() {
+        assert!(super::parse(
+            vec!["config".into(), "set".into(), "--workspace".into(), "k".into(), "v".into()]
+        )
+        .is_err());
     }
 
     #[test]
@@ -567,13 +697,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn config_set_workspace() {
-        assert_eq!(
-            p(&["config", "set", "--workspace", "default_agent", "codex"]),
-            Cmd::Config(ConfigCmd::Set { key: "default_agent".into(), value: "codex".into(), workspace: true })
-        );
-    }
 
     #[test]
     fn unknown_dash() {
@@ -684,25 +807,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn migrate_cs_parses() {
-        assert_eq!(
-            p(&["migrate-cs", "--all"]),
-            Cmd::MigrateCs { names: vec![], all: true, dry_run: false }
-        );
-        assert_eq!(
-            p(&["migrate-cs", "alpha", "beta"]),
-            Cmd::MigrateCs { names: vec!["alpha".into(), "beta".into()], all: false, dry_run: false }
-        );
-        assert_eq!(
-            p(&["migrate-cs", "--all", "--dry-run"]),
-            Cmd::MigrateCs { names: vec![], all: true, dry_run: true }
-        );
-        // neither names nor --all is a usage error
-        assert!(parse(vec!["migrate-cs".into()]).is_err());
-        // names combined with --all is rejected, not silently reduced to --all
-        assert!(parse(vec!["migrate-cs".into(), "alpha".into(), "--all".into()]).is_err());
-    }
 
     #[test]
     fn update_and_uninstall_parse() {
@@ -742,61 +846,10 @@ mod tests {
         assert!(parse(vec!["-archive".into()]).is_err());
     }
 
-    #[test]
-    fn parses_msg_send_and_log() {
-        assert_eq!(
-            p(&["-msg", "proj", "ship it"]),
-            Cmd::Msg(MsgCmd::Send { to: "proj".into(), body: "ship it".into() })
-        );
-        assert_eq!(p(&["-msg", "log"]), Cmd::Msg(MsgCmd::Log { name: None }));
-        assert_eq!(p(&["-msg", "log", "proj"]), Cmd::Msg(MsgCmd::Log { name: Some("proj".into()) }));
-    }
 
-    #[test]
-    fn msg_send_requires_a_body() {
-        assert!(parse(vec!["-msg".into(), "proj".into()]).is_err());
-    }
 
-    #[test]
-    fn parses_queue_subcommands() {
-        assert_eq!(
-            p(&["-queue", "add", "proj", "write the docs"]),
-            Cmd::Queue(QueueCmd::Add { name: "proj".into(), text: "write the docs".into() })
-        );
-        assert_eq!(p(&["-queue", "list", "proj"]), Cmd::Queue(QueueCmd::List { name: Some("proj".into()) }));
-        assert_eq!(
-            p(&["-queue", "drain", "proj"]),
-            Cmd::Queue(QueueCmd::Drain { name: Some("proj".into()), reset: false })
-        );
-        assert_eq!(
-            p(&["-queue", "drain", "proj", "--reset"]),
-            Cmd::Queue(QueueCmd::Drain { name: Some("proj".into()), reset: true })
-        );
-    }
 
-    #[test]
-    fn queue_add_requires_a_target_and_text() {
-        assert!(parse(vec!["-queue".into(), "add".into()]).is_err());
-        assert!(parse(vec!["-queue".into(), "add".into(), "proj".into()]).is_err());
-    }
 
-    #[test]
-    fn an_unknown_queue_subcommand_is_rejected() {
-        assert!(parse(vec!["-queue".into(), "flush".into()]).is_err());
-    }
 
-    #[test]
-    fn parses_spawn_with_and_without_a_task() {
-        assert_eq!(p(&["-spawn", "proj"]), Cmd::Spawn { name: "proj".into(), task: None });
-        assert_eq!(
-            p(&["-spawn", "proj", "--task", "write the docs"]),
-            Cmd::Spawn { name: "proj".into(), task: Some("write the docs".into()) }
-        );
-    }
 
-    #[test]
-    fn spawn_requires_a_name_and_a_task_body() {
-        assert!(parse(vec!["-spawn".into()]).is_err());
-        assert!(parse(vec!["-spawn".into(), "proj".into(), "--task".into()]).is_err());
-    }
 }

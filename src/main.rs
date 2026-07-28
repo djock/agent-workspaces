@@ -7,16 +7,18 @@ mod config;
 mod context;
 mod contract;
 mod conversations;
-mod drain;
+mod detail;
+mod git;
 mod handoff;
 mod hookio;
+mod hooks_user;
 mod hooksetup;
 mod internal;
+mod io_read;
 mod limits;
 mod lock;
-mod mail;
 mod meta;
-mod migrate;
+mod picker;
 mod prompts;
 mod queue;
 mod readme;
@@ -24,11 +26,11 @@ mod registry;
 mod rows;
 mod search;
 mod secrets;
-mod spawn;
 mod statusline;
 mod term;
+mod theme;
+mod time;
 mod timeline;
-mod tui;
 mod txn;
 mod update;
 mod workspace;
@@ -61,25 +63,25 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
         Cmd::Setup => commands::setup()?,
         Cmd::Internal(args) => internal::run(args)?,
         Cmd::Statusline => statusline::run(),
-        Cmd::SubagentStatusline => statusline::run_subagent(),
         Cmd::Limits => commands::limits()?,
         Cmd::Doctor => commands::doctor()?,
         Cmd::Whoami => commands::whoami()?,
         Cmd::Who { name } => commands::who(name)?,
         Cmd::Conversations { name } => conversations::run(name)?,
-        Cmd::Msg(c) => commands::msg(c)?,
-        Cmd::Queue(c) => commands::queue(c)?,
-        Cmd::Spawn { name, task } => spawn::run(name, task)?,
+        Cmd::Rotate { name } => commands::rotate(name)?,
+        Cmd::Task(c) => commands::task(c)?,
+        Cmd::Hooks(c) => commands::hooks(c)?,
         Cmd::Secrets(c) => commands::secrets(c)?,
         Cmd::Search { query, include_archived } => commands::search(query, include_archived)?,
-        Cmd::MigrateCs { names, all, dry_run } => commands::migrate_cs(names, all, dry_run)?,
         Cmd::Update { check, force } => update::run(check, force)?,
         Cmd::Uninstall { force } => commands::uninstall(force)?,
-        Cmd::Tui => match tui::run()? {
-            tui::Outcome::Quit => {}
+        Cmd::Pick => match picker::run()? {
+            picker::Outcome::Quit => {}
             // run() has already restored the terminal; launch execs into the
             // agent from here, replacing this process.
-            tui::Outcome::Launch(name) => commands::launch(name, None, false, false, false)?,
+            picker::Outcome::Launch(name) => {
+                commands::launch(name, None, false, false, false)?
+            }
         },
         Cmd::Worktree { spec, merge } => {
             let s = worktree::parse_name(&spec)
@@ -95,15 +97,14 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// ISO-8601 UTC timestamp, e.g. 2026-07-24T10:43:12Z. Shells out to `date`.
+/// ISO-8601 UTC timestamp, e.g. 2026-07-24T10:43:12Z.
+///
+/// Delegates to `time::now_iso`. This used to fork `/bin/date` per timestamp and
+/// end in `.unwrap_or_default()`, so a failed fork silently produced `""` under
+/// the timeline, the queue, lock bodies and the credential manifest — and
+/// `conversations::parse` sorts on that field.
 pub fn now_iso() -> String {
-    std::process::Command::new("date")
-        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+    time::now_iso()
 }
 
 /// The full command surface.
@@ -120,7 +121,9 @@ fn help_text() -> &'static str {
     "ws — agent workspace manager\n\
          \n\
          Launch\n\
-         \x20 ws <name>                    create or resume a workspace\n\
+         \x20 ws <name>                    create or resume a workspace (refuses one\n\
+         \x20                                made by a newer ws, as does every\n\
+         \x20                                command that modifies a workspace)\n\
          \x20 ws <name> -claude | -codex   choose the agent for this launch\n\
          \x20 ws <name> --agent <id>       same, by id\n\
          \x20 ws <name> --fresh            start a new agent session, not a resume\n\
@@ -128,8 +131,9 @@ fn help_text() -> &'static str {
          \x20 ws <name> --force            take over a workspace another process holds\n\
          \n\
          Browse\n\
-         \x20 ws                           open the workspace dashboard (TUI)\n\
-         \x20 ws -tui                      same, explicitly\n\
+         \x20 ws                           pick a workspace from a list (arrow keys,\n\
+         \x20                                Enter launches; lists plainly when not a tty)\n\
+         \x20 ws -pick                     same, explicitly\n\
          \x20 ws -list | -ls               list workspaces (--tag <t>, --archived)\n\
          \x20 ws -search <query>           search all workspaces (--include-archived)\n\
          \n\
@@ -146,15 +150,11 @@ fn help_text() -> &'static str {
          \n\
          Coordinate\n\
          \x20 ws -whoami                   print your actor slug\n\
-         \x20 ws -who [<name>]             actors who have worked in a workspace\n\
+         \x20 ws -who [<name>]             who did what in a workspace, from the timeline\n\
          \x20 ws -conversations [<name>]   conversation lineage: rotations and agent switches\n\
-         \x20 ws -msg <name> <body>        send a message to another workspace\n\
-         \x20 ws -msg log [<name>]         read the message history\n\
-         \x20 ws -queue add <name> <text>  add a task to a workspace's queue\n\
-         \x20 ws -queue list [<name>]      show the queue\n\
-         \x20 ws -queue drain [<name>]     run pending tasks unattended (--reset)\n\
-         \x20 ws -spawn <name>             open a workspace in a tmux window\n\
-         \x20 ws -spawn <name> --task <text>  queue it, then drain the WHOLE queue there\n\
+         \x20 ws -rotate [<name>]          write a handoff skeleton for the next session\n\
+         \x20 ws -task add [<name>] <text> capture a task without interrupting the agent\n\
+         \x20 ws -task list|rm [<name>]    show or drop captured tasks\n\
          \n\
          Inspect\n\
          \x20 ws -limits                   usage limits captured from the status line\n\
@@ -163,11 +163,13 @@ fn help_text() -> &'static str {
          Secrets\n\
          \x20 ws -secrets set|get|rm <name>\n\
          \x20 ws -secrets list|purge|export|backend\n\
+         \x20 ws -secrets restore <file>   put stored values back into a redacted file\n\
          \n\
          Setup\n\
          \x20 ws setup                     install hooks, prompts and status lines\n\
          \x20 ws config list|get|set       read or change configuration\n\
-         \x20 ws migrate-cs <name>...|--all   import cs sessions (--dry-run)\n\
+         \x20 ws hooks list                show the hooks registered for each agent\n\
+         \x20 ws hooks check               validate hooks.toml without writing anything\n\
          \x20 ws -update                   install the latest release (--check, --force)\n\
          \x20 ws -uninstall                remove ws integrations and binary (--force)\n\
          \x20 ws --version"
@@ -184,13 +186,24 @@ mod tests {
     fn help_covers_every_command() {
         let help = super::help_text();
         for token in [
-            "-tui", "-list", "-ls", "-adopt", "-rm", "-tag", "-status", "-archive", "-unarchive",
-            "-search", "-limits", "-doctor", "-whoami", "-who", "-conversations", "-msg", "-queue", "-spawn",
-            "-secrets", "-update", "-uninstall", "setup", "config", "migrate-cs",
+            "-pick", "-list", "-ls", "-adopt", "-rm", "-tag", "-status", "-archive", "-unarchive",
+            "-search", "-limits", "-doctor", "-whoami", "-who", "-conversations", "-rotate",
+            "-task", "-secrets", "restore", "-update", "-uninstall", "setup", "config", "hooks",
             "--version", "-claude", "-codex", "--agent", "--fresh", "--handoff", "--force",
-            "--merge", "--reset", "--dry-run", "--include-archived", "--archived",
+            "--merge", "--include-archived", "--archived",
         ] {
             assert!(help.contains(token), "`ws --help` never mentions {token:?}");
+        }
+    }
+
+    /// The surface this refocus removed must not creep back into the help text:
+    /// a line here is what sends a user looking for a command that no longer
+    /// exists.
+    #[test]
+    fn help_does_not_mention_removed_surface() {
+        let help = super::help_text();
+        for token in ["-tui", "migrate-cs", "-msg", "-spawn", "-queue", "drain", "--dry-run"] {
+            assert!(!help.contains(token), "`ws --help` still mentions removed {token:?}");
         }
     }
 }

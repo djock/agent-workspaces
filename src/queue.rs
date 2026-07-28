@@ -39,7 +39,27 @@ pub struct Task {
 enum Record {
     Add { ts: String, id: String, text: String, actor: String },
     State { ts: String, id: String, state: TaskState, note: Option<String> },
+    /// `-task rm`. Append-only: the task is retired by a later record rather
+    /// than by rewriting the log, because a rewrite would need a lock this
+    /// O_APPEND-only file deliberately does not have.
+    Drop { ts: String, id: String },
 }
+
+/// Ceiling on one appended **line**, in bytes.
+///
+/// `add` joins the whole record into one JSON line and appends it with a single
+/// `O_APPEND` write (`append`, below); POSIX only guarantees that write atomic
+/// up to a platform-specific limit in practice, and a multi-KiB line risks being
+/// torn by a concurrent append from another `ws` process. `tasks` treats any
+/// line it cannot parse as a hard error (`corrupt queue record`), so one torn
+/// line does not lose one task — it bricks the whole queue for every reader.
+///
+/// The cap is on the serialized line, not on the caller's text, because that is
+/// what the invariant is actually about. Checking `text.len()` under-counted
+/// twice over: the JSON envelope adds ~110 bytes, and JSON escapes a control
+/// character to six (`\u0000`), so 8,192 bytes of control characters produced a
+/// ~49 KiB line — six times the limit the cap existed to enforce.
+pub const MAX_TASK_LINE_BYTES: usize = 8192;
 
 fn append(tasks_path: &Path, rec: &Record) -> Result<()> {
     if let Some(dir) = tasks_path.parent() {
@@ -47,6 +67,16 @@ fn append(tasks_path: &Path, rec: &Record) -> Result<()> {
             .with_context(|| format!("cannot create {}", dir.display()))?;
     }
     let mut line = serde_json::to_string(rec)?;
+    if line.len() + 1 > MAX_TASK_LINE_BYTES {
+        anyhow::bail!(
+            "this task serializes to {} bytes, over the {MAX_TASK_LINE_BYTES}-byte line cap: \
+             each record is appended as one line with a single O_APPEND write, and a line this \
+             large risks being torn by a concurrent append from another `ws` process — which \
+             corrupts the whole queue, not just this task. Shorten it, or split it into several \
+             smaller tasks.",
+            line.len() + 1
+        );
+    }
     line.push('\n');
     let mut f = std::fs::OpenOptions::new()
         .create(true)
@@ -72,16 +102,9 @@ pub fn add(tasks_path: &Path, text: &str, actor: &str) -> Result<String> {
     Ok(id)
 }
 
-pub fn set_state(tasks_path: &Path, id: &str, state: TaskState, note: Option<&str>) -> Result<()> {
-    append(
-        tasks_path,
-        &Record::State {
-            ts: crate::now_iso(),
-            id: id.to_string(),
-            state,
-            note: note.map(str::to_string),
-        },
-    )
+/// Retire a task. Append-only, like every other mutation here.
+pub fn remove(tasks_path: &Path, id: &str) -> Result<()> {
+    append(tasks_path, &Record::Drop { ts: crate::now_iso(), id: id.to_string() })
 }
 
 /// Fold the log into current task state, in add order. A missing file is an
@@ -110,6 +133,9 @@ pub fn tasks(tasks_path: &Path) -> Result<Vec<Task>> {
                 added: ts,
                 note: None,
             }),
+            Record::Drop { id, .. } => {
+                out.retain(|t| t.id != id);
+            }
             Record::State { id, state, note, .. } => {
                 // An id we have never seen is ignored rather than invented: a
                 // state record cannot conjure a task with no text.
@@ -136,23 +162,6 @@ pub fn pending(tasks_path: &Path) -> Result<Vec<Task>> {
 /// still marked running when no drain holds the lock is one whose process died.
 /// It is failed, never re-run — re-running a half-finished task could repeat
 /// destructive work, and re-queueing by hand is cheap.
-pub fn reap_orphans(tasks_path: &Path) -> Result<usize> {
-    let orphans: Vec<String> = tasks(tasks_path)?
-        .into_iter()
-        .filter(|t| t.state == TaskState::Running)
-        .map(|t| t.id)
-        .collect();
-    for id in &orphans {
-        set_state(
-            tasks_path,
-            id,
-            TaskState::Failed,
-            Some("interrupted: no drain was holding the lock"),
-        )?;
-    }
-    Ok(orphans.len())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +169,86 @@ mod tests {
 
     fn q(td: &TempDir) -> std::path::PathBuf {
         td.path().join("queue/tasks.jsonl")
+    }
+
+    #[test]
+    fn add_rejects_a_line_over_the_size_cap_and_writes_nothing() {
+        let td = TempDir::new().unwrap();
+        let p = q(&td);
+        let big = "x".repeat(MAX_TASK_LINE_BYTES + 1);
+
+        let err = add(&p, &big, "alice").unwrap_err();
+        assert!(
+            err.to_string().contains(&MAX_TASK_LINE_BYTES.to_string()),
+            "the error must name the cap: {err}"
+        );
+        assert!(!p.exists(), "an oversized task must never be appended");
+    }
+
+    /// The discriminator for capping the serialized line rather than the input
+    /// text. JSON escapes a control character to six bytes (`\u0000`), so text
+    /// that passes a naive `text.len()` check by a wide margin still produces a
+    /// line several times over the cap — which is the torn-write this cap exists
+    /// to prevent.
+    #[test]
+    fn add_rejects_text_whose_escaped_form_blows_the_cap() {
+        let td = TempDir::new().unwrap();
+        let p = q(&td);
+        let sneaky = "\u{0}".repeat(2000); // 2 KiB of input, ~12 KiB serialized
+
+        assert!(sneaky.len() < MAX_TASK_LINE_BYTES, "the input itself is under the cap");
+        let err = add(&p, &sneaky, "alice").unwrap_err();
+        assert!(
+            err.to_string().contains("serializes to"),
+            "the error must be about the serialized line: {err}"
+        );
+        assert!(!p.exists(), "nothing may be appended");
+    }
+
+    #[test]
+    fn add_accepts_text_that_fits_once_serialized() {
+        let td = TempDir::new().unwrap();
+        let p = q(&td);
+        // Leave room for the ~110-byte JSON envelope.
+        let exact = "x".repeat(MAX_TASK_LINE_BYTES - 200);
+        assert!(add(&p, &exact, "alice").is_ok());
+        assert_eq!(tasks(&p).unwrap()[0].text.len(), MAX_TASK_LINE_BYTES - 200);
+    }
+
+    #[test]
+    fn remove_retires_a_task_and_leaves_the_others() {
+        let td = TempDir::new().unwrap();
+        let p = q(&td);
+        let a = add(&p, "keep me", "alice").unwrap();
+        let b = add(&p, "drop me", "alice").unwrap();
+
+        remove(&p, &b).unwrap();
+
+        let ts = tasks(&p).unwrap();
+        assert_eq!(ts.len(), 1, "one task retired");
+        assert_eq!(ts[0].id, a);
+        assert_eq!(ts[0].text, "keep me");
+    }
+
+    /// `remove` appends rather than rewriting, so dropping an id that is not
+    /// there must be a no-op and must not corrupt the fold.
+    #[test]
+    fn removing_an_unknown_id_changes_nothing() {
+        let td = TempDir::new().unwrap();
+        let p = q(&td);
+        add(&p, "only task", "alice").unwrap();
+        remove(&p, "not-a-real-id").unwrap();
+        assert_eq!(tasks(&p).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_removed_task_is_not_pending() {
+        let td = TempDir::new().unwrap();
+        let p = q(&td);
+        let a = add(&p, "task", "alice").unwrap();
+        assert_eq!(pending(&p).unwrap().len(), 1);
+        remove(&p, &a).unwrap();
+        assert_eq!(pending(&p).unwrap().len(), 0);
     }
 
     #[test]
@@ -178,32 +267,7 @@ mod tests {
         assert_eq!(pending(&p).unwrap().len(), 2);
     }
 
-    #[test]
-    fn the_last_state_record_wins_and_pending_shrinks() {
-        let td = TempDir::new().unwrap();
-        let p = q(&td);
-        let a = add(&p, "first", "alice").unwrap();
-        add(&p, "second", "alice").unwrap();
 
-        set_state(&p, &a, TaskState::Running, None).unwrap();
-        assert_eq!(tasks(&p).unwrap()[0].state, TaskState::Running);
-        assert_eq!(pending(&p).unwrap().len(), 1, "running is not pending");
-
-        set_state(&p, &a, TaskState::Done, Some("finished cleanly")).unwrap();
-        let ts = tasks(&p).unwrap();
-        assert_eq!(ts[0].state, TaskState::Done);
-        assert_eq!(ts[0].note.as_deref(), Some("finished cleanly"));
-        assert_eq!(pending(&p).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn a_state_record_for_an_unknown_id_is_ignored_not_a_phantom_task() {
-        let td = TempDir::new().unwrap();
-        let p = q(&td);
-        add(&p, "real", "alice").unwrap();
-        set_state(&p, "no-such-id", TaskState::Done, None).unwrap();
-        assert_eq!(tasks(&p).unwrap().len(), 1);
-    }
 
     #[test]
     fn a_missing_queue_is_empty_but_a_corrupt_line_is_an_error() {
@@ -221,20 +285,4 @@ mod tests {
         assert!(tasks(&p).is_err());
     }
 
-    #[test]
-    fn reap_orphans_fails_running_tasks_and_leaves_the_rest_alone() {
-        let td = TempDir::new().unwrap();
-        let p = q(&td);
-        let a = add(&p, "crashed", "alice").unwrap();
-        let b = add(&p, "untouched", "alice").unwrap();
-        set_state(&p, &a, TaskState::Running, None).unwrap();
-
-        assert_eq!(reap_orphans(&p).unwrap(), 1);
-        let ts = tasks(&p).unwrap();
-        assert_eq!(ts[0].state, TaskState::Failed, "a crashed task is failed, never retried");
-        assert_eq!(ts[1].state, TaskState::Pending, "an untouched task is left pending");
-        assert_eq!(pending(&p).unwrap()[0].id, b);
-
-        assert_eq!(reap_orphans(&p).unwrap(), 0, "reaping twice is a no-op");
-    }
 }
