@@ -29,33 +29,15 @@ impl Workspace {
     pub fn workspace_toml(&self) -> PathBuf {
         self.ws_dir().join("workspace.toml")
     }
-    pub fn queue_dir(&self) -> PathBuf {
-        self.ws_dir().join("queue")
-    }
+    /// Captured tasks. Shared, append-only, `merge=union` across checkouts.
     pub fn queue_tasks(&self) -> PathBuf {
-        self.queue_dir().join("tasks.jsonl")
-    }
-    /// Drain journal: per-checkout run output, not shared state.
-    pub fn queue_journal(&self) -> PathBuf {
-        self.local_dir().join("queue-journal.log")
-    }
-    /// Present when the circuit breaker has tripped. Cleared by `--reset`.
-    pub fn circuit_marker(&self) -> PathBuf {
-        self.local_dir().join("queue-circuit-open")
+        self.ws_dir().join("queue").join("tasks.jsonl")
     }
     pub fn readme(&self) -> PathBuf {
         self.ws_dir().join("README.md")
     }
     pub fn notebook_dir(&self) -> PathBuf {
         self.ws_dir().join("notebook")
-    }
-    pub fn mail_dir(&self) -> PathBuf {
-        self.ws_dir().join("mail")
-    }
-    /// Marker for the newest message already surfaced. Lives under local/ because
-    /// "what I have read" is per-checkout, not shared state to merge.
-    pub fn mail_seen(&self) -> PathBuf {
-        self.local_dir().join("mail-seen")
     }
     pub fn timeline(&self) -> PathBuf {
         self.ws_dir().join("timeline.jsonl")
@@ -66,8 +48,13 @@ impl Workspace {
     pub fn limit_guard(&self) -> PathBuf {
         self.local_dir().join("limit-guard")
     }
-    pub fn exists(&self) -> bool {
-        self.ws_dir().is_dir()
+    /// Is this an initialised workspace?
+    ///
+    /// The identity file, not the `.ws/` directory. Those differ: acquiring the
+    /// workspace lock creates `.ws/local/`, so a directory-existence test reported
+    /// "already a workspace" for one that had a lock and nothing else.
+    pub fn is_initialised(&self) -> bool {
+        self.workspace_toml().is_file()
     }
 }
 
@@ -91,7 +78,18 @@ pub fn open_or_create(name: &str, agent: &str, cfg: &Config) -> Result<(Workspac
         None => config::sessions_root(cfg).join(name),
     };
     let ws = Workspace { name: name.to_string(), root };
-    if ws.exists() {
+    // `workspace.toml`, not "does `.ws/` exist": launch acquires the workspace
+    // lock *before* calling this (so creation is single-writer), and acquiring the
+    // lock creates `.ws/local/` — which made `.ws` exist and this function skip
+    // `contract::init` entirely, leaving a workspace with a lock and nothing else.
+    // The identity file is what actually distinguishes an initialised workspace.
+    if ws.is_initialised() {
+        // The contract gate: refuse a workspace a newer `ws` created before this
+        // binary ever touches it (launch regenerates the context file, records
+        // session state, etc). A brand-new workspace skips this — it is about
+        // to be created BY this binary, at CONTRACT_VERSION, so there is
+        // nothing yet to be newer than.
+        contract::check_gate(&ws.name, &ws.workspace_toml())?;
         return Ok((ws, false));
     }
     std::fs::create_dir_all(&ws.root)?;
@@ -99,13 +97,36 @@ pub fn open_or_create(name: &str, agent: &str, cfg: &Config) -> Result<(Workspac
     Ok((ws, true))
 }
 
-fn validate_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || name.contains('/')
+/// The one gate on what may become a workspace name.
+///
+/// This is an **allowlist**, deliberately. The previous denylist (empty, `/`,
+/// `..`, leading `-`) admitted spaces, `;`, `$`, backticks, quotes, newlines and
+/// control characters, and a workspace name reaches too many hostile contexts
+/// for that to be safe: an argv element, a tmux window name, a directory name, a
+/// TOML key, and a registry key. `ws -spawn` turned that into arbitrary code
+/// execution (see `spawn::TmuxPlan::command`). Enumerating what is safe is the
+/// only version of this function that stays correct as new call sites appear.
+///
+/// `@` is permitted because `base@feature` worktree workspaces are named with
+/// it (`worktree::create` → `contract::init`). `.` is permitted for names like
+/// `my.project`, but `..` in any position is not, and neither is a name that is
+/// only dots — both are path traversal in a value used as a directory name.
+///
+/// Called from `contract::init` and `registry::register` rather than only from
+/// `open_or_create`, because `-adopt` and `migrate-cs` reach those directly and
+/// used to bypass validation entirely.
+pub fn validate_name(name: &str) -> Result<()> {
+    let ok_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@');
+    let bad = name.is_empty()
         || name.contains("..")
         || name.starts_with('-')
-    {
-        anyhow::bail!("invalid workspace name: {name:?}");
+        || name.chars().all(|c| c == '.')
+        || !name.chars().all(ok_char);
+    if bad {
+        anyhow::bail!(
+            "invalid workspace name: {name:?} \
+             (allowed: letters, digits, '-', '_', '.', '@'; no leading '-', no '..')"
+        );
     }
     Ok(())
 }
@@ -132,7 +153,7 @@ mod tests {
         let (_d, cfg) = iso_cfg();
         let (ws, created) = open_or_create("proj", "claude", &cfg).unwrap();
         assert!(created);
-        assert!(ws.exists());
+        assert!(ws.is_initialised());
         assert_eq!(ws.root, resolve("proj", &cfg).root);
 
         // Second open does not recreate.
@@ -162,6 +183,74 @@ mod tests {
         // end-to-end: open_or_create surfaces the rejection
         let (_d, cfg) = iso_cfg();
         assert!(open_or_create("../evil", "claude", &cfg).is_err());
+    }
+
+    /// M2, the validation half. The old denylist admitted every one of these,
+    /// and a workspace name becomes an argv element, a tmux window name and a
+    /// directory name. One case per character class, so a regression names the
+    /// class it reopened rather than just "some name got through".
+    #[test]
+    fn shell_metacharacters_and_whitespace_are_rejected_by_class() {
+        for (name, class) in [
+            ("x;touch /tmp/pwned", "command separator"),
+            ("x&whoami", "background/chain"),
+            ("x|tee", "pipe"),
+            ("x`id`", "backtick substitution"),
+            ("x$(id)", "dollar substitution"),
+            ("x${HOME}", "brace expansion"),
+            ("has space", "whitespace"),
+            ("has\ttab", "tab"),
+            ("has\nnewline", "newline"),
+            ("quote'single", "single quote"),
+            ("quote\"double", "double quote"),
+            ("glob*", "glob"),
+            ("redirect>out", "redirection"),
+            ("paren(", "paren"),
+            ("~tilde", "tilde expansion"),
+            ("!bang", "history expansion"),
+            ("nul\0byte", "control character"),
+            (".", "bare dot"),
+            ("...", "only dots"),
+            ("a..b", "inner traversal"),
+        ] {
+            assert!(
+                validate_name(name).is_err(),
+                "{class} must be rejected, but {name:?} was accepted"
+            );
+        }
+    }
+
+    /// The allowlist must not have become so tight that real names break —
+    /// especially `base@feature`, which is how every worktree workspace is named
+    /// and which reaches `contract::init` through `worktree::create`.
+    #[test]
+    fn ordinary_and_worktree_names_still_pass() {
+        for name in ["proj", "my-project", "my_project", "my.project", "api@retry", "ws2", "A1"] {
+            assert!(validate_name(name).is_ok(), "{name:?} must remain a legal name");
+        }
+    }
+
+    /// The bypass that made the injection reachable: `-adopt` never called
+    /// `validate_name`, so it registered whatever it was handed. Both write
+    /// paths must now refuse, or `-spawn` gets a hostile name to run.
+    #[test]
+    fn adopt_and_register_cannot_bypass_validation() {
+        let (_d, _cfg) = iso_cfg();
+        let d = TempDir::new().unwrap();
+        let nasty = "x;touch /tmp/pwned";
+
+        assert!(
+            crate::contract::init(nasty, d.path(), "claude", false).is_err(),
+            "contract::init must refuse a hostile name (the -adopt / migrate-cs path)"
+        );
+        assert!(
+            crate::registry::register(nasty, d.path()).is_err(),
+            "registry::register must refuse it too (the re-adopt path skips init)"
+        );
+        assert!(
+            crate::registry::lookup_checked(nasty).unwrap().is_none(),
+            "and nothing may be left registered under that name"
+        );
     }
 
     #[test]

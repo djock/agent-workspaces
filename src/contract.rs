@@ -5,9 +5,45 @@ use std::process::Command;
 use crate::actors;
 use crate::registry;
 
-pub const CONTRACT_VERSION: u32 = 1;
+pub const CONTRACT_VERSION: i64 = 1;
+
+/// Refuse to open a workspace this binary is older than.
+///
+/// `contract_version` is written into every `workspace.toml` `init` creates
+/// but, until this fix, was parsed into `Meta` and never read for a decision —
+/// a `ws` binary older than the one that created a workspace could open it,
+/// misread fields a future version added, and rewrite the file having silently
+/// discarded whatever it didn't understand. `meta::update`'s table round-trip
+/// already preserves *unknown keys*, but it cannot preserve an interpretation
+/// this binary was never taught.
+///
+/// A missing/absent version — real for every workspace created before this
+/// field existed — parses as `0` (see `meta::from_table`) and always passes:
+/// `0` is not "from the future", it predates the field entirely. A version
+/// equal to or lower than this binary's also passes. Only strictly greater
+/// refuses.
+///
+/// The read goes through `meta::read_checked`, not the lenient `meta::read`:
+/// a `workspace.toml` that exists but cannot be read or parsed must refuse
+/// with the path in the error (fail-closed), not silently be treated as an
+/// absent/legacy file that trivially passes the gate.
+pub fn check_gate(name: &str, ws_toml: &Path) -> Result<()> {
+    let stored = crate::meta::read_checked(ws_toml)?
+        .map(|m| m.contract_version)
+        .unwrap_or(0);
+    if stored > CONTRACT_VERSION {
+        anyhow::bail!(
+            "workspace '{name}' was created by a newer ws (contract v{stored} > v{CONTRACT_VERSION}); update ws"
+        );
+    }
+    Ok(())
+}
 
 pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
+    // Validate here, not only in `open_or_create`: `-adopt`, `migrate-cs` and
+    // `worktree::create` all reach this function directly, and `-adopt` used to
+    // register an arbitrary name — which `ws -spawn` then executed.
+    crate::workspace::validate_name(name)?;
     let ws = root.join(".ws");
     for sub in ["notebook", "memory", "handoffs", "plans", "local"] {
         std::fs::create_dir_all(ws.join(sub))?;
@@ -48,10 +84,15 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
     write_if_absent(&ws.join("handoffs/.gitkeep"), "")?;
     write_if_absent(&ws.join("plans/.gitkeep"), "")?;
 
-    // .ws/.gitignore — never commit local/ or secrets
+    // .ws/.gitignore — never commit local/, secrets, or transaction sidecars.
+    //
+    // `*.lock` covers the `txn` module's sidecar lock files (`workspace.toml.lock`
+    // and friends). They are per-machine coordination state with no meaning in
+    // another checkout, and committing one would put a file in the repo that a
+    // co-developer's ws then locks against for no reason.
     write_if_absent(
         &ws.join(".gitignore"),
-        "local/\n*.enc\n",
+        "local/\n*.enc\n*.lock\n",
     )?;
 
     // .ws/.gitattributes — union-merge every append-only file.
@@ -74,7 +115,7 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
         .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
         .unwrap_or(false);
     if !inside {
-        run_git(root, &["init", "-q"])?;
+        crate::git::ok(root, &["init", "-q"])?;
     }
     if commit {
         // `git commit -- <path>` is a partial commit, and git refuses those
@@ -95,7 +136,7 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
         // `gitdir:` pointer, and conflating the two produced a Critical in
         // this project's Phase 6. `--git-path` resolves correctly for plain
         // repos, linked worktrees, and `GIT_DIR` overrides alike.
-        let merging = run_git_stdout(root, &["rev-parse", "--git-path", "MERGE_HEAD"])
+        let merging = crate::git::ok(root, &["rev-parse", "--git-path", "MERGE_HEAD"])
             .map(|p| root.join(p.trim()).exists())
             .unwrap_or(false);
         if !merging {
@@ -131,7 +172,7 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
                 // convenience commit must never fail workspace creation. This
                 // is what closes every partial-commit-refusing git state at
                 // once instead of the ones we happened to think of.
-                let _ = run_git(
+                let _ = crate::git::ok(
                     root,
                     &[
                         "-c",
@@ -173,24 +214,11 @@ fn write_if_absent(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_git(root: &Path, args: &[&str]) -> Result<()> {
-    let status = Command::new("git").arg("-C").arg(root).args(args).status()?;
-    if !status.success() {
-        anyhow::bail!("git {:?} failed", args);
-    }
-    Ok(())
-}
-
-/// Like `run_git`, but returns captured stdout instead of inheriting the
-/// child's. Used for `rev-parse --git-path`, where the point is the path it
-/// prints, not just success/failure.
-fn run_git_stdout(root: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git").arg("-C").arg(root).args(args).output()?;
-    if !out.status.success() {
-        anyhow::bail!("git {:?} failed", args);
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
+// Git calls in this module go through `crate::git::ok`, which runs with
+// `current_dir(root)` — the same thing `git -C root` did, with one shared
+// error-reporting rule. This module's own wrapper used to surface stderr only,
+// which for `git merge`-class failures (whose diagnostics go to stdout) produced
+// errors reading `git … failed:` with no reason at all.
 
 pub fn read_session_id(state_toml: &Path, agent: &str) -> Option<String> {
     let s = std::fs::read_to_string(state_toml).ok()?;
@@ -224,17 +252,47 @@ pub fn write_state_table(state_toml: &Path, t: &toml::Table) -> Result<()> {
     Ok(())
 }
 
+/// Read-modify-write `state.toml` under an interprocess lock.
+///
+/// This is the file the C2 finding is about: `write_session_id` (from hook
+/// handlers) and `agents::codex::record_owner` (from launch) write it from
+/// *different processes*. Merging keys instead of replacing them stopped either
+/// from dropping the other's fields, but merging alone cannot stop a lost update —
+/// both writers can still read the same starting table and rename their own
+/// result into place, and the second silently wins. Every mutation goes through
+/// here so the read and the write are one transaction.
+///
+/// Callers must not nest: `f` may not call another `update_state` on the same
+/// path (see `txn`'s module docs on reentrancy).
+pub fn update_state(state_toml: &Path, f: impl FnOnce(&mut toml::Table)) -> Result<()> {
+    crate::txn::transaction(state_toml, || {
+        let mut t = read_state_table(state_toml)?;
+        f(&mut t);
+        write_state_table(state_toml, &t)
+    })
+}
+
+/// Merge `key`/`value` into the sub-table for `agent`, preserving its other keys.
+pub fn set_agent_field(
+    state_toml: &Path,
+    agent: &str,
+    key: &str,
+    value: toml::Value,
+) -> Result<()> {
+    update_state(state_toml, |t| {
+        // Merge into the agent's existing table rather than replacing it, so a
+        // `session_id` write does not drop the `launched` marker (or vice versa).
+        let mut entry = match t.get(agent).and_then(|v| v.as_table()) {
+            Some(existing) => existing.clone(),
+            None => toml::Table::new(),
+        };
+        entry.insert(key.to_string(), value);
+        t.insert(agent.to_string(), toml::Value::Table(entry));
+    })
+}
+
 pub fn write_session_id(state_toml: &Path, agent: &str, id: &str) -> Result<()> {
-    let mut t = read_state_table(state_toml)?;
-    // Merge into the agent's existing table rather than replacing it, so a
-    // `session_id` write does not drop the `launched` marker (or vice versa).
-    let mut entry = match t.get(agent).and_then(|v| v.as_table()) {
-        Some(existing) => existing.clone(),
-        None => toml::Table::new(),
-    };
-    entry.insert("session_id".into(), toml::Value::String(id.to_string()));
-    t.insert(agent.to_string(), toml::Value::Table(entry));
-    write_state_table(state_toml, &t)
+    set_agent_field(state_toml, agent, "session_id", toml::Value::String(id.to_string()))
 }
 
 #[cfg(test)]
@@ -275,10 +333,10 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         // A real repository with history, exactly what `-adopt` targets.
-        run_git(&root, &["init", "-q"]).unwrap();
+        crate::git::ok(&root, &["init", "-q"]).unwrap();
         std::fs::write(root.join("src.rs"), "fn main() {}\n").unwrap();
-        run_git(&root, &["add", "src.rs"]).unwrap();
-        run_git(
+        crate::git::ok(&root, &["add", "src.rs"]).unwrap();
+        crate::git::ok(
             &root,
             &["-c", "user.name=u", "-c", "user.email=u@e", "commit", "-q", "-m", "base"],
         )
@@ -288,7 +346,7 @@ mod tests {
         // staged themselves. Neither belongs in a ws-authored commit.
         std::fs::write(root.join("wip.txt"), "secret-wip\n").unwrap();
         std::fs::write(root.join("staged.txt"), "mine\n").unwrap();
-        run_git(&root, &["add", "staged.txt"]).unwrap();
+        crate::git::ok(&root, &["add", "staged.txt"]).unwrap();
 
         init("myproj", &root, "claude", true).unwrap();
 
@@ -327,15 +385,15 @@ mod tests {
     fn a_partial_commit_really_does_fail_mid_merge() {
         let d = TempDir::new().unwrap();
         let root = d.path();
-        run_git(root, &["init", "-q"]).unwrap();
-        run_git(root, &["config", "user.email", "t@t"]).unwrap();
-        run_git(root, &["config", "user.name", "t"]).unwrap();
+        crate::git::ok(root, &["init", "-q"]).unwrap();
+        crate::git::ok(root, &["config", "user.email", "t@t"]).unwrap();
+        crate::git::ok(root, &["config", "user.name", "t"]).unwrap();
         std::fs::write(root.join("base.txt"), "base").unwrap();
-        run_git(root, &["add", "base.txt"]).unwrap();
-        run_git(root, &["commit", "-qm", "base"]).unwrap();
+        crate::git::ok(root, &["add", "base.txt"]).unwrap();
+        crate::git::ok(root, &["commit", "-qm", "base"]).unwrap();
         std::fs::write(root.join(".git/MERGE_HEAD"), "0".repeat(40) + "\n").unwrap();
         std::fs::write(root.join("base.txt"), "changed").unwrap();
-        run_git(root, &["add", "--", "base.txt"]).unwrap();
+        crate::git::ok(root, &["add", "--", "base.txt"]).unwrap();
 
         let out = Command::new("git")
             .arg("-C")
@@ -358,12 +416,12 @@ mod tests {
         let d = TempDir::new().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", d.path().join("cfg"));
         let root = d.path();
-        run_git(root, &["init", "-q"]).unwrap();
-        run_git(root, &["config", "user.email", "t@t"]).unwrap();
-        run_git(root, &["config", "user.name", "t"]).unwrap();
+        crate::git::ok(root, &["init", "-q"]).unwrap();
+        crate::git::ok(root, &["config", "user.email", "t@t"]).unwrap();
+        crate::git::ok(root, &["config", "user.name", "t"]).unwrap();
         std::fs::write(root.join("base.txt"), "base").unwrap();
-        run_git(root, &["add", "base.txt"]).unwrap();
-        run_git(root, &["commit", "-qm", "base"]).unwrap();
+        crate::git::ok(root, &["add", "base.txt"]).unwrap();
+        crate::git::ok(root, &["commit", "-qm", "base"]).unwrap();
         // Simulate a merge in progress; git refuses partial commits in this state.
         std::fs::write(root.join(".git/MERGE_HEAD"), "0".repeat(40) + "\n").unwrap();
 
@@ -377,20 +435,20 @@ mod tests {
     /// MERGE_HEAD-only probe leaves this state failing exactly as before.
     /// Nothing is simulated here: git itself writes CHERRY_PICK_HEAD.
     fn repo_mid_cherry_pick(root: &Path) {
-        run_git(root, &["init", "-q", "-b", "main"]).unwrap();
-        run_git(root, &["config", "user.email", "t@t"]).unwrap();
-        run_git(root, &["config", "user.name", "t"]).unwrap();
+        crate::git::ok(root, &["init", "-q", "-b", "main"]).unwrap();
+        crate::git::ok(root, &["config", "user.email", "t@t"]).unwrap();
+        crate::git::ok(root, &["config", "user.name", "t"]).unwrap();
         std::fs::write(root.join("f.txt"), "base\n").unwrap();
-        run_git(root, &["add", "f.txt"]).unwrap();
-        run_git(root, &["commit", "-qm", "base"]).unwrap();
+        crate::git::ok(root, &["add", "f.txt"]).unwrap();
+        crate::git::ok(root, &["commit", "-qm", "base"]).unwrap();
 
-        run_git(root, &["checkout", "-q", "-b", "side"]).unwrap();
+        crate::git::ok(root, &["checkout", "-q", "-b", "side"]).unwrap();
         std::fs::write(root.join("f.txt"), "side\n").unwrap();
-        run_git(root, &["commit", "-qam", "side change"]).unwrap();
+        crate::git::ok(root, &["commit", "-qam", "side change"]).unwrap();
 
-        run_git(root, &["checkout", "-q", "main"]).unwrap();
+        crate::git::ok(root, &["checkout", "-q", "main"]).unwrap();
         std::fs::write(root.join("f.txt"), "main\n").unwrap();
-        run_git(root, &["commit", "-qam", "main change"]).unwrap();
+        crate::git::ok(root, &["commit", "-qam", "main change"]).unwrap();
 
         // Conflicts, and leaves the cherry-pick in progress.
         let out = Command::new("git")
@@ -440,16 +498,16 @@ mod tests {
         let root = d.path().join("proj");
         std::fs::create_dir_all(&root).unwrap();
 
-        run_git(&root, &["init", "-q", "-b", "main"]).unwrap();
-        run_git(&root, &["config", "user.email", "t@t"]).unwrap();
-        run_git(&root, &["config", "user.name", "t"]).unwrap();
+        crate::git::ok(&root, &["init", "-q", "-b", "main"]).unwrap();
+        crate::git::ok(&root, &["config", "user.email", "t@t"]).unwrap();
+        crate::git::ok(&root, &["config", "user.name", "t"]).unwrap();
         std::fs::write(root.join("f.txt"), "base\n").unwrap();
-        run_git(&root, &["add", "f.txt"]).unwrap();
-        run_git(&root, &["commit", "-qm", "base"]).unwrap();
+        crate::git::ok(&root, &["add", "f.txt"]).unwrap();
+        crate::git::ok(&root, &["commit", "-qm", "base"]).unwrap();
         std::fs::write(root.join("f.txt"), "second\n").unwrap();
-        run_git(&root, &["commit", "-qam", "second"]).unwrap();
+        crate::git::ok(&root, &["commit", "-qam", "second"]).unwrap();
         std::fs::write(root.join("f.txt"), "third\n").unwrap();
-        run_git(&root, &["commit", "-qam", "third"]).unwrap();
+        crate::git::ok(&root, &["commit", "-qam", "third"]).unwrap();
 
         // Reverting "second" conflicts because "third" touched the same line.
         let out = Command::new("git")
@@ -476,5 +534,76 @@ mod tests {
         write_session_id(&state, "codex", "xyz").unwrap();
         assert_eq!(read_session_id(&state, "claude"), Some("abc-123".into()));
         assert_eq!(read_session_id(&state, "codex"), Some("xyz".into()));
+    }
+
+    #[test]
+    fn check_gate_refuses_a_newer_contract_version() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("workspace.toml");
+        std::fs::write(&p, format!("name = \"proj\"\ncontract_version = {}\n", CONTRACT_VERSION + 7)).unwrap();
+
+        let err = check_gate("proj", &p).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("proj"), "names the workspace: {msg}");
+        assert!(msg.contains("newer ws"), "says why: {msg}");
+        assert!(
+            msg.contains(&format!("v{}", CONTRACT_VERSION + 7)) && msg.contains(&format!("v{CONTRACT_VERSION}")),
+            "states both versions: {msg}"
+        );
+        assert!(msg.contains("update ws"), "says the fix: {msg}");
+    }
+
+    #[test]
+    fn check_gate_passes_the_current_version() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("workspace.toml");
+        std::fs::write(&p, format!("name = \"proj\"\ncontract_version = {CONTRACT_VERSION}\n")).unwrap();
+        assert!(check_gate("proj", &p).is_ok());
+    }
+
+    /// v0 (an explicit `contract_version = 0`, the value legacy files written
+    /// before the field existed would parse as) must pass, never refuse — it
+    /// is older, not "from the future".
+    #[test]
+    fn check_gate_passes_an_explicit_legacy_v0() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("workspace.toml");
+        std::fs::write(&p, "name = \"proj\"\ncontract_version = 0\n").unwrap();
+        assert!(check_gate("proj", &p).is_ok());
+    }
+
+    /// The field genuinely absent — the real shape of every workspace.toml
+    /// written before `contract_version` existed at all — must also pass.
+    #[test]
+    fn check_gate_passes_when_the_field_is_absent() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("workspace.toml");
+        std::fs::write(&p, "name = \"proj\"\n").unwrap();
+        assert!(check_gate("proj", &p).is_ok());
+    }
+
+    /// A workspace that has never been opened yet (no workspace.toml at all)
+    /// must also pass — `open_or_create` only calls this for a workspace that
+    /// already `.exists()`, but the gate itself must not require the file.
+    #[test]
+    fn check_gate_passes_when_the_file_is_missing() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("workspace.toml");
+        assert!(check_gate("proj", &p).is_ok());
+    }
+
+    /// Fail-closed: a workspace.toml that exists but cannot be parsed must
+    /// refuse with the path in the error, never be treated as absent (which
+    /// would trivially pass) or as the current version.
+    #[test]
+    fn check_gate_refuses_a_corrupt_file_with_the_path_in_the_error() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("workspace.toml");
+        std::fs::write(&p, "not toml {{{").unwrap();
+        let err = check_gate("proj", &p).unwrap_err();
+        assert!(
+            err.to_string().contains(&p.display().to_string()),
+            "the path must be in the error: {err}"
+        );
     }
 }

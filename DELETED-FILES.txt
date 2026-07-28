@@ -1,0 +1,29 @@
+# Files this working tree DELETES, for applying the archive onto a git checkout.
+#
+# This tree was refocused per docs/plans/2026-07-28-ws-refocus.md. Copying a
+# directory over a git checkout cannot express a deletion — the old files simply
+# stay — so these paths have to be removed on the far side explicitly.
+#
+# From the repository root, after copying this tree over it:
+#
+#     git rm -r --cached --ignore-unmatch $(grep -v '^#' DELETED-FILES.txt)
+#     rm -rf $(grep -v '^#' DELETED-FILES.txt)
+#     rmdir src/tui 2>/dev/null   # now empty
+#
+# Or, equivalently, `git rm` each path and let git stage the removal.
+#
+# tests/tui.rs was renamed to tests/picker.rs; the new file is present in the
+# tree, so only the old name needs removing.
+
+src/drain.rs
+src/mail.rs
+src/migrate.rs
+src/spawn.rs
+src/tui/app.rs
+src/tui/detail.rs
+src/tui/mod.rs
+src/tui/render.rs
+src/tui/theme.rs
+tests/migrate.rs
+tests/orchestration.rs
+tests/tui.rs

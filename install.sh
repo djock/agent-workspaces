@@ -6,6 +6,18 @@ INSTALL_DIR="${WS_INSTALL_DIR:-$HOME/.local/bin}"
 BUILD_FROM_SOURCE=0
 RUN_SETUP=1
 REQUESTED_VERSION=""
+ALLOW_UNSIGNED=0
+
+# The minisign public key releases are signed with.
+#
+# Empty means "no signing key has been published yet", and signature
+# verification is skipped — the honest behaviour while the key does not exist,
+# rather than pretending to verify. Fill this in and CI will start signing;
+# see docs/releasing.md. Because this key lives in the repository, trust is
+# established when you obtain the repository and is strong from then on: a
+# compromised release host can replace the assets but cannot produce a
+# signature that matches this key.
+MINISIGN_PUBKEY="${WS_MINISIGN_PUBKEY:-}"
 
 usage() {
     cat <<'EOF'
@@ -18,6 +30,8 @@ Options:
   --version <version>  Install a release such as 0.1.0 or v0.1.0
   --install-dir <dir>  Install directory (default: ~/.local/bin)
   --no-setup           Do not install agent hooks and prompts
+  --allow-unsigned     Install even if the release signature is missing or
+                       cannot be checked. Not recommended.
   -h, --help           Show this help
 EOF
 }
@@ -39,6 +53,9 @@ while [ "$#" -gt 0 ]; do
             ;;
         --no-setup)
             RUN_SETUP=0
+            ;;
+        --allow-unsigned)
+            ALLOW_UNSIGNED=1
             ;;
         -h|--help)
             usage
@@ -74,13 +91,22 @@ else
         exit 1
     }
 
+    # Resolve the release target from the host rather than hard-refusing
+    # anything that is not Darwin/arm64. The release workflow now publishes a
+    # statically linked Linux binary alongside the Apple Silicon one, so the
+    # installer has to be able to ask for it.
     OS="$(uname -s)"
     ARCH="$(uname -m)"
-    if [ "$OS" != "Darwin" ] || [ "$ARCH" != "arm64" ]; then
-        echo "install.sh: no prebuilt v0.1 release for $OS/$ARCH" >&2
-        echo "Use: ./install.sh --build-from-source" >&2
-        exit 1
-    fi
+    case "$OS/$ARCH" in
+        Darwin/arm64)        TARGET="aarch64-apple-darwin" ;;
+        Linux/x86_64)        TARGET="x86_64-unknown-linux-musl" ;;
+        *)
+            echo "install.sh: no prebuilt binary for $OS/$ARCH" >&2
+            echo "Supported: Darwin/arm64, Linux/x86_64." >&2
+            echo "Use: ./install.sh --build-from-source" >&2
+            exit 1
+            ;;
+    esac
 
     if [ -n "$REQUESTED_VERSION" ]; then
         case "$REQUESTED_VERSION" in
@@ -92,7 +118,7 @@ else
     fi
 
     VERSION="${TAG#v}"
-    ASSET="ws-v${VERSION}-aarch64-apple-darwin.tar.gz"
+    ASSET="ws-v${VERSION}-${TARGET}.tar.gz"
     TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ws-install.XXXXXX")"
     trap 'rm -rf "$TEMP_DIR"' EXIT HUP INT TERM
 
@@ -100,11 +126,69 @@ else
         --repo "$REPOSITORY" \
         --pattern "$ASSET" \
         --pattern SHA256SUMS \
-        --dir "$TEMP_DIR"
+        --pattern 'SHA256SUMS.minisig' \
+        --dir "$TEMP_DIR" || true
+
+    if [ ! -f "$TEMP_DIR/$ASSET" ] || [ ! -f "$TEMP_DIR/SHA256SUMS" ]; then
+        echo "install.sh: could not download $ASSET and SHA256SUMS from $TAG" >&2
+        exit 1
+    fi
 
     (
         cd "$TEMP_DIR"
-        shasum -a 256 -c SHA256SUMS
+
+        # 1. Authenticity, before integrity.
+        #
+        # SHA256SUMS is served from the same place as the binary, so on its own it
+        # proves only that the download was not corrupted in transit — a host that
+        # can replace the asset can replace the checksum to match. The signature
+        # over SHA256SUMS is what makes the checksum mean anything.
+        #
+        # Fails CLOSED: if a public key is configured and the signature is missing
+        # or does not verify, the install stops. `--allow-unsigned` is the only way
+        # past, and it has to be typed. (A soft gate that silently skips
+        # verification when the verifier is absent is worse than none, because it
+        # reads as "verified" in the output.)
+        if [ -n "$MINISIGN_PUBKEY" ]; then
+            if [ ! -f SHA256SUMS.minisig ]; then
+                if [ "$ALLOW_UNSIGNED" -eq 1 ]; then
+                    echo "install.sh: WARNING: release $TAG has no signature; continuing because --allow-unsigned was given." >&2
+                else
+                    echo "install.sh: release $TAG is not signed (no SHA256SUMS.minisig)." >&2
+                    echo "Re-run with --allow-unsigned to install it anyway." >&2
+                    exit 1
+                fi
+            elif command -v minisign >/dev/null 2>&1; then
+                minisign -V -P "$MINISIGN_PUBKEY" -m SHA256SUMS -x SHA256SUMS.minisig || {
+                    echo "install.sh: SIGNATURE VERIFICATION FAILED for $TAG." >&2
+                    echo "Do not install this. Report it: the assets do not match the release key." >&2
+                    exit 1
+                }
+                echo "install.sh: signature verified."
+            elif [ "$ALLOW_UNSIGNED" -eq 1 ]; then
+                echo "install.sh: WARNING: minisign is not installed, signature NOT checked (--allow-unsigned)." >&2
+            else
+                echo "install.sh: minisign is not installed, so the release signature cannot be checked." >&2
+                echo "Install it (brew install minisign / apt-get install minisign)," >&2
+                echo "or re-run with --allow-unsigned to skip the check." >&2
+                exit 1
+            fi
+        fi
+
+        # 2. Integrity. `sha256sum` on Linux, `shasum` on macOS — hardcoding
+        #    `shasum` broke the Linux path this installer now supports. Absent
+        #    both, refuse rather than install an unverified binary.
+        if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum --ignore-missing -c SHA256SUMS
+        elif command -v shasum >/dev/null 2>&1; then
+            # BSD shasum has no --ignore-missing; check just our asset's line.
+            grep " $ASSET\$" SHA256SUMS > SHA256SUMS.ours
+            shasum -a 256 -c SHA256SUMS.ours
+        else
+            echo "install.sh: neither sha256sum nor shasum found; cannot verify the download." >&2
+            exit 1
+        fi
+
         tar -xzf "$ASSET"
     )
     install -m 0755 "$TEMP_DIR/ws" "$DESTINATION"

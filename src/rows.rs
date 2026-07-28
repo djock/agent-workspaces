@@ -31,12 +31,6 @@ pub struct WorkspaceRow {
     pub archived: bool,
     pub tags: Vec<String>,
     pub status: Option<String>,
-    /// Recorded per-workspace tab color. Kept rather than dropped: it is the
-    /// natural input for spec §14's per-workspace tab color, and `term::set_tab`
-    /// (`commands::launch`) already consumes exactly this value — it just reads
-    /// it from `meta` directly today rather than off the row.
-    #[allow(dead_code)]
-    pub color: Option<String>,
     /// Newest mtime across the workspace's documents, epoch seconds.
     pub last_activity: Option<i64>,
     pub limits: Option<LimitsSnapshot>,
@@ -99,13 +93,6 @@ pub struct Listing {
     pub total: usize,
 }
 
-/// Every registered workspace as a typed row, filtered per `opts`.
-/// Errors only when the registry itself cannot be read — a single broken
-/// workspace is a `RowState::Corrupt` row, not a failed listing.
-pub fn list_workspaces(opts: &ListOpts) -> Result<Vec<WorkspaceRow>> {
-    Ok(list_all(opts)?.rows)
-}
-
 /// As `list_workspaces`, keeping the pre-filter count.
 pub fn list_all(opts: &ListOpts) -> Result<Listing> {
     let cfg = crate::config::load();
@@ -139,7 +126,6 @@ pub fn list_all(opts: &ListOpts) -> Result<Listing> {
             archived: meta.archived,
             tags: meta.tags.clone(),
             status: meta.status.clone(),
-            color: meta.color.clone(),
             last_activity: last_activity(&ws_dir),
             limits: limits::read(&ws_dir.join("local/limits.json")),
             name,
@@ -172,7 +158,7 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::TempDir;
 
-    // list_workspaces() resolves the registry through the process-global
+    // list_all() resolves the registry through the process-global
     // XDG_CONFIG_HOME. Serialize explicitly rather than leaning on the
     // RUST_TEST_THREADS pin in .cargo/config.toml (see registry.rs).
     static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -201,8 +187,8 @@ mod tests {
         iso(&d);
         make_ws(d.path(), "alpha", "name = \"alpha\"\ndefault_agent = \"codex\"\ntags = [\"rust\"]\nstatus = \"mid-refactor\"\n");
 
-        let rows = list_workspaces(&ListOpts::default()).unwrap();
-        let r = rows.iter().find(|r| r.name == "alpha").expect("alpha listed");
+        let rows = list_all(&ListOpts::default()).unwrap();
+        let r = rows.rows.iter().find(|r| r.name == "alpha").expect("alpha listed");
         assert_eq!(r.state, RowState::Ok);
         assert_eq!(r.agent, "codex");
         assert_eq!(r.tags, vec!["rust".to_string()]);
@@ -217,8 +203,8 @@ mod tests {
         iso(&d);
         make_ws(d.path(), "broken", "not toml {{{");
 
-        let rows = list_workspaces(&ListOpts::default()).unwrap();
-        let r = rows.iter().find(|r| r.name == "broken").expect("broken still listed");
+        let rows = list_all(&ListOpts::default()).unwrap();
+        let r = rows.rows.iter().find(|r| r.name == "broken").expect("broken still listed");
         assert!(
             matches!(r.state, RowState::Corrupt(_)),
             "a corrupt workspace.toml must be reported, not defaulted away: {:?}",
@@ -233,8 +219,8 @@ mod tests {
         iso(&d);
         crate::registry::register("ghost", &d.path().join("ghost")).unwrap();
 
-        let rows = list_workspaces(&ListOpts::default()).unwrap();
-        let r = rows.iter().find(|r| r.name == "ghost").unwrap();
+        let rows = list_all(&ListOpts::default()).unwrap();
+        let r = rows.rows.iter().find(|r| r.name == "ghost").unwrap();
         assert_eq!(r.state, RowState::Missing);
     }
 
@@ -246,15 +232,15 @@ mod tests {
         make_ws(d.path(), "live-one", "tags = [\"keep\"]\n");
         make_ws(d.path(), "old-one", "archived = true\ntags = [\"keep\"]\n");
 
-        let default = list_workspaces(&ListOpts::default()).unwrap();
-        assert!(default.iter().any(|r| r.name == "live-one"));
-        assert!(!default.iter().any(|r| r.name == "old-one"), "archived hidden by default");
+        let default = list_all(&ListOpts::default()).unwrap();
+        assert!(default.rows.iter().any(|r| r.name == "live-one"));
+        assert!(!default.rows.iter().any(|r| r.name == "old-one"), "archived hidden by default");
 
-        let with_archived = list_workspaces(&ListOpts { tag: None, include_archived: true }).unwrap();
-        assert!(with_archived.iter().any(|r| r.name == "old-one"));
+        let with_archived = list_all(&ListOpts { tag: None, include_archived: true }).unwrap();
+        assert!(with_archived.rows.iter().any(|r| r.name == "old-one"));
 
-        let tagged = list_workspaces(&ListOpts { tag: Some("nope".into()), include_archived: true }).unwrap();
-        assert!(tagged.is_empty(), "tag filter excludes everything untagged");
+        let tagged = list_all(&ListOpts { tag: Some("nope".into()), include_archived: true }).unwrap();
+        assert!(tagged.rows.is_empty(), "tag filter excludes everything untagged");
     }
 
     #[test]
@@ -266,7 +252,7 @@ mod tests {
         std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
         std::fs::write(&rp, "not toml {{{").unwrap();
 
-        assert!(list_workspaces(&ListOpts::default()).is_err());
+        assert!(list_all(&ListOpts::default()).is_err());
     }
 
     #[test]

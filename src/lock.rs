@@ -87,8 +87,52 @@ pub fn live_pid_checked(lock_file: &Path) -> Result<Option<u32>> {
     Ok(pid_alive(pid).then_some(pid))
 }
 
+fn lock_body() -> String {
+    format!(
+        "pid = {}\nhost = \"{}\"\ntty = \"{}\"\nstarted = \"{}\"\n",
+        std::process::id(),
+        hostname(),
+        std::env::var("TTY").unwrap_or_else(|_| "?".into()),
+        crate::now_iso(),
+    )
+}
+
+/// Create the lock file only if it does not already exist, atomically.
+///
+/// `create_new` maps to `O_CREAT|O_EXCL`, so when two processes race the kernel
+/// picks exactly one winner and the loser gets `AlreadyExists`. This is the
+/// whole mechanism — the previous `exists()`-then-`write` sequence had a window
+/// between the two calls in which both racers saw "no lock" and both wrote,
+/// leaving two processes each believing it held the workspace exclusively.
+fn create_exclusive(lock_file: &Path, body: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(lock_file)?;
+    f.write_all(body.as_bytes())
+}
+
 pub fn acquire(lock_file: &Path, force: bool) -> Result<LockGuard> {
-    if lock_file.exists() && !force {
+    if let Some(dir) = lock_file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let guard = || LockGuard { path: lock_file.to_path_buf(), released: false };
+    let body = lock_body();
+
+    // 1. Uncontended case, and the race decided correctly: if no lock file
+    //    exists, exactly one caller creates it.
+    match create_exclusive(lock_file, &body) {
+        Ok(()) => return Ok(guard()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("failed to create lock file {}", lock_file.display()))
+        }
+    }
+
+    // 2. A lock file exists. Decide whether it may be taken over at all.
+    if !force {
         match read_pid(lock_file) {
             Ok(Some(pid)) if pid_alive(pid) => {
                 bail!(
@@ -105,23 +149,30 @@ pub fn acquire(lock_file: &Path, force: bool) -> Result<LockGuard> {
             }
         }
     }
-    if let Some(dir) = lock_file.parent() {
-        std::fs::create_dir_all(dir)?;
+
+    // 3. Reclaim a stale (or force-overridden) lock. Remove then create
+    //    exclusively rather than overwriting in place: two callers can reach
+    //    this point having both judged the *same* lock stale, and an
+    //    unconditional write would let both succeed. Going back through
+    //    `create_exclusive` means the kernel still picks one.
+    match std::fs::remove_file(lock_file) {
+        Ok(()) => {}
+        // The holder released it between step 2 and here — nothing to remove.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("failed to clear stale lock {}", lock_file.display()))
+        }
     }
-    let host = hostname();
-    let tty = std::env::var("TTY").unwrap_or_else(|_| "?".into());
-    let body = format!(
-        "pid = {}\nhost = \"{}\"\ntty = \"{}\"\nstarted = \"{}\"\n",
-        std::process::id(),
-        host,
-        tty,
-        crate::now_iso(),
-    );
-    std::fs::write(lock_file, body)?;
-    Ok(LockGuard {
-        path: lock_file.to_path_buf(),
-        released: false,
-    })
+    match create_exclusive(lock_file, &body) {
+        Ok(()) => Ok(guard()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => bail!(
+            "another ws process claimed this workspace while a stale lock was being \
+             reclaimed; nothing was changed, re-run the command."
+        ),
+        Err(e) => Err(e)
+            .with_context(|| format!("failed to create lock file {}", lock_file.display())),
+    }
 }
 
 fn hostname() -> String {
@@ -183,6 +234,112 @@ mod tests {
         assert!(acquire(&lf, false).is_err());
         // force overrides
         let _g = acquire(&lf, true).unwrap();
+    }
+
+    /// `create_exclusive` is the mechanism the TOCTOU fix rests on, and this is
+    /// the test that actually **discriminates** against the old implementation.
+    ///
+    /// The old `acquire` ended in `fs::write`, which creates *or truncates*. This
+    /// asserts the opposite semantics: on an existing path the call must fail
+    /// with `AlreadyExists` and leave the bytes untouched. Swap `create_exclusive`
+    /// back to `fs::write` and this fails immediately — which is more than can be
+    /// said for the contention test below, see its note.
+    #[test]
+    fn create_exclusive_refuses_an_existing_file_and_leaves_it_intact() {
+        let d = TempDir::new().unwrap();
+        let lf = d.path().join("lock");
+        let original = "pid = 4242\nhost = \"other\"\ntty = \"?\"\nstarted = \"earlier\"\n";
+        std::fs::write(&lf, original).unwrap();
+
+        let err = create_exclusive(&lf, "pid = 1\n").expect_err("must not create over an existing file");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "the O_EXCL semantics are the whole point; got {err:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&lf).unwrap(),
+            original,
+            "a losing racer must not have truncated the winner's lock"
+        );
+
+        // And it does create when the path is free.
+        let free = d.path().join("free");
+        create_exclusive(&free, "pid = 7\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&free).unwrap(), "pid = 7\n");
+    }
+
+    /// Mutual exclusion under real contention: N threads race for one lock and
+    /// exactly one may hold it.
+    ///
+    /// **Honest limitation, verified by experiment:** this test is *not* a
+    /// discriminator for the TOCTOU fix. It was run against the old
+    /// `exists()`-then-`fs::write` implementation and still passed, because every
+    /// thread shares this process's pid — so a losing thread that observes the
+    /// winner's file reads back its own live pid and is rejected by the liveness
+    /// check regardless of whether the create was atomic. The genuine window is a
+    /// few instructions wide and separate processes are needed to open it
+    /// reliably.
+    ///
+    /// It is kept as a guard against the *other* way this can break — a future
+    /// change that lets two callers through under contention for some reason
+    /// unrelated to atomicity — but the proof of the fix itself is
+    /// `create_exclusive_refuses_an_existing_file_and_leaves_it_intact` above.
+    #[test]
+    fn exactly_one_of_many_simultaneous_acquirers_wins() {
+        use std::sync::{Arc, Barrier};
+
+        let d = TempDir::new().unwrap();
+        let lf = d.path().join("lock");
+        // Ensure the parent exists up front so the race is over the lock file
+        // itself and not over create_dir_all.
+        std::fs::create_dir_all(d.path()).unwrap();
+
+        const N: usize = 16;
+        let barrier = Arc::new(Barrier::new(N));
+        let mut handles = Vec::with_capacity(N);
+        for _ in 0..N {
+            let lf = lf.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                // Release all threads at the same instant to widen the window.
+                barrier.wait();
+                acquire(&lf, false)
+            }));
+        }
+
+        // Hold every guard until after counting: dropping a winner's guard
+        // deletes the file and would let a later caller win too, masking a
+        // double-acquire.
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let winners = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(winners, 1, "exactly one acquirer may hold the lock, got {winners}");
+
+        for r in &results {
+            if let Err(e) = r {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("in use") || msg.contains("claimed this workspace"),
+                    "a loser must say why it lost, got: {msg}"
+                );
+            }
+        }
+    }
+
+    /// `--force` must still be able to take a live lock — the race fix must not
+    /// have turned the reclaim path into an unconditional refusal.
+    #[test]
+    fn force_still_reclaims_a_live_lock_after_the_race_fix() {
+        let d = TempDir::new().unwrap();
+        let lf = d.path().join("lock");
+        let mypid = std::process::id();
+        std::fs::write(&lf, format!("pid = {mypid}\nhost = \"x\"\ntty = \"?\"\nstarted = \"t\"\n")).unwrap();
+        assert!(acquire(&lf, false).is_err(), "live lock blocks without force");
+        let _g = acquire(&lf, true).expect("force must reclaim");
+        // The reclaimed file records *this* acquisition, not the old contents.
+        let body = std::fs::read_to_string(&lf).unwrap();
+        assert!(body.contains(&format!("pid = {mypid}")));
+        assert!(!body.contains("started = \"t\""), "stale body must be replaced: {body}");
     }
 
     #[test]

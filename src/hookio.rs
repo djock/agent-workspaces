@@ -25,6 +25,11 @@ pub struct ToolInput {
     pub command: String,
     #[serde(default)]
     pub file_path: String,
+    // NotebookEdit payloads name their target `notebook_path`, not `file_path`;
+    // without this field the redaction hook would match the tool and then see
+    // no path at all.
+    #[serde(default)]
+    pub notebook_path: String,
 }
 
 pub fn parse(raw: &str) -> HookInput {

@@ -9,16 +9,33 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: macos-14
+  # One job per target, so a Linux binary ships alongside the Apple Silicon one.
+  # Previously the only prebuilt asset was aarch64-apple-darwin, which made
+  # "ws is macOS only" true of the *release* even though the code is portable.
+  #
+  # Linux uses the `-musl` target so the artifact is statically linked and does
+  # not inherit the runner's glibc as a version floor — a gnu build made on
+  # ubuntu-24.04 refuses to start on an older distro, which is exactly the
+  # failure a prebuilt binary exists to avoid.
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: aarch64-apple-darwin
+          key: ${{ matrix.target }}
 
       - name: Verify tag matches Cargo version
         shell: bash
@@ -26,30 +43,114 @@ jobs:
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           test "$GITHUB_REF_NAME" = "v$version"
 
+      - name: Install musl tooling and tmux (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools tmux
+
       - name: Test
         run: cargo test --all-targets --all-features
 
-      - name: Build Apple Silicon binary
-        run: cargo build --release --locked --target aarch64-apple-darwin
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
-          asset="ws-v${version}-aarch64-apple-darwin.tar.gz"
+          asset="ws-v${version}-${{ matrix.target }}.tar.gz"
           mkdir -p package
-          cp target/aarch64-apple-darwin/release/ws package/ws
+          cp "target/${{ matrix.target }}/release/ws" package/ws
           cp README.md LICENSE package/
           tar -C package -czf "$asset" ws README.md LICENSE
-          shasum -a 256 "$asset" > SHA256SUMS
-          printf 'ASSET=%s\n' "$asset" >> "$GITHUB_ENV"
+          # One checksum file per target; the release job concatenates them into a
+          # single SHA256SUMS. `sha256sum` on Linux, `shasum` on macOS.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" > "$asset.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ws-${{ matrix.target }}
+          path: |
+            ws-*.tar.gz
+            ws-*.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      # Required by attest-build-provenance: it mints a short-lived OIDC token
+      # instead of holding a signing key, so there is no long-lived secret to
+      # leak. This is a second, independent layer over the minisign signature.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Assemble SHA256SUMS
+        shell: bash
+        run: |
+          cd dist
+          # Sorted so the file is byte-stable across re-runs.
+          cat $(ls ws-*.tar.gz.sha256 | sort) > SHA256SUMS
+          rm -f ws-*.tar.gz.sha256
+          cat SHA256SUMS
+
+      # Sign the *sums file*, not each asset: one signature then covers every
+      # artifact, and `install.sh` needs exactly one verification step.
+      #
+      # A checksum served from the same host as the binary proves only that the
+      # download was not corrupted — whoever can swap the asset can swap the
+      # checksum. The signature is what makes the checksum evidence of anything.
+      #
+      # Skipped, loudly, when no key is configured, so a fork or a first release
+      # before key generation still produces a release instead of failing. The
+      # installer's own gate is what refuses to *install* something unsigned.
+      - name: Sign SHA256SUMS (minisign)
+        shell: bash
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
+            echo "::warning::MINISIGN_SECRET_KEY is not set — this release will be UNSIGNED."
+            exit 0
+          fi
+          sudo apt-get update && sudo apt-get install -y minisign
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          # The key is generated with an empty password (see docs/releasing.md),
+          # so signing needs no interaction; </dev/null makes that explicit
+          # rather than relying on a prompt never appearing.
+          minisign -S -s "$RUNNER_TEMP/minisign.key" -m dist/SHA256SUMS < /dev/null
+          shred -u "$RUNNER_TEMP/minisign.key" 2>/dev/null || rm -f "$RUNNER_TEMP/minisign.key"
+          test -f dist/SHA256SUMS.minisig
+          echo "signed:"; cat dist/SHA256SUMS.minisig
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/ws-*.tar.gz
 
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          # SHA256SUMS.minisig is only present when a key was configured; the
+          # glob would otherwise be passed through literally and fail the upload.
+          assets="dist/SHA256SUMS install.sh"
+          [ -f dist/SHA256SUMS.minisig ] && assets="$assets dist/SHA256SUMS.minisig"
+          # shellcheck disable=SC2086  # deliberate word splitting of the list
           gh release create "$GITHUB_REF_NAME" \
-            "$ASSET" SHA256SUMS install.sh \
+            dist/ws-*.tar.gz $assets \
             --draft \
             --generate-notes \
             --title "$GITHUB_REF_NAME"

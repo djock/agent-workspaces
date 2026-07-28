@@ -79,6 +79,27 @@ pub fn atomic_write_with_mode(
     Ok(())
 }
 
+/// An existing file's unix mode, in the shape `atomic_write_with_mode` wants.
+///
+/// For rewriting a file *the user owns* rather than one this tool created:
+/// passing `None` recreates it under the process umask, so a rewrite silently
+/// loosens a `0600` `.env` to `0644`. That is exactly the file the redaction
+/// path rewrites, and exactly the mode that matters on it. `None` here means
+/// "no existing file to copy from" (or a platform without modes), which is the
+/// only case where the umask is the right answer.
+pub fn mode_of(path: &Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).ok().map(|m| m.permissions().mode() & 0o7777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 fn write_tmp(tmp: &Path, contents: &[u8], mode: Option<u32>) -> std::io::Result<()> {
     use std::io::Write;
     let mut opts = std::fs::OpenOptions::new();

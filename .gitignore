@@ -28,3 +28,10 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Signing keys must never be committed. The public key belongs in install.sh;
+# the secret key belongs in GitHub Actions secrets and an offline backup only.
+# See docs/releasing.md.
+minisign.key
+*.key
+*.pem

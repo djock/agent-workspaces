@@ -18,20 +18,67 @@ struct CodexStatuslineBackup {
     status_line_use_colors: Option<bool>,
 }
 
+/// Which tool a hook is scoped to, resolved to a concrete matcher per agent.
+///
+/// Hook matchers are regexes over the payload's `tool_name`, and the two agents
+/// do not name the same tools. Verified empirically against Codex CLI 0.145.0
+/// (see `docs/2026-07-27-codex-hook-contract-verified.md`): Codex reports
+/// `tool_name: "Bash"` for shell calls — same as Claude — but `"apply_patch"`
+/// for file edits, where Claude reports `"Write"`/`"Edit"`.
+///
+/// Hardcoding Claude's names in a shared const is what silently disabled secret
+/// redaction on Codex: `matcher: "Write|Edit"` can never match `apply_patch`, so
+/// the one hook that keeps credentials out of files never fired for Codex users.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolKind {
+    Shell,
+    FileWrite,
+}
+
+/// A hook's scope: every tool call, or only one kind of tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Always,
+    Tool(ToolKind),
+}
+
 pub struct HookSpec {
     pub event: &'static str,
-    pub matcher: Option<&'static str>,
+    pub scope: Scope,
     pub handler: &'static str,
     pub script: &'static str,
 }
 
+/// Every hook event ws will register, for validating `hooks.toml`.
+///
+/// Not every agent fires every one of these — Codex has no `PostToolUseFailure` —
+/// so support is asked per agent via `Agent::supports_event`. This list is the
+/// vocabulary; the agent decides what it can honour.
+pub const KNOWN_EVENTS: &[&str] = &[
+    "SessionStart",
+    "SessionEnd",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Stop",
+    "SubagentStart",
+    "SubagentStop",
+    "PermissionRequest",
+    "PreCompact",
+    "PostCompact",
+];
+
+pub fn is_known_event(e: &str) -> bool {
+    KNOWN_EVENTS.contains(&e)
+}
+
 pub const HOOKS: &[HookSpec] = &[
-    HookSpec { event: "SessionStart", matcher: None, handler: "session-start", script: "session-start.sh" },
-    HookSpec { event: "UserPromptSubmit", matcher: None, handler: "user-prompt", script: "user-prompt.sh" },
-    HookSpec { event: "PreToolUse", matcher: Some("Bash"), handler: "bash-audit", script: "bash-audit.sh" },
-    HookSpec { event: "Stop", matcher: None, handler: "stop", script: "stop.sh" },
-    HookSpec { event: "SessionEnd", matcher: None, handler: "session-end", script: "session-end.sh" },
-    HookSpec { event: "PostToolUse", matcher: Some("Write|Edit"), handler: "secret-redact", script: "secret-redact.sh" },
+    HookSpec { event: "SessionStart", scope: Scope::Always, handler: "session-start", script: "session-start.sh" },
+    HookSpec { event: "UserPromptSubmit", scope: Scope::Always, handler: "user-prompt", script: "user-prompt.sh" },
+    HookSpec { event: "Stop", scope: Scope::Always, handler: "stop", script: "stop.sh" },
+    HookSpec { event: "SessionEnd", scope: Scope::Always, handler: "session-end", script: "session-end.sh" },
+    HookSpec { event: "PostToolUse", scope: Scope::Tool(ToolKind::FileWrite), handler: "secret-redact", script: "secret-redact.sh" },
 ];
 
 pub fn hooks_dir() -> PathBuf {
@@ -67,6 +114,24 @@ fn shell_command(path: &Path) -> String {
     shell_quote(&path.to_string_lossy())
 }
 
+/// Shim filename for a user hook.
+pub fn user_script_name(slug: &str) -> String {
+    format!("user-{slug}.sh")
+}
+
+/// A user hook runs through a ws-owned shim rather than being registered
+/// directly. Two reasons, both load-bearing: the shim lives under ws's hooks
+/// directory, so `group_is_ws` recognises and *replaces* it on the next `setup`
+/// (a bare user command would look foreign and be duplicated on every run); and
+/// the user's command inherits ws's launch env (`WS_WORKSPACE`, `WS_DIR`,
+/// `WS_ROOT`, `WS_AGENT`) and receives the hook payload on stdin unchanged.
+fn render_user_shim(command: &Path) -> String {
+    format!(
+        "#!/bin/sh\n# ws hook \u{2014} user-defined (hooks.toml). Payload arrives on stdin.\nexec {} \"$@\"\n",
+        shell_command(command)
+    )
+}
+
 fn render_shim(ws_bin: &Path, handler: &str) -> String {
     format!(
         "#!/bin/sh\n# ws hook — thin shim (no jq/python); ws does the work.\nexec {} internal {}\n",
@@ -77,27 +142,75 @@ fn render_shim(ws_bin: &Path, handler: &str) -> String {
 
 /// Materialize the shared hook shims once, then register them into `config_path`
 /// (any JSON file with a top-level `hooks` object — settings.json or hooks.json).
-pub fn install_hooks_for(config_path: &Path, ws_bin: &Path) -> Result<usize> {
+///
+/// `agent` supplies the per-agent `tool_name` matchers. It is a parameter rather
+/// than a constant because Claude and Codex name their tools differently, and
+/// baking one agent's names in is what disabled Codex secret redaction.
+pub fn install_hooks_for(
+    config_path: &Path,
+    ws_bin: &Path,
+    agent: &dyn crate::agents::Agent,
+) -> Result<usize> {
     let dir = hooks_dir();
     std::fs::create_dir_all(&dir)?;
 
+    // atomic_write, not fs::write: a hook firing during `setup` `exec`s this
+    // very file, and a plain write can be observed truncated.
     for spec in HOOKS {
-        let path = dir.join(spec.script);
-        std::fs::write(&path, render_shim(ws_bin, spec.handler))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut p = std::fs::metadata(&path)?.permissions();
-            p.set_mode(0o755);
-            std::fs::set_permissions(&path, p)?;
-        }
+        crate::atomic::atomic_write_with_mode(
+            &dir.join(spec.script),
+            render_shim(ws_bin, spec.handler),
+            Some(0o755),
+        )?;
     }
 
-    register_settings(config_path, &dir)?;
-    Ok(HOOKS.len())
+    let user = crate::hooks_user::load()?;
+    let (applies, skipped) = crate::hooks_user::for_agent(&user, agent);
+    for h in &applies {
+        crate::atomic::atomic_write_with_mode(
+            &dir.join(user_script_name(&h.slug)),
+            render_user_shim(&h.command),
+            Some(0o755),
+        )?;
+    }
+    for (h, agent_id) in skipped {
+        eprintln!(
+            "ws: note: user hook {} on {} is not registered for {agent_id} — that agent has no such event",
+            h.command.display(),
+            h.event
+        );
+    }
+
+    register_settings(config_path, &dir, agent, &applies)?;
+    Ok(HOOKS.len() + applies.len())
 }
 
-fn register_settings(settings_path: &Path, hooks_dir: &Path) -> Result<()> {
+/// Merge ws's hook groups into `settings_path`.
+///
+/// Wrapped in `txn::transaction`: this file is `~/.claude/settings.json` or
+/// `~/.codex/hooks.json` — the user's own agent configuration, shared with the
+/// agents themselves. Two concurrent `ws setup`, or a `setup` racing
+/// `-uninstall` (or `-update`, which runs setup), each read the same starting
+/// document and renamed their own result into place, so one side's registration
+/// vanished silently. An atomic rename makes a write all-or-nothing; it does not
+/// make a read-modify-write a transaction.
+fn register_settings(
+    settings_path: &Path,
+    hooks_dir: &Path,
+    agent: &dyn crate::agents::Agent,
+    user: &[&crate::hooks_user::UserHook],
+) -> Result<()> {
+    crate::txn::transaction(settings_path, || {
+        register_settings_locked(settings_path, hooks_dir, agent, user)
+    })
+}
+
+fn register_settings_locked(
+    settings_path: &Path,
+    hooks_dir: &Path,
+    agent: &dyn crate::agents::Agent,
+    user: &[&crate::hooks_user::UserHook],
+) -> Result<()> {
     // Absent → start fresh; unreadable (permission error, I/O error) → refuse.
     // Defaulting on an unreadable file would write the new hooks back over an
     // empty object, clobbering every other key settings.json already had.
@@ -128,32 +241,83 @@ fn register_settings(settings_path: &Path, hooks_dir: &Path) -> Result<()> {
     }
     let hooks_obj = hooks_entry.as_object_mut().unwrap();
 
+    // Build every group ws wants first, keyed by event, then apply per event.
+    //
+    // Applying built-ins and user hooks in two passes was wrong in both
+    // directions: the second pass's "drop stale ws entries" retain deleted the
+    // group the first pass had *just added* for the same event, so a built-in and
+    // a user hook on one event could not coexist — the built-in silently vanished.
+    // One retain per event, then push everything for it.
+    type Group = serde_json::Map<String, Value>;
+    let mut wanted: Vec<(String, Group)> = Vec::new();
+
     for spec in HOOKS {
-        let arr_entry = hooks_obj.entry(spec.event).or_insert_with(|| json!([]));
+        let mut group = Group::new();
+        if let Scope::Tool(kind) = spec.scope {
+            group.insert("matcher".into(), json!(agent.tool_matcher(kind)));
+        }
+        group.insert(
+            "hooks".into(),
+            json!([{
+                "type": "command",
+                "command": shell_command(&hooks_dir.join(spec.script)),
+                "timeout": 10,
+            }]),
+        );
+        wanted.push((spec.event.to_string(), group));
+    }
+
+    // User hooks, resolved through the same per-agent matcher as the built-ins:
+    // one `tool = "file-write"` declaration becomes Claude's
+    // `Write|Edit|MultiEdit|NotebookEdit` and Codex's `Write|Edit|apply_patch`
+    // without the user knowing either vocabulary.
+    for h in user {
+        let mut group = Group::new();
+        if let Scope::Tool(kind) = h.scope {
+            group.insert("matcher".into(), json!(agent.tool_matcher(kind)));
+        }
+        group.insert(
+            "hooks".into(),
+            json!([{
+                "type": "command",
+                "command": shell_command(&hooks_dir.join(user_script_name(&h.slug))),
+                "timeout": h.timeout,
+            }]),
+        );
+        wanted.push((h.event.clone(), group));
+    }
+
+    let events: Vec<String> = {
+        let mut seen: Vec<String> = Vec::new();
+        for (e, _) in &wanted {
+            if !seen.contains(e) {
+                seen.push(e.clone());
+            }
+        }
+        seen
+    };
+
+    for event in events {
+        let arr_entry = hooks_obj.entry(event.clone()).or_insert_with(|| json!([]));
         if !arr_entry.is_array() {
             *arr_entry = json!([]);
         }
         let arr = arr_entry.as_array_mut().unwrap();
-        // drop stale ws entries (command under our hooks dir), keep everything else
+        // Drop ws's own entries (command under our hooks dir); keep everything
+        // else, so a hook the user wired in by hand survives.
         arr.retain(|group| !group_is_ws(group, hooks_dir));
-
-        let command = shell_command(&hooks_dir.join(spec.script));
-        let mut group = serde_json::Map::new();
-        if let Some(m) = spec.matcher {
-            group.insert("matcher".into(), json!(m));
+        for (e, group) in &wanted {
+            if *e == event {
+                arr.push(Value::Object(group.clone()));
+            }
         }
-        group.insert(
-            "hooks".into(),
-            json!([{ "type": "command", "command": command, "timeout": 10 }]),
-        );
-        arr.push(Value::Object(group));
     }
 
     crate::atomic::atomic_write(settings_path, serde_json::to_string_pretty(&root)?)?;
     Ok(())
 }
 
-/// Register `ws statusline` + `ws subagent-statusline` in settings.json, recording
+/// Register `ws statusline` in settings.json, recording
 /// any pre-existing command into <ws_config_dir>/statusline-backup.json first.
 /// Preserves all other settings.json keys; refuses to overwrite an unparseable file.
 pub fn register_statuslines(ws_bin: &Path) -> Result<()> {
@@ -180,7 +344,7 @@ pub fn register_statuslines(ws_bin: &Path) -> Result<()> {
     let mut backup = serde_json::Map::new();
     let ws_prefix = format!("{} ", ws_bin.display());
     let quoted_ws_prefix = format!("{} ", shell_command(ws_bin));
-    for key in ["statusLine", "subagentStatusLine"] {
+    for key in ["statusLine"] {
         if let Some(cmd) = root.get(key).and_then(|v| v.get("command")).and_then(|c| c.as_str()) {
             if !cmd.starts_with(&ws_prefix) && !cmd.starts_with(&quoted_ws_prefix) {
                 backup.insert(key.to_string(), json!(cmd));
@@ -210,10 +374,6 @@ pub fn register_statuslines(ws_bin: &Path) -> Result<()> {
     obj.insert(
         "statusLine".into(),
         json!({ "type": "command", "command": format!("{} statusline", shell_command(ws_bin)), "refreshInterval": 1 }),
-    );
-    obj.insert(
-        "subagentStatusLine".into(),
-        json!({ "type": "command", "command": format!("{} subagent-statusline", shell_command(ws_bin)) }),
     );
 
     crate::atomic::atomic_write(&settings_path, serde_json::to_string_pretty(&root)?)?;
@@ -378,6 +538,14 @@ pub fn unregister_codex_statusline() -> Result<usize> {
     Ok(1)
 }
 
+/// Is this hook group one ws installed?
+///
+/// Anything whose command lives in ws's hooks directory, rather than only the
+/// scripts currently in `HOOKS`. Matching against `HOOKS` alone had two bugs: a
+/// user-hook shim (`user-<slug>.sh`) was not in that list, so it read as *foreign*
+/// and every `ws setup` appended another copy of it; and a built-in that was
+/// renamed or removed left its stale registration behind forever, pointing at a
+/// script that no longer exists.
 fn group_is_ws(group: &Value, hooks_dir: &Path) -> bool {
     group
         .get("hooks")
@@ -386,16 +554,23 @@ fn group_is_ws(group: &Value, hooks_dir: &Path) -> bool {
             hs.iter().any(|h| {
                 h.get("command")
                     .and_then(|c| c.as_str())
-                    .map(|command| {
-                        HOOKS.iter().any(|spec| {
-                            let path = hooks_dir.join(spec.script);
-                            command == path.to_string_lossy() || command == shell_command(&path)
-                        })
-                    })
+                    .map(|command| command_is_in(command, hooks_dir))
                     .unwrap_or(false)
             })
         })
         .unwrap_or(false)
+}
+
+/// Does this registered command point at a file inside `dir`?
+///
+/// Compared on **path components**, not as a string prefix. A foreign hook at
+/// `<hooks_dir>-legacy/foo.sh` shares the textual prefix of the hooks directory
+/// while living somewhere else entirely, and a `starts_with`/`contains` test on
+/// the raw strings deletes it.
+fn command_is_in(command: &str, dir: &Path) -> bool {
+    // Registered commands are shell-quoted by `shell_command`.
+    let unquoted = command.trim().trim_matches('\'');
+    Path::new(unquoted).starts_with(dir)
 }
 
 /// Remove ws-owned hook groups while preserving every unrelated setting and
@@ -523,8 +698,36 @@ pub fn remove_hook_scripts() -> Result<usize> {
             Err(e) => return Err(e.into()),
         }
     }
-    if dir.is_dir() && std::fs::read_dir(&dir)?.next().is_none() {
-        std::fs::remove_dir(dir)?;
+    // User-hook shims too, or `-uninstall` leaves executables behind in a
+    // directory it just told the user it had cleaned out. Derived from the same
+    // `hooks.toml` that created them; an unreadable one is not fatal here — there
+    // is nothing left to register — it only means those shims stay.
+    if let Ok(user) = crate::hooks_user::load() {
+        for h in &user {
+            match std::fs::remove_file(dir.join(user_script_name(&h.slug))) {
+                Ok(()) => removed += 1,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    // Try the removal rather than testing emptiness first: `read_dir().next()`
+    // then `remove_dir` is a race, and a directory holding something ws did not
+    // put there is not ws's to delete.
+    if dir.is_dir() {
+        match std::fs::remove_dir(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            // "Directory not empty" is reported with different errnos across
+            // platforms, so confirm by looking rather than by matching a kind.
+            Err(e) => {
+                let non_empty =
+                    std::fs::read_dir(&dir).map(|mut d| d.next().is_some()).unwrap_or(false);
+                if !non_empty {
+                    return Err(e.into());
+                }
+            }
+        }
     }
     Ok(removed)
 }
@@ -532,6 +735,8 @@ pub fn remove_hook_scripts() -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::claude::ClaudeAgent;
+    use crate::agents::codex::CodexAgent;
     use std::sync::Mutex;
     use tempfile::TempDir;
 
@@ -551,11 +756,29 @@ mod tests {
         d
     }
 
+    /// The whole reason `tool_matcher` is on the `Agent` trait instead of in the
+    /// shared `HOOKS` const. Verified against Codex CLI 0.145.0: both agents
+    /// report a shell call as `Bash`, but a file edit is `Write`/`Edit` on Claude
+    /// and `apply_patch` on Codex. When one const carried Claude's names, the
+    /// Codex secret-redaction hook could never match and never ran.
+    #[test]
+    fn the_two_agents_resolve_different_file_write_matchers() {
+        use crate::agents::Agent;
+        assert_eq!(ClaudeAgent.tool_matcher(ToolKind::Shell), "Bash");
+        assert_eq!(CodexAgent.tool_matcher(ToolKind::Shell), "Bash", "shell agrees");
+
+        let claude = ClaudeAgent.tool_matcher(ToolKind::FileWrite);
+        let codex = CodexAgent.tool_matcher(ToolKind::FileWrite);
+        assert_ne!(claude, codex, "file-write matchers must differ or Codex is broken again");
+        assert!(!claude.contains("apply_patch"), "Claude has no apply_patch tool: {claude}");
+        assert!(codex.contains("apply_patch"), "Codex edits arrive as apply_patch: {codex}");
+    }
+
     #[test]
     fn install_writes_scripts_and_registers_hooks() {
         let _d = iso();
         let ws_bin = std::path::Path::new("/opt/ws/ws");
-        let n = install_hooks_for(&claude_settings_path(), ws_bin).unwrap();
+        let n = install_hooks_for(&claude_settings_path(), ws_bin, &ClaudeAgent).unwrap();
         assert_eq!(n, HOOKS.len());
 
         // scripts exist and are executable, referencing the bin
@@ -571,8 +794,13 @@ mod tests {
         let cmd = ss[0]["hooks"][0]["command"].as_str().unwrap();
         assert!(cmd.contains("session-start.sh"));
         assert!(cmd.starts_with('\'') && cmd.ends_with('\''));
-        // Bash matcher preserved
-        assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+        // PostToolUse is the one built-in with a tool matcher (secret redaction);
+        // PreToolUse has none since the write-only bash audit hook was removed.
+        assert_eq!(
+            settings["hooks"]["PostToolUse"][0]["matcher"],
+            "Write|Edit|MultiEdit|NotebookEdit"
+        );
+        assert!(settings["hooks"]["PreToolUse"].is_null(), "no built-in PreToolUse hook");
     }
 
     #[test]
@@ -583,8 +811,8 @@ mod tests {
         std::fs::create_dir_all(sp.parent().unwrap()).unwrap();
         std::fs::write(&sp, r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/cs/session-start.sh"}]}]}}"#).unwrap();
 
-        install_hooks_for(&claude_settings_path(), std::path::Path::new("/opt/ws/ws")).unwrap();
-        install_hooks_for(&claude_settings_path(), std::path::Path::new("/opt/ws/ws")).unwrap(); // twice
+        install_hooks_for(&claude_settings_path(), std::path::Path::new("/opt/ws/ws"), &ClaudeAgent).unwrap();
+        install_hooks_for(&claude_settings_path(), std::path::Path::new("/opt/ws/ws"), &ClaudeAgent).unwrap(); // twice
 
         let settings: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
@@ -609,8 +837,8 @@ mod tests {
         std::fs::write(&ws_bin, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&ws_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        install_hooks_for(&claude_settings_path(), &ws_bin).unwrap();
-        install_hooks_for(&claude_settings_path(), &ws_bin).unwrap();
+        install_hooks_for(&claude_settings_path(), &ws_bin, &ClaudeAgent).unwrap();
+        install_hooks_for(&claude_settings_path(), &ws_bin, &ClaudeAgent).unwrap();
 
         let settings: Value =
             serde_json::from_str(&std::fs::read_to_string(claude_settings_path()).unwrap()).unwrap();
@@ -627,7 +855,7 @@ mod tests {
         let sp = claude_settings_path();
         std::fs::create_dir_all(sp.parent().unwrap()).unwrap();
         std::fs::write(&sp, r#"{"other":"keep","hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/opt/other/start.sh"}]}]}}"#).unwrap();
-        install_hooks_for(&sp, std::path::Path::new("/opt/ws/ws")).unwrap();
+        install_hooks_for(&sp, std::path::Path::new("/opt/ws/ws"), &ClaudeAgent).unwrap();
 
         let removed = unregister_hooks_for(&sp).unwrap();
 
@@ -655,7 +883,8 @@ mod tests {
 
         let removed = unregister_statuslines(ws_bin).unwrap();
 
-        assert_eq!(removed, 2);
+        // One key now, not two: the subagent status line was removed.
+        assert_eq!(removed, 1);
         let settings: Value =
             serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
         assert_eq!(settings["statusLine"]["command"], "/opt/my-status");
@@ -733,7 +962,7 @@ mod tests {
         let garbage = "{ this is not json ,,, ";
         std::fs::write(&sp, garbage).unwrap();
 
-        let result = install_hooks_for(&claude_settings_path(), std::path::Path::new("/opt/ws/ws"));
+        let result = install_hooks_for(&claude_settings_path(), std::path::Path::new("/opt/ws/ws"), &ClaudeAgent);
         assert!(result.is_err(), "install must error on unparseable settings.json");
         // the original file must be untouched
         assert_eq!(std::fs::read_to_string(&sp).unwrap(), garbage);
@@ -751,7 +980,7 @@ mod tests {
         });
         std::fs::write(&sp, serde_json::to_string(&settings).unwrap()).unwrap();
 
-        install_hooks_for(&claude_settings_path(), std::path::Path::new("/opt/ws/ws")).unwrap();
+        install_hooks_for(&claude_settings_path(), std::path::Path::new("/opt/ws/ws"), &ClaudeAgent).unwrap();
 
         let out: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
@@ -780,7 +1009,7 @@ mod tests {
         perms.set_mode(0o000);
         std::fs::set_permissions(&sp, perms).unwrap();
 
-        let result = install_hooks_for(&sp, std::path::Path::new("/opt/ws/ws"));
+        let result = install_hooks_for(&sp, std::path::Path::new("/opt/ws/ws"), &ClaudeAgent);
 
         let mut perms = std::fs::metadata(&sp).unwrap().permissions();
         perms.set_mode(0o644);

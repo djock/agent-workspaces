@@ -43,30 +43,45 @@ fn bare_ws_falls_back_to_the_text_list_when_not_a_tty() {
     assert!(text.contains("no workspaces yet"), "{text}");
 }
 
+/// `-pick` without a terminal prints the list instead of failing.
+///
+/// The dashboard this replaced *panicked* here (exit 101, plus an escape sequence
+/// on stdout) — `ratatui::init()` on a non-terminal did neither of the two things
+/// its docs promised. The picker has no interactive work it must do, so the honest
+/// answer to "no terminal" is the same information without the arrow keys, not an
+/// error. assert_cmd pipes all three streams, so this is exactly the
+/// `ws -pick < /dev/null > f` case.
 #[test]
-fn explicit_tui_without_a_terminal_is_a_clean_error_not_a_panic() {
-    // The plan (Task 2, Step 9) said not to test this because `ratatui::init()`
-    // on a non-terminal "either errors or blocks". It did neither: it panicked
-    // (exit 101) and left an escape sequence on stdout. assert_cmd pipes all
-    // three streams, so this is exactly the `ws -tui < /dev/null > f` case.
+fn explicit_pick_without_a_terminal_lists_instead_of_failing() {
     let e = Env::new();
-    let out = e.cmd().arg("-tui").output().unwrap();
+    let out = e.cmd().arg("-pick").output().unwrap();
 
-    assert!(!out.status.success(), "-tui without a terminal must fail");
-    assert_ne!(
-        out.status.code(),
-        Some(101),
-        "101 is a Rust panic; -tui must report a normal error instead"
-    );
+    assert!(out.status.success(), "-pick must degrade, not fail: {out:?}");
+    assert_ne!(out.status.code(), Some(101), "101 is a Rust panic");
+    let text = String::from_utf8_lossy(&out.stdout);
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("requires a terminal"), "stderr explains why: {err}");
+    assert!(text.contains("no workspaces yet"), "it printed the list: {text}");
+    assert!(!err.contains("panicked"), "no backtrace: {err}");
     assert!(
-        !err.contains("panicked"),
-        "a documented flag must not answer with a backtrace: {err}"
+        !text.contains('\x1b'),
+        "no escape sequences when there is no terminal to interpret them: {text:?}"
     );
-    assert!(
-        out.stdout.is_empty(),
-        "and nothing is written to stdout: {:?}",
-        String::from_utf8_lossy(&out.stdout)
-    );
+}
+
+/// The picker must never leave a terminal in raw mode or on an alternate screen.
+/// The surest proof from outside is that a non-interactive run emits no terminal
+/// control at all — not the alternate-screen switch, not a clear, not a highlight.
+#[test]
+fn pick_emits_no_terminal_control_sequences_without_a_tty() {
+    let e = Env::new();
+    let ws = e.root.join("proj");
+    std::fs::create_dir_all(&ws).unwrap();
+    e.cmd().args(["-adopt", "proj"]).current_dir(&ws).assert().success();
+
+    let out = e.cmd().arg("-pick").output().unwrap();
+    let all = String::from_utf8_lossy(&out.stdout).to_string()
+        + &String::from_utf8_lossy(&out.stderr);
+    for seq in ["\x1b[?1049h", "\x1b[2J", "\x1b[7m"] {
+        assert!(!all.contains(seq), "must not emit {seq:?}: {all:?}");
+    }
 }

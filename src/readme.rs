@@ -33,7 +33,17 @@ pub fn objective_of(readme: &str) -> Option<String> {
 /// but only while it is still a placeholder (a whole line that is `_(...)_` or
 /// `[...]`). First real prompt wins; a real objective is never overwritten.
 /// Returns Ok(true) if it wrote a change, Ok(false) if nothing to do.
+/// Record the first prompt as the workspace's objective, once.
+///
+/// Transacted: this is a read-modify-write of a git-tracked file holding the
+/// user's own prose, driven from the `UserPromptSubmit` hook — so two sessions
+/// starting at once could each read the placeholder and write back only their own
+/// replacement.
 pub fn capture_objective(readme_path: &Path, objective: &str) -> Result<bool> {
+    crate::txn::transaction(readme_path, || capture_objective_locked(readme_path, objective))
+}
+
+fn capture_objective_locked(readme_path: &Path, objective: &str) -> Result<bool> {
     let text = match std::fs::read_to_string(readme_path) {
         Ok(t) => t,
         Err(_) => return Ok(false),

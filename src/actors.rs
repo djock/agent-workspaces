@@ -23,17 +23,11 @@ pub fn slugify(s: &str) -> String {
 /// falling back to `$USER`. Taking the directory explicitly matters because
 /// `ws -whoami <name>` may run from anywhere.
 pub fn actor_slug_in(dir: &std::path::Path) -> String {
-    if let Ok(o) = Command::new("git")
-        .args(["config", "user.email"])
-        .current_dir(dir)
-        .output()
-    {
-        if o.status.success() {
-            let email = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if !email.is_empty() {
-                return slugify(&email);
-            }
-        }
+    // `git::maybe`, not a hand-rolled probe: "not a repo", "git absent" and
+    // "user.email unset" are all ordinary states here rather than failures to
+    // report, and the `$USER` fallback below is the answer for every one of them.
+    if let Some(email) = crate::git::maybe(dir, &["config", "user.email"]) {
+        return slugify(&email);
     }
     if let Ok(u) = std::env::var("USER") {
         if !u.is_empty() {

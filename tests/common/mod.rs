@@ -92,4 +92,21 @@ impl Env {
     pub fn codex_argv_log(&self) -> String {
         std::fs::read_to_string(self.home.path().join("codex_argv.log")).unwrap_or_default()
     }
+
+    /// Write a fake codex rollout file under the default `$CODEX_HOME/sessions`
+    /// (i.e. `<fake HOME>/.codex/sessions`) naming `cwd`, in the same shape
+    /// `probe_session_exists` (`src/agents/codex.rs`) looks for: a JSONL file
+    /// whose first line is a `session_meta` record carrying `cwd`. `launch`'s
+    /// codex resume decision now checks this before trusting the ws-side
+    /// marker, so a test asserting `resume --last` needs one of these on disk
+    /// or the launch degrades to fresh (see the resume-loop fix, task-2-brief item 2).
+    pub fn write_codex_rollout(&self, cwd: &std::path::Path) {
+        let dir = self.home.path().join(".codex/sessions/2026/07/28");
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = format!(
+            r#"{{"timestamp":"2026-07-28T00:00:00.000Z","type":"session_meta","payload":{{"id":"test","cwd":{:?},"originator":"codex_cli_rs"}}}}"#,
+            cwd.to_string_lossy()
+        );
+        std::fs::write(dir.join("rollout-test.jsonl"), format!("{line}\n")).unwrap();
+    }
 }

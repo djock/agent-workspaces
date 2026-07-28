@@ -6,6 +6,8 @@ pub const PROMPTS: &[(&str, &str)] = &[
     ("wrap.md", include_str!("assets/prompts/wrap.md")),
     ("sweep.md", include_str!("assets/prompts/sweep.md")),
     ("rotate.md", include_str!("assets/prompts/rotate.md")),
+    // `/ws:task` — capture a task mid-turn without switching to it.
+    ("task.md", include_str!("assets/prompts/task.md")),
 ];
 
 pub fn commands_dir() -> PathBuf {

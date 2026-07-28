@@ -9,14 +9,39 @@ permissions:
   contents: read
 
 jobs:
+  # Linux is a first-class target of the code but was never built or tested.
+  # Every macOS-only shell-out (`defaults read`, `osascript`, iTerm2 OSC tab
+  # colours) is already behind `#[cfg(target_os = "macos")]` with a non-macOS
+  # fallback, and everything else it shells to (`git`, `id`, `kill`, `hostname`,
+  # `date`, `tmux`, `sh`) exists on both. Running the suite on ubuntu is what
+  # turns that from a claim into a fact, and it is the prerequisite for shipping
+  # a Linux binary at all.
+  #
+  # `tmux` is installed because `spawn::tmux_available` gates on it.
   test:
-    runs-on: macos-14
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+      - name: Install tmux (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-targets --all-features
       - run: cargo build --release --locked
+
+  # NOTE: `cargo fmt --check` is deliberately NOT a gate yet. Repo-wide rustfmt
+  # currently fails, so adding it here would turn CI red on every commit for
+  # reasons unrelated to the change under review. Fixing the formatting is one
+  # mechanical commit; the gate belongs in that same commit, not before it.
+  # `rustfmt` stays installed above so that commit needs no workflow edit.
