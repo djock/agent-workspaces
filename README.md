@@ -28,7 +28,13 @@ Most importantly, the same workspace works with both Claude Code and Codex. If y
   back with `ws -secrets restore <file>`.
 - Installs hooks and reusable prompts for both supported agents.
 - Configures matching Claude and Codex status bars with model, branch, context,
-  5-hour usage, and weekly usage.
+  5-hour usage, and weekly usage. Claude's is drawn by ws as colored blocks, each
+  gauge escalating to amber and red on its own value; Codex renders its own
+  built-in segments, so ws only chooses which appear.
+- Gives each workspace a color, drawn as the terminal tab background (iTerm2 and
+  WezTerm) and as a chip at the head of the status bar, so panes are
+  distinguishable at a glance. Allocated at creation and changed with
+  `ws -color <color>`.
 - Shows available usage-limit information.
 
 ## Status and known limitations
@@ -201,16 +207,18 @@ ws <name> -codex               Open with Codex
 ws <name> --fresh              Start a fresh agent session
 ws <name> --handoff            Include the latest handoff
 ws <name> --force              Take over a workspace another process holds
-ws <base>@<feature>            Create a git worktree workspace
+ws <base>@<feature>            Create a git worktree workspace, or open it
 ws <base>@<feature> --merge    Merge it back and remove it
 ws -search <text>              Search workspace content
 ws -adopt [<name>]             Adopt the current directory
 ws -rm | -archive | -unarchive Remove or hide workspaces
 ws -tag | -status              Label a workspace
+ws -color <color>              Set its tab and status-bar color
 ws -whoami | -who [<name>]     Your actor slug; who did what, from the timeline
 ws -conversations [<name>]     Conversation lineage: rotations and agent switches
 ws -rotate [<name>]            Write a handoff skeleton for the next session
 ws -task add|list|rm           Capture tasks without interrupting the agent
+                               (the agent is asked about them when a turn ends)
 ws -secrets set|get|list|...   Manage workspace secrets
 ws -limits                     Show known usage limits
 ws -doctor                     Check the installation

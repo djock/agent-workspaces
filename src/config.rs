@@ -25,6 +25,12 @@ pub struct Config {
     pub sessions_root: String,
     pub limit_action: String,
     pub secrets_backend: String,
+    /// Whether the Stop hook surfaces captured tasks and asks whether to start
+    /// the oldest. Fires once per change to the queue, never per turn.
+    pub task_prompt: bool,
+    /// Whether `ws <name>` asks before resuming a previous conversation.
+    /// The prompt defaults to No, so pressing Enter resumes.
+    pub resume_prompt: bool,
 }
 
 impl Default for Config {
@@ -38,6 +44,8 @@ impl Default for Config {
             sessions_root: "~/.agent-workspaces".into(),
             limit_action: "handoff-stop".into(),
             secrets_backend: "auto".into(),
+            task_prompt: true,
+            resume_prompt: true,
         }
     }
 }
@@ -117,6 +125,8 @@ pub fn list(cfg: &Config) -> Vec<(String, String)> {
         ("sessions_root".into(), cfg.sessions_root.clone()),
         ("limit_action".into(), cfg.limit_action.clone()),
         ("secrets_backend".into(), cfg.secrets_backend.clone()),
+        ("task_prompt".into(), cfg.task_prompt.to_string()),
+        ("resume_prompt".into(), cfg.resume_prompt.to_string()),
     ]
 }
 
@@ -171,6 +181,8 @@ fn set_locked(path: &std::path::Path, key: &str, value: &str) -> Result<()> {
             cfg.theme = value.to_string();
         }
         "statusline" => cfg.statusline = parse_bool(value)?,
+        "task_prompt" => cfg.task_prompt = parse_bool(value)?,
+        "resume_prompt" => cfg.resume_prompt = parse_bool(value)?,
         // C3: `sessions_root` is the base of `remove_one`'s "is this a
         // workspace ws created?" test. `remove_one` no longer trusts it, but
         // an empty or relative root is a misconfiguration in its own right —

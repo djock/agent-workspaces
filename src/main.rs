@@ -2,6 +2,7 @@ mod actors;
 mod agents;
 mod atomic;
 mod cli;
+mod collision;
 mod commands;
 mod config;
 mod context;
@@ -54,6 +55,7 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
         Cmd::List { tag, archived } => commands::list(tag, archived)?,
         Cmd::Tag(c) => commands::tag(c)?,
         Cmd::Status { name, text } => commands::status(name, text)?,
+        Cmd::Color { name, color } => commands::color(name, color)?,
         Cmd::Archive { names, archived } => commands::archive(names, archived)?,
         Cmd::Adopt { name } => commands::adopt(name)?,
         Cmd::Rm { names, force } => commands::rm(names, force)?,
@@ -88,6 +90,14 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("not a worktree spec: {spec}"))?;
             if merge {
                 worktree::merge(&s)?
+            } else if registry::lookup_checked(&s.workspace_name())?.is_some() {
+                // Already created: open it. The parser cannot tell "make me a
+                // worktree" from "open the worktree I made" — both are
+                // `ws base@feature` — and it deliberately does not consult the
+                // registry. Deciding here instead left an existing worktree
+                // permanently unreachable: every launch after the first hit
+                // `worktree::create`'s "already exists" and stopped.
+                commands::launch(s.workspace_name(), None, false, false, false)?
             } else {
                 let path = worktree::create(&s)?;
                 println!("created {} at {}", s.workspace_name(), path.display());
@@ -129,6 +139,8 @@ fn help_text() -> &'static str {
          \x20 ws <name> --fresh            start a new agent session, not a resume\n\
          \x20 ws <name> --handoff          point the agent at the latest handoff\n\
          \x20 ws <name> --force            take over a workspace another process holds\n\
+         \x20                                (without --force you are offered the\n\
+         \x20                                choice: open a feature, force, new, cancel)\n\
          \n\
          Browse\n\
          \x20 ws                           pick a workspace from a list (arrow keys,\n\
@@ -143,9 +155,11 @@ fn help_text() -> &'static str {
          \x20 ws -archive | -unarchive <name>...\n\
          \x20 ws -tag add|rm|list [--workspace <n>] <tag>...\n\
          \x20 ws -status \"<text>\" | --clear\n\
+         \x20 ws -color <color> | --clear  set the tab and status-line color\n\
          \n\
          Worktrees\n\
-         \x20 ws <base>@<feature>          create a git worktree workspace off <base>\n\
+         \x20 ws <base>@<feature>          create a git worktree workspace off <base>,\n\
+         \x20                                or open it once it exists\n\
          \x20 ws <base>@<feature> --merge  merge it back (--no-ff) and remove it\n\
          \n\
          Coordinate\n\
@@ -186,7 +200,7 @@ mod tests {
     fn help_covers_every_command() {
         let help = super::help_text();
         for token in [
-            "-pick", "-list", "-ls", "-adopt", "-rm", "-tag", "-status", "-archive", "-unarchive",
+            "-pick", "-list", "-ls", "-adopt", "-rm", "-tag", "-status", "-color", "-archive", "-unarchive",
             "-search", "-limits", "-doctor", "-whoami", "-who", "-conversations", "-rotate",
             "-task", "-secrets", "restore", "-update", "-uninstall", "setup", "config", "hooks",
             "--version", "-claude", "-codex", "--agent", "--fresh", "--handoff", "--force",

@@ -38,6 +38,36 @@ fn second_launch_resumes() {
     assert!(log.contains("--resume"), "second launch should resume, got: {log}");
 }
 
+/// `ws <name>` asks before resuming, but only when someone can answer. Without a
+/// TTY it must resume silently rather than print a prompt into a pipe and block
+/// on a read that never returns — that would hang every scripted launch.
+#[test]
+fn a_non_interactive_launch_resumes_without_asking() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+
+    launch_cmd(&env, &shim).arg("proj").assert().success();
+    let out = launch_cmd(&env, &shim).arg("proj").assert().success().get_output().clone();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("Start a new conversation"), "must not ask: {stderr}");
+    assert!(env.argv_log().contains("--resume"), "and must still resume");
+}
+
+/// The prompt is a behavior change on every launch, so it has to be switchable
+/// off — and with it off the launch resumes exactly as it always did.
+#[test]
+fn the_resume_prompt_can_be_turned_off() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    env.cmd().args(["config", "set", "resume_prompt", "false"]).assert().success();
+
+    launch_cmd(&env, &shim).arg("proj").assert().success();
+    launch_cmd(&env, &shim).arg("proj").assert().success();
+
+    assert!(env.argv_log().contains("--resume"), "resume_prompt=false still resumes");
+}
+
 #[test]
 fn a_corrupt_registry_refuses_to_create_a_duplicate_workspace() {
     let env = Env::new();
@@ -383,4 +413,44 @@ fn switching_agents_clears_guard_and_records_default() {
     let wt = std::fs::read_to_string(root.join(".ws/workspace.toml")).unwrap();
     assert!(wt.contains("default_agent = \"codex\""));
     assert!(root.join("AGENTS.md").is_file());
+}
+
+/// The collision menu needs a terminal to answer it. Without one, launching a
+/// held workspace must still fail with the old error rather than render a menu
+/// into a pipe and block forever on a keypress that cannot arrive.
+#[test]
+fn a_held_workspace_still_errors_without_a_terminal() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    launch_cmd(&env, &shim).arg("held").assert().success();
+
+    // Forge a live lock: this test process is definitely alive.
+    let lock = env.root.join("held/.ws/local/lock");
+    std::fs::write(&lock, format!("pid = {}\n", std::process::id())).unwrap();
+
+    launch_cmd(&env, &shim)
+        .arg("held")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("in use by pid"));
+}
+
+/// `--force` is already an answer, so it must take the lock without stopping to
+/// ask — the menu would be a regression for every scripted `--force` launch.
+#[test]
+fn force_takes_a_held_workspace_without_offering_the_menu() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    launch_cmd(&env, &shim).arg("held").assert().success();
+    let lock = env.root.join("held/.ws/local/lock");
+    std::fs::write(&lock, format!("pid = {}\n", std::process::id())).unwrap();
+
+    let out = launch_cmd(&env, &shim)
+        .args(["held", "--force"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("already open"), "--force must not ask: {stderr}");
 }

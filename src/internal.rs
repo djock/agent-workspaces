@@ -163,18 +163,59 @@ fn stop() {
         _ => stamp_age.map(|a| a < COOLDOWN_SECS).unwrap_or(false), // cooled down recently
     };
 
-    if approve {
+    if !approve {
+        // touch the stamp and remind
+        let _ = std::fs::create_dir_all(ws.local_dir());
+        let _ = std::fs::write(&stamp, crate::now_iso());
+        let reason = "Notebook check. Append any new findings to your own notebook \
+            (.ws/notebook/notebook.<actor>.md — run `ws -whoami` if unsure which actor \
+            you are; never edit a teammate's). If a prior note was disproven by your recent \
+            work, correct it. If nothing needs changing, say so in one line and stop.";
+        println!("{}", hookio::decision_block(reason));
         return;
     }
 
-    // touch the stamp and remind
+    // Tasks come last: a turn's findings get recorded before the agent is asked
+    // what to do next. When both are due they fire on consecutive stops.
+    if let Some(directive) = task_check(&ws) {
+        println!("{}", hookio::decision_block(&directive));
+    }
+}
+
+/// Returns Some(directive) when the Stop hook should surface captured tasks.
+///
+/// Fires once per *change* to the queue, not once per turn: the stamp holds the
+/// id of the newest pending task at the last prompt, so declining is durable and
+/// the next prompt waits for something new to be captured. A turn-by-turn nag
+/// would make `/ws:task` unusable — the whole point of capturing is that it does
+/// not derail the current thread.
+fn task_check(ws: &Workspace) -> Option<String> {
+    if !crate::config::load().task_prompt {
+        return None;
+    }
+    let pending = crate::queue::pending(&ws.queue_tasks()).ok()?;
+    let (first, newest) = (pending.first()?, pending.last()?);
+    let stamp = ws.local_dir().join("task-prompt.stamp");
+    if std::fs::read_to_string(&stamp).is_ok_and(|s| s.trim() == newest.id) {
+        return None; // already asked about this queue; nothing new since
+    }
     let _ = std::fs::create_dir_all(ws.local_dir());
-    let _ = std::fs::write(&stamp, crate::now_iso());
-    let reason = "Notebook check. Append any new findings to your own notebook \
-        (.ws/notebook/notebook.<actor>.md — run `ws -whoami` if unsure which actor \
-        you are; never edit a teammate's). If a prior note was disproven by your recent \
-        work, correct it. If nothing needs changing, say so in one line and stop.";
-    println!("{}", hookio::decision_block(reason));
+    let _ = std::fs::write(&stamp, &newest.id);
+
+    let n = pending.len();
+    let plural = if n == 1 { "task" } else { "tasks" };
+    // `ws -task rm` takes the 1-based position in `ws -task list`, not the task
+    // id. The oldest pending task is always position 1, which is the one this
+    // directive is about.
+    Some(format!(
+        "This workspace has {n} captured {plural} waiting. The oldest is: \"{}\"\n\n\
+         Show the pending list (`ws -task list`), then ask whether to start on that \
+         first one. Do NOT start it, plan it, or begin research on it unless the user \
+         says yes — they may have captured it for later on purpose. If they decline, \
+         drop the subject and stop; this will not ask again until a new task is \
+         captured. If they accept, run `ws -task rm 1` once it is actually done.",
+        first.text
+    ))
 }
 
 /// Returns Some(directive) when the Stop hook should block for a limit handoff.

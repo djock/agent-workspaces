@@ -188,3 +188,36 @@ fn create_refuses_when_the_base_has_a_newer_contract_version() {
     let branches = git(&base, &["branch", "--list"]);
     assert!(!branches.contains("feat"), "no branch created: {branches}");
 }
+
+/// `ws base@feature` has to mean both "make it" and "open it" — it is the only
+/// spelling there is. It used to mean only the first, so every launch after the
+/// creating one hit `worktree::create`'s "already exists" and the worktree was
+/// unreachable by name for the rest of its life.
+#[test]
+fn an_existing_worktree_opens_instead_of_erroring() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    let _base = base_workspace(&env, "api");
+
+    env.cmd()
+        .env("WS_CLAUDE_BIN", &shim)
+        .env("WS_NO_EXEC", "1")
+        .arg("api@retry")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("created api@retry"));
+
+    // Second time: launches, and specifically does not repeat the create.
+    let out = env
+        .cmd()
+        .env("WS_CLAUDE_BIN", &shim)
+        .env("WS_NO_EXEC", "1")
+        .arg("api@retry")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("created api@retry"), "must not re-create: {stdout}");
+    assert!(env.argv_log().contains("--session-id"), "must have launched an agent");
+}

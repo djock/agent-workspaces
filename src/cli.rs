@@ -18,6 +18,7 @@ pub enum Cmd {
     Secrets(SecretsCmd),
     Tag(TagCmd),
     Status { name: Option<String>, text: Option<String> },
+    Color { name: Option<String>, color: Option<String> },
     Archive { names: Vec<String>, archived: bool },
     Search { query: String, include_archived: bool },
     Update { check: bool, force: bool },
@@ -171,6 +172,7 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             }
         }
         "-status" => parse_status(it.collect()),
+        "-color" => parse_color(it.collect()),
         "-archive" => parse_archive(it.collect(), true),
         "-unarchive" => parse_archive(it.collect(), false),
         "-search" => {
@@ -432,6 +434,35 @@ fn parse_status(args: Vec<String>) -> Result<Cmd> {
     match rest.len() {
         1 => Ok(Cmd::Status { name, text: Some(rest[0].clone()) }),
         _ => bail!("usage: ws -status [--workspace <name>] \"<text>\" | --clear"),
+    }
+}
+
+/// `ws -color <name>` sets the workspace's tab and status-line color;
+/// `--clear` removes it, and the next launch allocates a fresh one.
+fn parse_color(args: Vec<String>) -> Result<Cmd> {
+    let mut clear = false;
+    let args: Vec<String> = args
+        .into_iter()
+        .filter(|a| {
+            if a == "--clear" { clear = true; false } else { true }
+        })
+        .collect();
+    let (name, rest) = take_workspace(args)?;
+    if clear {
+        if !rest.is_empty() {
+            bail!("ws -color: --clear takes no color");
+        }
+        return Ok(Cmd::Color { name, color: None });
+    }
+    match rest.len() {
+        1 => {
+            let color = rest[0].to_ascii_lowercase();
+            if crate::term::rgb(&color).is_none() {
+                bail!("ws -color: unknown color: {color} (want {})", crate::term::PALETTE.join("|"));
+            }
+            Ok(Cmd::Color { name, color: Some(color) })
+        }
+        _ => bail!("usage: ws -color [--workspace <name>] <{}> | --clear", crate::term::PALETTE.join("|")),
     }
 }
 
@@ -785,6 +816,22 @@ mod tests {
         );
         // `-status` with no argument is ambiguous — require --clear to clear.
         assert!(parse(vec!["-status".into()]).is_err());
+    }
+
+    #[test]
+    fn color_set_clear_and_validation() {
+        assert_eq!(p(&["-color", "green"]), Cmd::Color { name: None, color: Some("green".into()) });
+        assert_eq!(p(&["-color", "--clear"]), Cmd::Color { name: None, color: None });
+        assert_eq!(
+            p(&["-color", "--workspace", "proj", "cyan"]),
+            Cmd::Color { name: Some("proj".into()), color: Some("cyan".into()) }
+        );
+        // Case is a typing convenience, not a different color.
+        assert_eq!(p(&["-color", "GREEN"]), Cmd::Color { name: None, color: Some("green".into()) });
+        // A name with no RGB behind it would silently produce an uncolored tab,
+        // so it is rejected at the door rather than written to workspace.toml.
+        assert!(parse(vec!["-color".into(), "chartreuse-plaid".into()]).is_err());
+        assert!(parse(vec!["-color".into()]).is_err(), "no argument is ambiguous");
     }
 
     #[test]

@@ -52,14 +52,17 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
     let now = crate::now_iso();
     let actor = actors::actor_slug();
 
-    // workspace.toml (identity)
+    // workspace.toml (identity). `color` is drawn once, here, so a workspace
+    // looks the same on every launch; `ws -color` overrides it.
+    let color = crate::term::alloc_color();
     let workspace_toml = format!(
         "name = \"{name}\"\n\
          created = \"{now}\"\n\
          contract_version = {CONTRACT_VERSION}\n\
          default_agent = \"{agent}\"\n\
          archived = false\n\
-         tags = []\n"
+         tags = []\n\
+         color = \"{color}\"\n"
     );
     write_if_absent(&ws.join("workspace.toml"), &workspace_toml)?;
 

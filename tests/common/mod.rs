@@ -24,6 +24,14 @@ impl Env {
             .env("XDG_CONFIG_HOME", self.home.path().join(".config"))
             .env("WS_ROOT", &self.root)
             .env_remove("NO_COLOR");
+        // ws is developed from inside a ws workspace, so `cargo test` inherits
+        // that launch's WS_WORKSPACE/WS_DIR/WS_AGENT. Tests asserting a hook does
+        // nothing "outside a workspace" then ran *inside* one and failed — a red
+        // suite that says nothing about the code. Each test sets whichever of
+        // these it actually means to.
+        for leaked in ["WS_WORKSPACE", "WS_DIR", "WS_AGENT"] {
+            c.env_remove(leaked);
+        }
         c
     }
 

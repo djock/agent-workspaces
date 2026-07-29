@@ -224,3 +224,121 @@ fn session_end_records_closed() {
     let tl = std::fs::read_to_string(proj.join(".ws/timeline.jsonl")).unwrap();
     assert!(tl.contains("\"closed\""));
 }
+
+/// A captured task is surfaced once, when the queue changes — never once per
+/// turn. The Stop hook fires at the end of every turn, so a naive "queue is
+/// non-empty → prompt" would nag forever after the first decline and make
+/// `ws -task add` unusable for its stated purpose: parking a thought without
+/// derailing the current one.
+#[test]
+fn a_captured_task_is_surfaced_once_per_change_not_once_per_turn() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "q");
+    let stop = |env: &Env| {
+        let out = env
+            .cmd()
+            .env("WS_WORKSPACE", "q")
+            .env("WS_DIR", &proj)
+            .args(["internal", "stop"])
+            .write_stdin("{}")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap()
+    };
+
+    // Nothing captured: the turn ends silently.
+    assert!(stop(&env).is_empty(), "an empty queue must not block the turn");
+
+    env.cmd()
+        .env("WS_WORKSPACE", "q")
+        .env("WS_DIR", &proj)
+        .args(["-task", "add", "first thing"])
+        .assert()
+        .success();
+
+    // The notebook reminder outranks the task prompt, so drain it if it fires.
+    let mut first = stop(&env);
+    if first.contains("Notebook check") {
+        first = stop(&env);
+    }
+    assert!(first.contains("\"decision\":\"block\""), "{first}");
+    assert!(first.contains("first thing"), "names the oldest task: {first}");
+    assert!(first.contains("Do NOT start it"), "must ask, not act: {first}");
+    // The directive hands the agent a command to run, so that command has to be
+    // one the CLI accepts. It first said `ws -task rm <uuid>`, which always
+    // failed: `-task rm` takes the 1-based position in `ws -task list`.
+    assert!(first.contains("ws -task rm 1"), "must name a removable index: {first}");
+    let queue = std::fs::read_to_string(proj.join(".ws/queue/tasks.jsonl")).unwrap();
+    let id = queue.split("\"id\":\"").nth(1).unwrap().split('"').next().unwrap();
+    assert!(
+        !first.contains(id),
+        "must not pass a task id ({id}) where an index is required: {first}"
+    );
+
+    // Declining is durable: every later turn ends silently.
+    assert!(stop(&env).is_empty(), "must not re-ask on the next turn");
+    assert!(stop(&env).is_empty(), "or the one after that");
+
+    // A newly captured task re-opens the question, and the prompt still names
+    // the *oldest* pending task rather than the one just added.
+    env.cmd()
+        .env("WS_WORKSPACE", "q")
+        .env("WS_DIR", &proj)
+        .args(["-task", "add", "second thing"])
+        .assert()
+        .success();
+    let again = stop(&env);
+    assert!(again.contains("first thing"), "oldest first: {again}");
+    assert!(again.contains("2 captured tasks"), "counts them: {again}");
+
+    // And the command the directive suggests actually works.
+    env.cmd()
+        .env("WS_WORKSPACE", "q")
+        .env("WS_DIR", &proj)
+        .args(["-task", "rm", "1"])
+        .assert()
+        .success();
+    let left = env
+        .cmd()
+        .env("WS_WORKSPACE", "q")
+        .env("WS_DIR", &proj)
+        .args(["-task", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let left = String::from_utf8(left).unwrap();
+    assert!(!left.contains("first thing"), "the oldest was the one dropped: {left}");
+    assert!(left.contains("second thing"), "{left}");
+}
+
+/// The prompt is a nag by nature, so it has to be switchable off.
+#[test]
+fn the_task_prompt_can_be_turned_off() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "off");
+    env.cmd().args(["config", "set", "task_prompt", "false"]).assert().success();
+    env.cmd()
+        .env("WS_WORKSPACE", "off")
+        .env("WS_DIR", &proj)
+        .args(["-task", "add", "ignored"])
+        .assert()
+        .success();
+    let out = env
+        .cmd()
+        .env("WS_WORKSPACE", "off")
+        .env("WS_DIR", &proj)
+        .args(["internal", "stop"])
+        .write_stdin("{}")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(out).unwrap();
+    assert!(!s.contains("ignored"), "task_prompt=false must stay silent: {s}");
+}

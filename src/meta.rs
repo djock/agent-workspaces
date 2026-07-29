@@ -164,6 +164,20 @@ pub fn set_status(ws_toml: &Path, text: Option<&str>) -> Result<()> {
     })
 }
 
+/// Set the workspace's tab/chip color; `None` clears it (removes the key), which
+/// leaves the workspace uncolored until the next launch backfills a fresh one.
+pub fn set_color(ws_toml: &Path, color: Option<&str>) -> Result<()> {
+    let color = color.map(str::to_string);
+    update(ws_toml, |t| match color {
+        Some(c) => {
+            t.insert("color".into(), toml::Value::String(c));
+        }
+        None => {
+            t.remove("color");
+        }
+    })
+}
+
 pub fn set_archived(ws_toml: &Path, archived: bool) -> Result<()> {
     update(ws_toml, |t| {
         t.insert("archived".into(), toml::Value::Boolean(archived));
@@ -241,6 +255,22 @@ mod tests {
         assert!(s.contains("future_key"), "unknown keys must survive a write: {s}");
         assert!(s.contains("shipping"));
         assert_eq!(read(&p).tags, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn set_color_round_trips_and_clears() {
+        let (_d, p) = wt("name = \"proj\"\ntags = []\n");
+        assert_eq!(read(&p).color, None, "a workspace starts uncolored");
+        set_color(&p, Some("green")).unwrap();
+        assert_eq!(read(&p).color.as_deref(), Some("green"));
+        set_color(&p, Some("cyan")).unwrap();
+        assert_eq!(read(&p).color.as_deref(), Some("cyan"), "a re-set replaces, not appends");
+        set_color(&p, None).unwrap();
+        assert_eq!(read(&p).color, None);
+        assert!(
+            !std::fs::read_to_string(&p).unwrap().contains("color"),
+            "clearing must remove the key, not blank it — an empty string is not a color"
+        );
     }
 
     #[test]

@@ -6,6 +6,66 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-29
+
+### Added
+
+- Every workspace now has a color. It is allocated at creation, written to
+  `workspace.toml`, and shown two ways: as the terminal tab background (iTerm2
+  and WezTerm, already supported but never populated) and as a filled chip
+  carrying the workspace name at the head of the status bar. Workspaces created
+  before this release are backfilled on their next launch.
+- Launching a workspace another terminal holds now offers a choice instead of
+  only an error: open one of its existing feature worktrees, force a second
+  session, split off a new feature worktree, or cancel. Cancel is the default, so
+  an unrecognised key does the harmless thing. Needs a terminal — a launch with
+  no TTY still fails with the "in use by pid" error rather than rendering a menu
+  into a pipe, and `--force` skips the menu entirely.
+- `ws <base>@<feature>` now opens the worktree when it already exists, instead of
+  failing with "already exists". Previously the first launch created it and every
+  launch after that was a dead end, leaving the workspace unreachable by name.
+- `ws <name>` now asks `Start a new conversation in <name>? [y/N]` when there is
+  a previous conversation to resume. The default is No, so pressing Enter resumes
+  and the common case stays one keypress. It only asks when there is something to
+  resume, `--fresh` was not passed, and stdin is a terminal — a scripted launch
+  resumes silently as before rather than blocking on a read. Disable with
+  `ws config set resume_prompt false`.
+- The Stop hook now surfaces captured tasks: when a turn ends with tasks waiting,
+  it names the oldest and asks whether to start it, without starting anything.
+  It fires once per *change* to the queue rather than once per turn — the stamp
+  records the newest pending task id, so declining generally holds and the next
+  prompt waits for something new to be captured. `ws config set task_prompt false`
+  disables it. Known limitation: the stamp tracks the newest *pending* task, so
+  removing one can make an older task the newest again and re-raise a prompt that
+  had already been declined.
+- `ws -color <red|blue|green|yellow|purple|orange|pink|cyan>` sets a workspace's
+  color; `--clear` drops it and the next launch allocates a new one. Takes
+  `--workspace <name>` like `ws -status`.
+
+### Changed
+
+- The Claude status line is now a bar of filled blocks rather than a line of
+  middot-separated text. Each segment carries its own background: the workspace
+  in its color, the model in periwinkle, the git branch in slate, and the three
+  gauges on a quiet warm neutral that escalates to amber and then red on that
+  gauge's own value. Blocks abut, so the change of background is the separator;
+  neighbours that share a background get a hairline so they stay countable.
+  `NO_COLOR` still produces the old middot line, unchanged.
+- Context now has warning thresholds (amber at 50%, red at 80%), which it never
+  had. The 5-hour window warns earlier than before (70/90, was 85/95). The weekly
+  window is unchanged at 90/95: a weekly figure passing 70% is normal mid-week,
+  and a block that sits amber for days stops being read.
+- The color palette in `term.rs` was retuned from terminal primaries to Claude
+  Code's theme tokens, so the tab background and the status-bar chip are the same
+  color. `magenta` remains accepted as an alias for `purple`.
+
+### Fixed
+
+- `cargo test` failed with three errors when run from inside a ws workspace: the
+  integration harness inherited `WS_WORKSPACE`, `WS_DIR` and `WS_AGENT` from the
+  surrounding launch, so tests asserting behavior *outside* a workspace ran
+  inside one. The harness now clears them.
+
 ## [0.3.0] - 2026-07-29
 
 ### Removed

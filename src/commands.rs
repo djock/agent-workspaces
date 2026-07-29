@@ -429,6 +429,46 @@ pub fn status(name: Option<String>, text: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// Set or clear the workspace color. Clearing leaves it uncolored only until the
+/// next launch, which backfills a new one — there is no permanently drab state.
+pub fn color(name: Option<String>, color: Option<String>) -> Result<()> {
+    let (ws_name, path) = current_or_named(name)?;
+    let wt = path.join(".ws/workspace.toml");
+    contract::check_gate(&ws_name, &wt)?;
+    crate::meta::set_color(&wt, color.as_deref())?;
+    match color {
+        Some(c) => println!("{ws_name}: color {c} (applies on the next launch)"),
+        None => println!("{ws_name}: color cleared; the next launch will pick a new one"),
+    }
+    Ok(())
+}
+
+/// Whether the launch should stop and ask before resuming.
+///
+/// Pure so the four conditions can be tested without a terminal. Every one of
+/// them is a case where asking would be wrong rather than merely unhelpful:
+/// `--fresh` is already an answer, a workspace with no recorded session has
+/// nothing to resume, a disabled prompt is an explicit preference, and a launch
+/// with no TTY has nobody to answer — that last one would hang a scripted `ws`
+/// forever on a read that never returns.
+fn should_ask_new(has_prior: bool, fresh: bool, enabled: bool, tty: bool) -> bool {
+    has_prior && !fresh && enabled && tty
+}
+
+/// Ask whether to start a new conversation. Defaults to No, i.e. resume.
+fn ask_new_conversation(name: &str) -> bool {
+    use std::io::Write;
+    eprint!("Start a new conversation in {name}? [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    // A read that fails (closed stdin, EOF) is not a yes. Resuming is the
+    // conservative outcome: it keeps the conversation rather than stranding it.
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim(), "y" | "Y" | "yes")
+}
+
 pub fn archive(names: Vec<String>, archived: bool) -> Result<()> {
     let mut failed = false;
     for name in names {
@@ -1042,6 +1082,7 @@ pub fn launch(
     let recorded_default =
         crate::meta::read(&workspace::resolve(&name, &cfg).workspace_toml()).default_agent;
     let agent_id = agent_override
+        .clone()
         .or_else(|| recorded_default.clone())
         .unwrap_or_else(|| cfg.default_agent.clone());
     let agent = agents::for_id(&agent_id)?;
@@ -1068,6 +1109,37 @@ pub fn launch(
     // directory that never became a workspace. The guard removes the lock file on
     // drop; the empty directories are cleaned up here.
     let ws_path = workspace::resolve(&name, &cfg);
+
+    // A workspace another terminal holds is a fork in the road, not a dead end.
+    // Offer the ways forward before `lock::acquire` turns it into an error —
+    // and only when there is someone at a terminal to answer.
+    let mut force = force;
+    if crate::collision::should_offer(force) {
+        if let Ok(Some(pid)) = lock::live_pid_checked(&ws_path.lock_file()) {
+            let all: Vec<String> = registry::all().into_iter().map(|(n, _)| n).collect();
+            match crate::collision::prompt(&name, pid, &all)? {
+                crate::collision::Choice::Force => force = true,
+                // Recursion, not re-exec: no lock is held yet, and re-entering
+                // `launch` reuses every step below rather than duplicating it.
+                // The callee execs into the agent, so this frame never returns.
+                crate::collision::Choice::Open(other) => {
+                    return launch(other, agent_override, fresh, false, handoff)
+                }
+                crate::collision::Choice::New => {
+                    let Some(feature) = crate::collision::ask_feature_name()? else {
+                        return Ok(());
+                    };
+                    let spec = crate::worktree::parse_name(&format!("{name}@{feature}"))
+                        .ok_or_else(|| anyhow::anyhow!("not a valid feature name: {feature}"))?;
+                    let path = crate::worktree::create(&spec)?;
+                    println!("created {} at {}", spec.workspace_name(), path.display());
+                    return launch(spec.workspace_name(), agent_override, fresh, false, handoff);
+                }
+                crate::collision::Choice::Cancel => return Ok(()),
+            }
+        }
+    }
+
     let guard = lock::acquire(&ws_path.lock_file(), force)?;
     let (ws, _created) = match workspace::open_or_create(&name, agent.id(), &cfg) {
         Ok(v) => v,
@@ -1110,11 +1182,28 @@ pub fn launch(
         );
     }
 
-    // 5. Tab title + color.
-    let color = crate::meta::read(&ws.workspace_toml()).color;
+    // 5. Tab title + color. Workspaces created before colors existed have no
+    // `color` key; give them one on first launch rather than leaving them the
+    // only uncolored tabs. It is persisted, so the backfill happens once and the
+    // workspace keeps that color from then on. A failed write is not worth
+    // aborting a launch over — the color is cosmetic, and the next launch retries.
+    let mut color = crate::meta::read(&ws.workspace_toml()).color;
+    if color.is_none() {
+        let picked = term::alloc_color();
+        if crate::meta::set_color(&ws.workspace_toml(), Some(picked)).is_ok() {
+            color = Some(picked.to_string());
+        }
+    }
     term::set_tab(&ws.name, color.as_deref());
 
-    // 6. Build + run — the agent owns the fresh/resume decision and persists its own state.
+    // 6. Ask before resuming, when there is something to resume and someone to
+    // ask. Answering No (the default) resumes, so the common case is one keypress.
+    let has_prior = crate::contract::read_session_id(&ws.state_toml(), agent.id()).is_some();
+    let fresh = fresh
+        || (should_ask_new(has_prior, fresh, cfg.resume_prompt, std::io::stdin().is_terminal())
+            && ask_new_conversation(&ws.name));
+
+    // 7. Build + run — the agent owns the fresh/resume decision and persists its own state.
     let ctx = LaunchCtx {
         fresh,
         sessions_root: config::sessions_root(&cfg),
@@ -1312,6 +1401,25 @@ pub fn whoami() -> Result<()> {
     Ok(())
 }
 
+
+#[cfg(test)]
+mod resume_prompt_tests {
+    use super::should_ask_new;
+
+    /// The prompt only appears when all four conditions hold. Each of the four
+    /// is a case where asking is wrong, not merely noisy — most importantly the
+    /// no-TTY one, which would otherwise block a scripted `ws` on a read that
+    /// never returns.
+    #[test]
+    fn the_prompt_needs_a_session_a_question_a_setting_and_a_terminal() {
+        assert!(should_ask_new(true, false, true, true), "the one case that asks");
+
+        assert!(!should_ask_new(false, false, true, true), "nothing recorded to resume");
+        assert!(!should_ask_new(true, true, true, true), "--fresh already answered it");
+        assert!(!should_ask_new(true, false, false, true), "resume_prompt = false");
+        assert!(!should_ask_new(true, false, true, false), "no TTY: never block a script");
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
