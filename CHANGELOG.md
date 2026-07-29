@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-29
+
 ### Removed
 
 - The full-screen dashboard (`ws -tui`), replaced by an inline arrow-key picker —
