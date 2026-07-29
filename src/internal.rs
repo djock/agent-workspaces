@@ -1252,9 +1252,147 @@ mod tests {
         assert_eq!(got.resolved, 1);
     }
 
+    // ---- task_check -------------------------------------------------------
+    //
+    // `task_check` resolves `task_prompt` through `config::load()`, which reads
+    // the process-global XDG_CONFIG_HOME. `.cargo/config.toml` pins
+    // RUST_TEST_THREADS=1 today, which happens to serialize these, but that is a
+    // project-wide default this module shouldn't depend on — under
+    // `cargo test -- --test-threads=4` one test's config dir would leak into
+    // another's. Serialize explicitly, as `registry`'s tests do.
+    static TASK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn task_lock() -> std::sync::MutexGuard<'static, ()> {
+        TASK_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
+    /// A workspace whose config dir is a fresh temp dir, so `config::load()`
+    /// yields defaults (`task_prompt = true`) rather than the developer's own
+    /// config. The returned TempDir owns both and must outlive the guard.
+    fn task_ws() -> (TempDir, Workspace) {
+        let d = TempDir::new().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", d.path().join("cfg"));
+        let root = d.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let ws = Workspace { name: "w".into(), root };
+        (d, ws)
+    }
 
+    /// The queue is the normal state of a workspace: empty. A prompt here would
+    /// fire on every single stop of every workspace that has never used tasks.
+    #[test]
+    fn an_empty_queue_is_silent_and_leaves_no_stamp() {
+        let _guard = task_lock();
+        let (_d, ws) = task_ws();
+
+        assert!(task_check(&ws).is_none(), "absent queue file");
+
+        let id = crate::queue::add(&ws.queue_tasks(), "t", "a").unwrap();
+        crate::queue::remove(&ws.queue_tasks(), &id).unwrap();
+        assert!(task_check(&ws).is_none(), "drained queue");
+
+        assert!(
+            !ws.local_dir().join("task-prompt.stamp").exists(),
+            "nothing was asked, so nothing may be recorded as asked"
+        );
+    }
+
+    /// The core contract: fire once per *change* to the queue, not once per
+    /// turn. A per-turn nag would make `/ws:task` unusable — the whole point of
+    /// capturing is that it does not derail the current thread — so a decline
+    /// has to be durable across stops.
+    #[test]
+    fn a_decline_is_durable_until_a_new_task_is_captured() {
+        let _guard = task_lock();
+        let (_d, ws) = task_ws();
+        crate::queue::add(&ws.queue_tasks(), "first thing", "a").unwrap();
+
+        let first = task_check(&ws).expect("a pending task must be surfaced");
+        assert!(first.contains("first thing"), "{first}");
+
+        assert!(
+            task_check(&ws).is_none(),
+            "asking again about an unchanged queue is the nag this stamp exists to prevent"
+        );
+
+        crate::queue::add(&ws.queue_tasks(), "second thing", "a").unwrap();
+        assert!(
+            task_check(&ws).is_some(),
+            "a newly captured task is a change, and must re-open the question"
+        );
+    }
+
+    /// The directive names the *oldest* pending task while the stamp tracks the
+    /// *newest*. Those are different tasks once the queue has more than one, and
+    /// conflating them would break both halves: the stamp would stop suppressing
+    /// repeats, and `ws -task rm 1` — which takes the 1-based position in
+    /// `ws -task list`, not an id — would retire the wrong task.
+    #[test]
+    fn the_directive_names_the_oldest_task_while_the_stamp_tracks_the_newest() {
+        let _guard = task_lock();
+        let (_d, ws) = task_ws();
+        crate::queue::add(&ws.queue_tasks(), "oldest thing", "a").unwrap();
+        let newest = crate::queue::add(&ws.queue_tasks(), "newest thing", "a").unwrap();
+
+        let directive = task_check(&ws).unwrap();
+        assert!(directive.contains("oldest thing"), "{directive}");
+        assert!(!directive.contains("newest thing"), "{directive}");
+        assert!(directive.contains("2 captured tasks"), "{directive}");
+        assert!(directive.contains("ws -task rm 1"), "{directive}");
+
+        let stamp = std::fs::read_to_string(ws.local_dir().join("task-prompt.stamp")).unwrap();
+        assert_eq!(stamp.trim(), newest);
+    }
+
+    /// Retiring the task that was asked about, while a newer one is still
+    /// pending, must re-open the question rather than stay suppressed: the
+    /// stamped id is gone from the pending set, so the oldest is now a task the
+    /// user has never been asked about.
+    #[test]
+    fn dropping_the_asked_about_task_re_opens_the_question_for_the_next_one() {
+        let _guard = task_lock();
+        let (_d, ws) = task_ws();
+        let first = crate::queue::add(&ws.queue_tasks(), "first thing", "a").unwrap();
+        task_check(&ws).expect("first prompt");
+
+        crate::queue::remove(&ws.queue_tasks(), &first).unwrap();
+        crate::queue::add(&ws.queue_tasks(), "later thing", "a").unwrap();
+
+        let directive = task_check(&ws).expect("the remaining task has never been surfaced");
+        assert!(directive.contains("later thing"), "{directive}");
+    }
+
+    /// `task_prompt = false` is the opt-out for people who want the queue to
+    /// stay a passive list. It must suppress the prompt without consuming the
+    /// queue state, so turning it back on still surfaces what is waiting.
+    #[test]
+    fn the_task_prompt_config_key_switches_it_off_without_consuming_the_queue() {
+        let _guard = task_lock();
+        let (_d, ws) = task_ws();
+        crate::queue::add(&ws.queue_tasks(), "a thing", "a").unwrap();
+
+        let cfg = crate::config::config_path();
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(&cfg, "task_prompt = false\n").unwrap();
+        assert!(task_check(&ws).is_none(), "opted out");
+
+        std::fs::write(&cfg, "task_prompt = true\n").unwrap();
+        let directive = task_check(&ws).expect("opting back in surfaces the waiting task");
+        assert!(directive.contains("a thing"), "{directive}");
+    }
+
+    /// Singular/plural on the count. Cosmetic, but the directive is read
+    /// verbatim by the agent and "1 captured tasks" reads as a bug in ws.
+    #[test]
+    fn the_count_agrees_with_the_number_of_tasks() {
+        let _guard = task_lock();
+        let (_d, ws) = task_ws();
+        crate::queue::add(&ws.queue_tasks(), "only thing", "a").unwrap();
+        assert!(task_check(&ws).unwrap().contains("1 captured task waiting"));
+
+        crate::queue::add(&ws.queue_tasks(), "other thing", "a").unwrap();
+        assert!(task_check(&ws).unwrap().contains("2 captured tasks waiting"));
+    }
 
 
 
