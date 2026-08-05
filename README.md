@@ -199,7 +199,7 @@ Switching from one agent to the other automatically points the new agent at the 
 Useful commands:
 
 ```text
-ws                             Pick a workspace from a list (arrow keys, enter opens)
+ws                             Pick a workspace from a list (see the keys below)
 ws -pick                       Same, explicitly
 ws -list                       List active workspaces
 ws <name> -claude              Open with Claude Code
@@ -231,6 +231,21 @@ ws --version                   Show the installed version
 
 `ws --help` documents the full surface, including every launch flag; a test fails
 if a command exists that the help text omits.
+
+In the picker, `enter` opens the highlighted workspace and the other keys act on
+it too:
+
+```text
+↑↓ / j k    move            i    info page for this workspace
+enter       open            d    delete it, after a confirmation
+/           filter          a    archive or unarchive it
+q / esc     quit            A    show or hide archived workspaces
+```
+
+Deleting from the picker is the same operation as `ws -rm` without `--force`: a
+workspace another process is running is refused rather than pulled out from
+under it, and an adopted project loses only its `.ws/` — the source tree stays.
+The confirmation says which of the two is about to happen.
 
 `ws -task add` only records a task; nothing runs it for you. That is deliberate —
 the point is to write a thought down without derailing the one you are having.
