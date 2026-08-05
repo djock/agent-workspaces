@@ -50,7 +50,7 @@ fn a_non_interactive_launch_resumes_without_asking() {
     let out = launch_cmd(&env, &shim).arg("proj").assert().success().get_output().clone();
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!stderr.contains("Start a new conversation"), "must not ask: {stderr}");
+    assert!(!stderr.contains("Resume previous conversation"), "must not ask: {stderr}");
     assert!(env.argv_log().contains("--resume"), "and must still resume");
 }
 
@@ -453,4 +453,175 @@ fn force_takes_a_held_workspace_without_offering_the_menu() {
         .clone();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("already open"), "--force must not ask: {stderr}");
+}
+
+
+/// A changelog shaped like the real one: an `[Unreleased]` heading first, then
+/// releases newest-first with wrapped bullets.
+const CHANGELOG: &str = "\
+# Changelog
+
+## [Unreleased]
+
+## [9.9.9] - 2026-08-05
+
+### Added
+
+- **The newest thing.** Body text that belongs to the same
+  wrapped bullet.
+
+## [9.9.8] - 2026-08-01
+
+### Fixed
+
+- An older fix.
+";
+
+/// Opening a workspace says so when a newer ws has been released — the same
+/// nudge `cs` prints on session open — and lists what each newer release
+/// brought, read from the published changelog.
+#[test]
+fn a_launch_reports_a_newer_release_and_its_changelog() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    let gh = env.fake_gh("v9.9.9", CHANGELOG);
+
+    let out = launch_cmd(&env, &shim)
+        .env_remove("WS_NO_UPDATE_CHECK")
+        .env("WS_GH_BIN", &gh)
+        .arg("proj")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Update available"), "expected the notice, got: {stdout}");
+    assert!(stdout.contains("9.9.9"), "expected the new version, got: {stdout}");
+    assert!(stdout.contains(env!("CARGO_PKG_VERSION")), "and the current one: {stdout}");
+    assert!(stdout.contains("ws -update"), "and the fix: {stdout}");
+    assert!(stdout.contains("The newest thing."), "and the headline: {stdout}");
+    assert!(stdout.contains("9.9.8"), "every newer release, not just the latest: {stdout}");
+    assert!(stdout.contains("An older fix."), "with its headline too: {stdout}");
+    assert!(!stdout.contains("Unreleased"), "but never the unreleased section: {stdout}");
+    assert!(!stdout.contains('*'), "markdown must be rendered away: {stdout}");
+}
+
+/// Both lookups are cached, so a second launch inside the hour prints the same
+/// thing without going near GitHub again.
+#[test]
+fn a_second_launch_reuses_the_cached_answer() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    let gh = env.fake_gh("v9.9.9", CHANGELOG);
+    let launch = || {
+        launch_cmd(&env, &shim)
+            .env_remove("WS_NO_UPDATE_CHECK")
+            .env("WS_GH_BIN", &gh)
+            .arg("proj")
+            .assert()
+            .success()
+            .get_output()
+            .clone()
+    };
+
+    launch();
+    let calls = env.gh_log().lines().count();
+    assert_eq!(calls, 2, "first launch asks for the tag and the changelog: {}", env.gh_log());
+
+    let out = launch();
+    assert_eq!(env.gh_log().lines().count(), calls, "second launch must ask nothing");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("The newest thing."), "and still print the notes: {stdout}");
+}
+
+/// The common case is being current, and a launch that is current must say
+/// nothing at all — a line on every open is noise, not information.
+#[test]
+fn a_launch_on_the_latest_release_is_silent() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    env.write_update_cache(env!("CARGO_PKG_VERSION"));
+
+    let out = launch_cmd(&env, &shim)
+        .env_remove("WS_NO_UPDATE_CHECK")
+        .arg("proj")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("Update available"), "must stay quiet: {stdout}");
+}
+
+/// No `gh`, no network, no GitHub: the launch must proceed in silence, and must
+/// record the failure so the next launch inside the hour does not retry it.
+#[test]
+fn a_failed_release_lookup_neither_fails_nor_repeats() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+
+    let out = launch_cmd(&env, &shim)
+        .env_remove("WS_NO_UPDATE_CHECK")
+        .env("WS_GH_BIN", "/nonexistent/gh")
+        .arg("proj")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("Update available"), "must stay quiet: {stdout}");
+    assert!(env.update_cache().contains('-'), "the failure must be recorded: {}", env.update_cache());
+}
+
+/// A changelog that cannot be fetched must not cost a fetch attempt on every
+/// launch, and must not suppress the notice itself — the version nudge is the
+/// part that matters.
+#[test]
+fn an_unreachable_changelog_still_leaves_the_notice() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    env.write_update_cache("9.9.9");
+
+    let launch = || {
+        launch_cmd(&env, &shim)
+            .env_remove("WS_NO_UPDATE_CHECK")
+            .env("WS_GH_BIN", "/nonexistent/gh")
+            .arg("proj")
+            .assert()
+            .success()
+            .get_output()
+            .clone()
+    };
+    let out = launch();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Update available"), "the notice survives: {stdout}");
+
+    let notes = env.home.path().join(".cache/ws/update-notes-9.9.9");
+    assert!(notes.is_file(), "the failed fetch is recorded so it is not retried");
+    launch();
+}
+
+/// Notes are keyed by the version they describe, and only the pending one is
+/// worth keeping — otherwise the cache grows a file per release forever.
+#[test]
+fn notes_for_superseded_versions_are_pruned() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    let gh = env.fake_gh("v9.9.9", CHANGELOG);
+    let stale = env.home.path().join(".cache/ws/update-notes-9.9.0");
+    std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+    std::fs::write(&stale, "9.9.0\tstale\n").unwrap();
+
+    launch_cmd(&env, &shim)
+        .env_remove("WS_NO_UPDATE_CHECK")
+        .env("WS_GH_BIN", &gh)
+        .arg("proj")
+        .assert()
+        .success();
+
+    assert!(!stale.exists(), "the superseded notes must be gone");
+    assert!(env.home.path().join(".cache/ws/update-notes-9.9.9").is_file());
 }

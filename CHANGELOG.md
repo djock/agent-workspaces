@@ -6,6 +6,34 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-05
+
+### Added
+
+- Opening a workspace now prints `Update available: <current> → <latest>
+  (ws -update)` when a newer release exists, matching what `cs` shows on session
+  open. The GitHub lookup is cached for an hour under `~/.cache/ws/update-check`
+  (or `$XDG_CACHE_HOME/ws/`), so at most one launch an hour pays for it; a failed
+  lookup is recorded too, so a machine with no `gh` or no network does not retry
+  on every launch. A launch already on the latest release prints nothing, every
+  failure path is silent, and `WS_NO_UPDATE_CHECK=1` switches the check off
+  entirely. `ws -update --check` refreshes the same cache.
+- The notice lists what you would be getting: one headline per release newer
+  than the installed one, read from the published `CHANGELOG.md` (up to five,
+  then "… and N earlier versions"). Cached per pending version alongside the
+  release check, so it costs one extra lookup per new release and none after
+  that; an unreachable changelog leaves the version notice intact. The same
+  list prints under `ws -update --check`.
+
+### Changed
+
+- The launch prompt now reads `Resume previous conversation in <name>? [y/N]`
+  instead of `Start a new conversation in <name>? [y/N]`, and **the default
+  flipped with it**: pressing Enter now starts a fresh conversation, and only
+  `y` resumes. A launch with no terminal to ask still resumes, so scripts are
+  unaffected. An unresumed conversation is not lost — `ws -conversations` still
+  lists it.
+
 ## [0.4.0] - 2026-07-29
 
 ### Added

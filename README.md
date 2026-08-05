@@ -243,6 +243,20 @@ ws -update
 ws -uninstall
 ```
 
+Opening a workspace also tells you when a newer `ws` has been released:
+
+```
+▌ Update available: 0.4.0 → 0.6.0 (ws -update)
+▌   0.6.0  Opening a workspace now says when a newer ws exists.
+▌   0.5.0  Every workspace now has a color.
+```
+
+One headline per release you would be getting, read from the changelog. The
+lookups are cached in `~/.cache/ws/` (or `$XDG_CACHE_HOME/ws/`) — the release for
+an hour, the notes until a newer release appears. A launch that is already
+current prints nothing, and every failed lookup is silent. `ws -update --check`
+prints the same list on demand; `WS_NO_UPDATE_CHECK=1` switches the check off.
+
 Uninstalling removes the installed binary and integrations owned by `ws`. It does not remove your workspaces or their contents.
 
 ## Where data lives

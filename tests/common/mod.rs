@@ -23,6 +23,12 @@ impl Env {
         c.env("HOME", self.home.path())
             .env("XDG_CONFIG_HOME", self.home.path().join(".config"))
             .env("WS_ROOT", &self.root)
+            .env("XDG_CACHE_HOME", self.home.path().join(".cache"))
+            // A launch checks GitHub for a newer release. Tests must never do
+            // that: it is slow, it needs `gh` + network, and it would make the
+            // suite's output depend on what is published. Tests that mean to
+            // exercise the notice set the cache file and unset this.
+            .env("WS_NO_UPDATE_CHECK", "1")
             .env_remove("NO_COLOR");
         // ws is developed from inside a ws workspace, so `cargo test` inherits
         // that launch's WS_WORKSPACE/WS_DIR/WS_AGENT. Tests asserting a hook does
@@ -33,6 +39,58 @@ impl Env {
             c.env_remove(leaked);
         }
         c
+    }
+
+    /// Seed the release-check cache as if `version` had just been looked up,
+    /// so a launch reports on it without going near GitHub.
+    pub fn write_update_cache(&self, version: &str) {
+        let dir = self.home.path().join(".cache/ws");
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        std::fs::write(dir.join("update-check"), format!("{now} {version}\n")).unwrap();
+    }
+
+    /// Write a fake `gh` that answers the two calls the update check makes:
+    /// `release view` with `tag`, and `api .../CHANGELOG.md` with `changelog`.
+    /// Every call is appended to `gh.log` so a test can prove a cached answer
+    /// was reused instead of re-fetched. Point `WS_GH_BIN` at the result.
+    pub fn fake_gh(&self, tag: &str, changelog: &str) -> PathBuf {
+        let bin = self.home.path().join("fake-gh");
+        let md = self.home.path().join("changelog.md");
+        std::fs::write(&md, changelog).unwrap();
+        let script = format!(
+            "#!/bin/sh\n\
+             echo \"$*\" >> \"{log}\"\n\
+             case \"$1\" in\n\
+             api) cat \"{md}\" ;;\n\
+             release) echo \"{tag}\" ;;\n\
+             *) exit 1 ;;\n\
+             esac\n\
+             exit 0\n",
+            log = self.home.path().join("gh.log").display(),
+            md = md.display(),
+        );
+        let mut f = std::fs::File::create(&bin).unwrap();
+        f.write_all(script.as_bytes()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = std::fs::metadata(&bin).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(&bin, p).unwrap();
+        }
+        bin
+    }
+
+    pub fn gh_log(&self) -> String {
+        std::fs::read_to_string(self.home.path().join("gh.log")).unwrap_or_default()
+    }
+
+    pub fn update_cache(&self) -> String {
+        std::fs::read_to_string(self.home.path().join(".cache/ws/update-check")).unwrap_or_default()
     }
 
     /// Write a fake `claude` shim that appends its argv + selected env to `argv.log`

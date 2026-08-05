@@ -455,18 +455,32 @@ fn should_ask_new(has_prior: bool, fresh: bool, enabled: bool, tty: bool) -> boo
     has_prior && !fresh && enabled && tty
 }
 
-/// Ask whether to start a new conversation. Defaults to No, i.e. resume.
-fn ask_new_conversation(name: &str) -> bool {
+/// Ask whether to resume the previous conversation. Defaults to No — pressing
+/// Enter starts a fresh one, and only `y` resumes.
+///
+/// Asked in the positive ("resume?") rather than as "start a new conversation?",
+/// because the prompt should name the thing being *kept*: the previous
+/// conversation is the only object in play the user might not want to lose.
+/// Nothing here is destructive either way — an unresumed conversation is still
+/// listed by `ws -conversations`.
+fn ask_resume(name: &str) -> bool {
     use std::io::Write;
-    eprint!("Start a new conversation in {name}? [y/N] ");
+    eprint!("Resume previous conversation in {name}? [y/N] ");
     let _ = std::io::stderr().flush();
     let mut line = String::new();
-    // A read that fails (closed stdin, EOF) is not a yes. Resuming is the
-    // conservative outcome: it keeps the conversation rather than stranding it.
+    // A read that fails (closed stdin, EOF) is not a yes; it takes the default
+    // the prompt just advertised rather than quietly doing the other thing.
     if std::io::stdin().read_line(&mut line).is_err() {
         return false;
     }
-    matches!(line.trim(), "y" | "Y" | "yes")
+    answer_resumes(&line)
+}
+
+/// Does this answer mean "resume"? Split out so the mapping is testable without
+/// a terminal — it is the one place the launch decides between continuing a
+/// conversation and starting over.
+fn answer_resumes(line: &str) -> bool {
+    matches!(line.trim(), "y" | "Y" | "yes" | "Yes")
 }
 
 pub fn archive(names: Vec<String>, archived: bool) -> Result<()> {
@@ -1196,12 +1210,18 @@ pub fn launch(
     }
     term::set_tab(&ws.name, color.as_deref());
 
+    // 5b. Tell the user a newer ws exists, before the agent takes the terminal.
+    // Cached for an hour and silent on every failure — see `update::notify`.
+    crate::update::notify();
+
     // 6. Ask before resuming, when there is something to resume and someone to
-    // ask. Answering No (the default) resumes, so the common case is one keypress.
+    // ask. `y` resumes; the default (Enter) starts a fresh conversation. When
+    // there is nobody to ask, resuming stays the unprompted behavior — a
+    // scripted launch must not silently start over.
     let has_prior = crate::contract::read_session_id(&ws.state_toml(), agent.id()).is_some();
     let fresh = fresh
         || (should_ask_new(has_prior, fresh, cfg.resume_prompt, std::io::stdin().is_terminal())
-            && ask_new_conversation(&ws.name));
+            && !ask_resume(&ws.name));
 
     // 7. Build + run — the agent owns the fresh/resume decision and persists its own state.
     let ctx = LaunchCtx {
@@ -1404,7 +1424,19 @@ pub fn whoami() -> Result<()> {
 
 #[cfg(test)]
 mod resume_prompt_tests {
-    use super::should_ask_new;
+    use super::{answer_resumes, should_ask_new};
+
+    /// The prompt reads `[y/N]`, so only an explicit yes resumes: Enter, an
+    /// unrecognised key and a stray blank line all start a fresh conversation.
+    #[test]
+    fn only_an_explicit_yes_resumes() {
+        for yes in ["y\n", "Y\n", "yes\n", " y \n"] {
+            assert!(answer_resumes(yes), "{yes:?} should resume");
+        }
+        for no in ["\n", "n\n", "N\n", "no\n", "q\n", ""] {
+            assert!(!answer_resumes(no), "{no:?} should start fresh");
+        }
+    }
 
     /// The prompt only appears when all four conditions hold. Each of the four
     /// is a case where asking is wrong, not merely noisy — most importantly the
