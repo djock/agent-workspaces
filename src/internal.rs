@@ -135,7 +135,16 @@ fn user_prompt() {
     }
 }
 
-const COOLDOWN_SECS: u64 = 300;
+/// How recently a notebook must have been written for the reminder to consider
+/// this turn's findings already recorded.
+const NOTEBOOK_FRESH_SECS: u64 = 300;
+
+/// How long the reminder stays quiet after it fires. Deliberately much longer
+/// than [`NOTEBOOK_FRESH_SECS`]: at five minutes, a long autonomous run was
+/// interrupted for notebook bookkeeping every five minutes, which is the
+/// opposite of what a lab notebook is for. Half an hour is roughly "once a work
+/// phase".
+const REMINDER_COOLDOWN_SECS: u64 = 1800;
 
 fn stop() {
     let ws = match current_ws() {
@@ -145,7 +154,14 @@ fn stop() {
         // emitting the old `decision: "approve"` shape is invalid.
         None => return,
     };
-    let _ = hookio::read_stdin(); // drain stdin; Stop payload is unused
+    let h = hookio::read_stdin();
+
+    // The agent is only stopping because a previous stop was blocked. Blocking
+    // again is how a Stop hook turns into an infinite loop, so every directive
+    // below waits for a turn the user actually ended.
+    if h.stop_hook_active {
+        return;
+    }
 
     // Limit-aware handoff: check before the notebook reminder.
     if let Some(directive) = limit_check(&ws) {
@@ -153,25 +169,8 @@ fn stop() {
         return;
     }
 
-    let newest_nb = newest_mtime_secs(&ws.notebook_dir());
-    let stamp = ws.local_dir().join("notebook-reminder.stamp");
-    let stamp_age = age_secs(&stamp);
-
-    let approve = match newest_nb {
-        None => true, // nothing to nag about yet
-        Some(nb_age) if nb_age < COOLDOWN_SECS => true, // just updated
-        _ => stamp_age.map(|a| a < COOLDOWN_SECS).unwrap_or(false), // cooled down recently
-    };
-
-    if !approve {
-        // touch the stamp and remind
-        let _ = std::fs::create_dir_all(ws.local_dir());
-        let _ = std::fs::write(&stamp, crate::now_iso());
-        let reason = "Notebook check. Append any new findings to your own notebook \
-            (.ws/notebook/notebook.<actor>.md — run `ws -whoami` if unsure which actor \
-            you are; never edit a teammate's). If a prior note was disproven by your recent \
-            work, correct it. If nothing needs changing, say so in one line and stop.";
-        println!("{}", hookio::decision_block(reason));
+    if let Some(reason) = notebook_check(&ws) {
+        println!("{}", hookio::decision_block(&reason));
         return;
     }
 
@@ -180,6 +179,35 @@ fn stop() {
     if let Some(directive) = task_check(&ws) {
         println!("{}", hookio::decision_block(&directive));
     }
+}
+
+/// Returns Some(reason) when the Stop hook should ask for a notebook update.
+///
+/// Silent when no notebook has ever been written (nothing to nag about yet),
+/// when one was written recently enough to count as this turn's record, or
+/// while the cooldown from the last reminder is still running. `notebook_prompt
+/// = false` opts out of it entirely.
+fn notebook_check(ws: &Workspace) -> Option<String> {
+    if !crate::config::load().notebook_prompt {
+        return None;
+    }
+    let nb_age = newest_mtime_secs(&ws.notebook_dir())?; // never written → silent
+    if nb_age < NOTEBOOK_FRESH_SECS {
+        return None; // just updated
+    }
+    let stamp = ws.local_dir().join("notebook-reminder.stamp");
+    if age_secs(&stamp).is_some_and(|a| a < REMINDER_COOLDOWN_SECS) {
+        return None; // reminded recently
+    }
+    let _ = std::fs::create_dir_all(ws.local_dir());
+    let _ = std::fs::write(&stamp, crate::now_iso());
+    Some(
+        "Notebook check. Append any new findings to your own notebook \
+        (.ws/notebook/notebook.<actor>.md — run `ws -whoami` if unsure which actor \
+        you are; never edit a teammate's). If a prior note was disproven by your recent \
+        work, correct it. If nothing needs changing, say so in one line and stop."
+            .to_string(),
+    )
 }
 
 /// Returns Some(directive) when the Stop hook should surface captured tasks.
@@ -1394,6 +1422,82 @@ mod tests {
         assert!(task_check(&ws).unwrap().contains("2 captured tasks waiting"));
     }
 
+    // ---- notebook_check ---------------------------------------------------
+    //
+    // Shares `task_lock`/`task_ws` with the section above: `notebook_check`
+    // reads `notebook_prompt` through the same process-global config path.
 
+    /// Write a notebook whose mtime is old enough that the reminder considers
+    /// this turn's findings unrecorded.
+    fn stale_notebook(ws: &Workspace) {
+        let dir = ws.notebook_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let nb = dir.join("notebook.a.md");
+        std::fs::write(&nb, "# Notebook\n").unwrap();
+        std::process::Command::new("touch")
+            .args(["-t", "200001010000"])
+            .arg(&nb)
+            .status()
+            .unwrap();
+    }
 
+    /// A workspace nobody has written a notebook in has nothing to be reminded
+    /// about, and a notebook written this turn is already the record the
+    /// reminder is asking for.
+    #[test]
+    fn nothing_to_record_is_silent() {
+        let _guard = task_lock();
+        let (_d, ws) = task_ws();
+        assert!(notebook_check(&ws).is_none(), "no notebook has ever been written");
+
+        let dir = ws.notebook_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notebook.a.md"), "# Notebook\n").unwrap();
+        assert!(notebook_check(&ws).is_none(), "written just now");
+    }
+
+    /// The cooldown is what keeps the reminder from derailing a long run. It
+    /// used to be five minutes, so a session that worked for an hour without
+    /// touching its notebook was interrupted a dozen times.
+    #[test]
+    fn the_reminder_fires_once_then_holds_for_the_cooldown() {
+        let _guard = task_lock();
+        let (_d, ws) = task_ws();
+        stale_notebook(&ws);
+
+        let first = notebook_check(&ws).expect("a stale notebook is worth one reminder");
+        assert!(first.contains("Notebook check"), "{first}");
+        assert!(notebook_check(&ws).is_none(), "the cooldown must suppress the next stop");
+
+        // Age the stamp past the cooldown: the question re-opens.
+        let stamp = ws.local_dir().join("notebook-reminder.stamp");
+        std::process::Command::new("touch")
+            .args(["-t", "200001010000"])
+            .arg(&stamp)
+            .status()
+            .unwrap();
+        assert!(notebook_check(&ws).is_some(), "a cooled-down stamp reminds again");
+    }
+
+    /// `notebook_prompt = false` is the full opt-out, and it must not leave a
+    /// stamp behind: turning it back on should behave like a first stop, not
+    /// like one already inside a cooldown.
+    #[test]
+    fn the_notebook_prompt_config_key_switches_it_off() {
+        let _guard = task_lock();
+        let (_d, ws) = task_ws();
+        stale_notebook(&ws);
+
+        let cfg = crate::config::config_path();
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(&cfg, "notebook_prompt = false\n").unwrap();
+        assert!(notebook_check(&ws).is_none(), "opted out");
+        assert!(
+            !ws.local_dir().join("notebook-reminder.stamp").exists(),
+            "nothing was asked, so nothing may be recorded as asked"
+        );
+
+        std::fs::write(&cfg, "notebook_prompt = true\n").unwrap();
+        assert!(notebook_check(&ws).is_some(), "opting back in reminds again");
+    }
 }

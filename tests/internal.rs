@@ -155,6 +155,64 @@ fn stop_reminds_then_cools_down() {
         .stdout(predicates::str::is_empty());
 }
 
+/// `stop_hook_active` means this turn is only ending because a Stop hook
+/// already blocked the previous one. Blocking again is how a Stop hook becomes
+/// an infinite loop — the reason a long Codex run kept being pulled back into
+/// notebook bookkeeping — so every directive stands down.
+#[test]
+fn stop_stands_down_on_a_continuation_stop() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "loop");
+
+    let nb = std::fs::read_dir(proj.join(".ws/notebook"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.file_name().unwrap().to_string_lossy().starts_with("notebook."))
+        .unwrap();
+    std::process::Command::new("touch").args(["-t", "200001010000"]).arg(&nb).status().unwrap();
+
+    // The same payload that would otherwise block, flagged as a continuation.
+    env.cmd()
+        .env("WS_WORKSPACE", "loop").env("WS_DIR", &proj)
+        .args(["internal", "stop"])
+        .write_stdin(r#"{"hook_event_name":"Stop","stop_hook_active":true}"#)
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty());
+
+    // No stamp was written either, so the reminder is merely deferred to a turn
+    // the user actually ended — not spent.
+    assert!(
+        !proj.join(".ws/local/notebook-reminder.stamp").exists(),
+        "a deferred reminder must not count as one already given"
+    );
+}
+
+/// The opt-out for people who do not want the notebook reminder at all.
+#[test]
+fn the_notebook_prompt_can_be_turned_off() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "nboff");
+    env.cmd().args(["config", "set", "notebook_prompt", "false"]).assert().success();
+
+    let nb = std::fs::read_dir(proj.join(".ws/notebook"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.file_name().unwrap().to_string_lossy().starts_with("notebook."))
+        .unwrap();
+    std::process::Command::new("touch").args(["-t", "200001010000"]).arg(&nb).status().unwrap();
+
+    env.cmd()
+        .env("WS_WORKSPACE", "nboff").env("WS_DIR", &proj)
+        .args(["internal", "stop"])
+        .write_stdin("{}")
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty());
+}
+
 #[test]
 fn stop_allows_silently_outside_workspace() {
     let env = Env::new();

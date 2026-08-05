@@ -6,6 +6,49 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The picker acts on the workspace you have highlighted, not just opens it:
+  `i` shows an info page (path, status, usage, tags, objective, notebook tail,
+  recent timeline), `d` deletes after a confirmation, and `a` archives or
+  unarchives. The info page is drawn in flow like every other frame — no
+  alternate screen — and is trimmed to fit a short window.
+- Deleting from the picker is `ws -rm` without `--force`: a workspace another
+  process holds is refused by pid, and the confirmation states which of the two
+  outcomes applies — a managed workspace is deleted whole, an adopted project
+  keeps its source and loses only `.ws/`.
+
+### Fixed
+
+- The letters `j k q d a` could not be typed into the picker's filter: the
+  terminal layer resolved them to commands before the filter saw them, so `/al`
+  toggled archived instead of finding "alpha". What a printable key means is now
+  decided where it is known whether a filter is being typed.
+- Modified keys are no longer read as the bare letter. Ctrl-D arrived as `d`,
+  which with the new binding would have opened a delete confirmation; it now
+  leaves the picker, like Ctrl-C.
+
+- The Stop hook no longer blocks a turn that is only ending because a previous
+  Stop hook blocked it. Both agents send `stop_hook_active` on such a
+  continuation and ws ignored it, so the notebook reminder, the limit handoff
+  and the task prompt could each re-enter the turn they had just interrupted —
+  which is what kept pulling long Codex runs back into notebook bookkeeping.
+
+### Changed
+
+- Picker keys: `d` is delete (it was "toggle detail" — that view is now the `i`
+  info page) and `a` archives the selection (the show-archived filter it used to
+  own moved to `A`).
+- The notebook reminder now stays quiet for 30 minutes after it fires, not 5.
+  At five minutes an hour of uninterrupted work was interrupted a dozen times.
+  What counts as a freshly written notebook is unchanged at 5 minutes.
+
+### Added
+
+- `notebook_prompt` config key (default `true`). `ws config set notebook_prompt
+  false` switches the notebook reminder off entirely, the way `task_prompt`
+  already did for the task prompt.
+
 ## [0.5.0] - 2026-08-05
 
 ### Added
