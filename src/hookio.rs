@@ -17,6 +17,13 @@ pub struct HookInput {
     pub tool_name: String,
     #[serde(default)]
     pub tool_input: ToolInput,
+    /// Set by the agent on a `Stop` payload when the turn is only ending
+    /// *because* a Stop hook already blocked the previous one. Both Claude and
+    /// Codex send it (verified in Codex 0.145.0's payload schema), and it is the
+    /// only loop guard either offers: a hook that blocks again here is asking to
+    /// be re-entered forever.
+    #[serde(default)]
+    pub stop_hook_active: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -70,6 +77,13 @@ mod tests {
         assert_eq!(h.tool_input.command, "ls -la");
         assert_eq!(h.prompt, ""); // default
         assert!(h.agent_id.is_none());
+        assert!(!h.stop_hook_active, "absent means this is a first stop");
+    }
+
+    #[test]
+    fn parses_stop_hook_active() {
+        let h = parse(r#"{"hook_event_name":"Stop","stop_hook_active":true}"#);
+        assert!(h.stop_hook_active);
     }
 
     #[test]

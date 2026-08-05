@@ -6,6 +6,26 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The Stop hook no longer blocks a turn that is only ending because a previous
+  Stop hook blocked it. Both agents send `stop_hook_active` on such a
+  continuation and ws ignored it, so the notebook reminder, the limit handoff
+  and the task prompt could each re-enter the turn they had just interrupted —
+  which is what kept pulling long Codex runs back into notebook bookkeeping.
+
+### Changed
+
+- The notebook reminder now stays quiet for 30 minutes after it fires, not 5.
+  At five minutes an hour of uninterrupted work was interrupted a dozen times.
+  What counts as a freshly written notebook is unchanged at 5 minutes.
+
+### Added
+
+- `notebook_prompt` config key (default `true`). `ws config set notebook_prompt
+  false` switches the notebook reminder off entirely, the way `task_prompt`
+  already did for the task prompt.
+
 ## [0.5.0] - 2026-08-05
 
 ### Added
