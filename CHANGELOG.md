@@ -6,6 +6,31 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-09
+
+### Fixed
+
+- **The keyring backend never stored anything.** `keyring` was declared without
+  a platform feature, and with none enabled that crate falls back to an
+  in-memory mock: `ws -secrets set` returned success, the name was written to
+  the on-disk index so `ws -secrets list` kept showing it, and the value was
+  discarded when the process exited. Every `ws -secrets get` in a later process
+  answered "no such secret". The real OS vault is now linked on macOS, Windows
+  and Linux, and a build for a target with no store fails rather than falling
+  back to the mock.
+
+  **Secrets stored by 0.6.0 or earlier under the keyring backend are gone and
+  cannot be recovered** — they never reached the vault. Names still listed by
+  `ws -secrets list` must be stored again. The file backend was never affected.
+
+- `ws -secrets get` distinguishes a name the store lists but cannot resolve —
+  the fingerprint of the loss above — from a name that was never stored, rather
+  than reporting both as "no such secret".
+- `ws -secrets help` prints the subcommands instead of failing with "unknown
+  -secrets subcommand: help", as does a bare `ws -secrets`, and an unrecognised
+  subcommand now lists the valid ones. None of these need a workspace or the
+  master password.
+
 ## [0.6.0] - 2026-08-05
 
 ### Added

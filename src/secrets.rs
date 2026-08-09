@@ -6,6 +6,22 @@ use rand::RngCore;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// A build with no platform credential store enabled falls back to keyring's
+/// mock in-memory store, which loses every secret at process exit while still
+/// reporting success — see the `keyring` note in `Cargo.toml`. The failure is
+/// invisible in-process, so no unit test can catch it; refuse to build instead.
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "windows",
+    unix,
+)))]
+compile_error!(
+    "no keyring platform store is enabled for this target: `ws` would silently \
+     store secrets in an in-memory mock and lose them at exit. Add a \
+     target-specific `keyring` feature in Cargo.toml before building here."
+);
+
 pub trait SecretStore {
     fn set(&self, name: &str, value: &str) -> Result<()>;
     /// Store several values as ONE transaction.
