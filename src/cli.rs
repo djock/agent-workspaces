@@ -69,7 +69,21 @@ pub enum SecretsCmd {
     /// Put stored values back into a file the redaction hook rewrote.
     /// One positional path; the file is edited in place.
     Restore(String),
+    Help,
 }
+
+pub const SECRETS_USAGE: &str = "\
+usage: ws -secrets <subcommand>
+
+  set <name>      store a secret; the value is read from stdin, never argv
+  get <name>      print one secret's value
+  list            print the stored names (never the values)
+  rm <name>       remove one secret
+  purge           remove every secret for this workspace (needs a TTY)
+  export          print `export NAME='value'` lines for eval
+  backend         print which store is in use (keyring or file)
+  restore <file>  put stored values back into a redacted file, in place
+  help            print this message";
 
 #[derive(Debug, PartialEq)]
 pub enum ConfigCmd {
@@ -288,7 +302,10 @@ fn parse_secrets(args: Vec<String>) -> Result<Cmd> {
         "restore" => SecretsCmd::Restore(
             it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -secrets restore <file>"))?,
         ),
-        other => bail!("unknown -secrets subcommand: {other}"),
+        // Bare `ws -secrets` is a request to be told what the subcommands are,
+        // not a mistake worth an error.
+        "help" | "--help" | "-h" | "" => SecretsCmd::Help,
+        other => bail!("unknown -secrets subcommand: {other}\n\n{SECRETS_USAGE}"),
     };
     Ok(Cmd::Secrets(cmd))
 }

@@ -1,6 +1,6 @@
 [package]
 name = "ws"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "Persistent workspaces shared by Claude Code and Codex"
 license = "MIT"
@@ -20,7 +20,14 @@ toml = "0.8"
 toml_edit = "0.22"
 dirs = "5"
 uuid = { version = "1", features = ["v4"] }
-keyring = "3"
+# Every platform credential store in keyring 3 sits behind a feature flag, and
+# with none enabled the crate silently falls back to a *mock in-memory* store:
+# `set_password` succeeds, the process exits, and the value is gone. That is not
+# a hypothetical — it shipped. `-secrets set` printed "stored NAME", the on-disk
+# name index kept the name so `-secrets list` still showed it, and `-secrets get`
+# in the next process returned NoEntry ("no such secret"). Nothing ever reached
+# the OS vault. Keep a real store enabled for every target we build for; the
+# `cfg` guard at the top of `src/secrets.rs` fails the build if one is missing.
 aes-gcm = "0.10"
 argon2 = "0.5"
 rand = "0.8"
@@ -32,6 +39,15 @@ regex = "1.13.1"
 # to sit on top of this for a full-screen dashboard; the picker draws inline with
 # plain ANSI, so only the terminal-input half is still needed.
 crossterm = "0.29.0"
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -15,6 +15,13 @@ use std::io::IsTerminal;
 use std::io::Read;
 
 pub fn secrets(cmd: SecretsCmd) -> Result<()> {
+    // Before `workspace_name`/`open`: asking what the subcommands are must work
+    // outside a workspace, and must never trigger the file backend's master
+    // password prompt.
+    if matches!(cmd, SecretsCmd::Help) {
+        println!("{}", crate::cli::SECRETS_USAGE);
+        return Ok(());
+    }
     let ws = secrets::workspace_name()?;
     let store = secrets::open(&ws)?;
     match cmd {
@@ -27,6 +34,23 @@ pub fn secrets(cmd: SecretsCmd) -> Result<()> {
         }
         SecretsCmd::Get(name) => match store.get(&name)? {
             Some(v) => println!("{v}"),
+            // A name the index lists but the vault cannot resolve is not the
+            // same failure as a name nobody ever stored, and saying "no such
+            // secret" for both sent people hunting for a typo. Versions before
+            // 0.6.1 linked `keyring` with no platform feature, so the keyring
+            // backend wrote to an in-memory mock that was discarded at process
+            // exit while the on-disk index kept the name. Those values are not
+            // recoverable — say so, and say what to do instead.
+            None if store.list().unwrap_or_default().iter().any(|n| n == &name) => {
+                anyhow::bail!(
+                    "{name} is listed for workspace {ws} but its value is missing from the \
+                     {} store.\nws before 0.6.1 reported `set` as succeeding while storing \
+                     nothing that survived the process — if {name} was stored by one of those \
+                     versions the value is gone and cannot be recovered.\nStore it again with \
+                     `ws -secrets set {name}`, or drop the stale name with `ws -secrets rm {name}`.",
+                    store.backend_name(),
+                )
+            }
             None => anyhow::bail!("no such secret: {name}"),
         },
         SecretsCmd::List => {
@@ -65,6 +89,7 @@ pub fn secrets(cmd: SecretsCmd) -> Result<()> {
         }
         SecretsCmd::Backend => println!("{}", store.backend_name()),
         SecretsCmd::Restore(file) => secrets_restore(&ws, store.as_ref(), &file)?,
+        SecretsCmd::Help => unreachable!("handled before the store is opened"),
     }
     Ok(())
 }
