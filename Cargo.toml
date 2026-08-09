@@ -1,6 +1,6 @@
 [package]
 name = "ws"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 description = "Persistent workspaces shared by Claude Code and Codex"
 license = "MIT"
@@ -46,8 +46,16 @@ keyring = { version = "3", features = ["apple-native"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
 
+# Linux/BSD: the Secret Service over D-Bus, reached with the *async* backend
+# (zbus) plus `crypto-rust`, which is pure Rust end to end. The obvious-looking
+# `sync-secret-service` instead pulls `dbus-secret-service` -> `libdbus-sys`,
+# which needs the system `libdbus-1-dev` at build time — it broke the
+# x86_64-unknown-linux-musl release build ("Package 'dbus-1' ... not found"),
+# and linking a system C library into what is meant to be a static musl binary
+# would be the wrong fix even where the package exists. `async-io` supplies the
+# runtime keyring blocks on internally; nothing here becomes async.
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))'.dependencies]
-keyring = { version = "3", features = ["sync-secret-service"] }
+keyring = { version = "3", features = ["async-secret-service", "crypto-rust", "async-io"] }
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -6,7 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.6.1] - 2026-08-09
+## [0.6.2] - 2026-08-10
+
+There is no 0.6.1 release: its tag was cut with a Linux keyring backend that
+would not build, and the release never produced artifacts.
 
 ### Fixed
 

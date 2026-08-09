@@ -128,7 +128,7 @@ fn help_lists_subcommands_without_a_workspace_or_password() {
         .stderr(predicates::str::contains("usage: ws -secrets"));
 }
 
-/// A name the store lists but cannot resolve is the fingerprint of the pre-0.6.1
+/// A name the store lists but cannot resolve is the fingerprint of the pre-0.6.2
 /// mock-keyring data loss. It must not be reported as a plain "no such secret",
 /// which reads as a typo and sends people looking for a secret that is gone.
 #[test]
