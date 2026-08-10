@@ -198,6 +198,46 @@ pub fn setup() -> Result<()> {
     Ok(())
 }
 
+/// A note when `cwd` is a workspace whose `.ws/` the repository ignores.
+///
+/// `contract::init` commits `.ws/` on creation, writes `.ws/.gitignore` to keep
+/// `local/` and the encrypted store out of it, and writes `.ws/.gitattributes`
+/// giving the append-only files `merge=union`. All three assume `.ws/` is
+/// tracked. When an ancestor gitignore excludes it, `init`'s `git add -- .ws`
+/// fails, the staged-diff check finds nothing, and the commit is skipped
+/// **silently** — so the loss shows up only as notebooks that never reach a
+/// co-developer and a worktree merge that conflicts where it should have
+/// unioned.
+///
+/// Reported as a note, never a failure: ignoring `.ws/` is the right call for a
+/// public repository whose working notes are not meant to ship, which is what
+/// this repository itself does.
+fn gitignored_ws_note(cwd: &std::path::Path) -> Option<String> {
+    if !cwd.join(".ws").is_dir() {
+        return None;
+    }
+    // `check-ignore -q` exits 0 when the path is ignored, 1 when it is not, and
+    // 128 outside a repository — so anything but 0 means there is nothing to say.
+    let ignored = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["check-ignore", "-q", ".ws"])
+        .status()
+        .ok()?
+        .code()
+        == Some(0);
+    if !ignored {
+        return None;
+    }
+    Some(
+        "… .ws/ is gitignored — ws could not record its init commit, notebooks and\n  \
+         handoffs are not shared with anyone cloning this repo, and merge=union in\n  \
+         .ws/.gitattributes cannot apply (a merge driver only runs on tracked files).\n  \
+         Deliberate for a repo whose notes stay local; otherwise un-ignore .ws/."
+            .to_string(),
+    )
+}
+
 pub fn doctor() -> Result<()> {
     let mut any_agent = false;
     let mut hard_fail = false;
@@ -260,6 +300,10 @@ pub fn doctor() -> Result<()> {
             println!("✗ {} is invalid: {e:#}", hooks_toml.display());
             hard_fail = true;
         }
+    }
+
+    if let Some(note) = gitignored_ws_note(&std::env::current_dir()?) {
+        println!("{note}");
     }
 
     if !any_agent {

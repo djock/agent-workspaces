@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `ws -doctor` reports when the current workspace's `.ws/` is gitignored. That
+  costs three things silently: `contract::init`'s `git add -- .ws` fails so no
+  init commit is recorded, notebooks and handoffs never reach anyone cloning the
+  repo, and `merge=union` in `.ws/.gitattributes` cannot apply, because a merge
+  driver only runs on tracked files. It is reported as a note, not a failure —
+  ignoring `.ws/` is the right call for a public repository whose working notes
+  are not meant to ship, which is what this repository does.
+
 ## [0.6.4] - 2026-08-10
 
 ### Fixed
