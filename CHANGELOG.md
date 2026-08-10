@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-08-10
+
 ### Fixed
 
 - `ws --help` lists `ws -secrets help`, which shipped in 0.6.3 undocumented.
