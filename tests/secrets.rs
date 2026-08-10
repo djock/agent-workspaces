@@ -20,6 +20,28 @@ fn kc(env: &Env, ws: &str) -> assert_cmd::Command {
     c
 }
 
+/// Is there a *usable* OS vault here?
+///
+/// Not every environment has one, and the two ways of lacking it look nothing
+/// alike: macOS with a temp HOME reports "a default keychain could not be
+/// found", and a headless Linux runner reports
+/// `org.freedesktop.secrets was not provided by any .service files`. Rather
+/// than match on either message, ask the binary to store something and see.
+///
+/// The mock store this whole file exists to guard against would pass this
+/// probe — `set` always succeeds there. That is deliberate: the probe must not
+/// be what decides the mock is acceptable, so callers still assert the
+/// cross-process behaviour that only a real vault can satisfy.
+fn vault_works(env: &Env, ws: &str) -> bool {
+    let ok = kc(env, ws).args(["-secrets", "set", "__PROBE__"]).write_stdin("p").ok().is_ok();
+    if ok {
+        kc(env, ws).args(["-secrets", "rm", "__PROBE__"]).ok().ok();
+    } else {
+        eprintln!("skipping: no usable OS credential vault in this environment");
+    }
+    ok
+}
+
 fn sc(env: &Env) -> assert_cmd::Command {
     let mut c = env.cmd();
     c.env("WS_SECRETS_BACKEND", "file")
@@ -128,12 +150,20 @@ fn help_lists_subcommands_without_a_workspace_or_password() {
         .stderr(predicates::str::contains("usage: ws -secrets"));
 }
 
-/// A name the store lists but cannot resolve is the fingerprint of the pre-0.6.2
+/// A name the store lists but cannot resolve is the fingerprint of the pre-0.6.3
 /// mock-keyring data loss. It must not be reported as a plain "no such secret",
 /// which reads as a typo and sends people looking for a secret that is gone.
 #[test]
 fn a_listed_but_unresolvable_name_reports_data_loss_not_a_typo() {
     let env = Env::new();
+    // The message under test distinguishes "listed but unresolvable" from
+    // "never stored", which needs a vault that can answer *not found*. Where
+    // there is no vault at all, `get` fails with a transport error before
+    // reaching either branch — so probe first rather than assert on an error
+    // that says nothing about this code.
+    if !vault_works(&env, "sw") {
+        return;
+    }
     // Forge the keyring backend's on-disk name index with a name the OS vault
     // has never heard of — exactly the state the mock store left behind.
     let dir = env.home.path().join(".config/ws/secrets");

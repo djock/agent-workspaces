@@ -44,7 +44,7 @@ pub fn secrets(cmd: SecretsCmd) -> Result<()> {
             None if store.list().unwrap_or_default().iter().any(|n| n == &name) => {
                 anyhow::bail!(
                     "{name} is listed for workspace {ws} but its value is missing from the \
-                     {} store.\nws before 0.6.2 reported `set` as succeeding while storing \
+                     {} store.\nws before 0.6.3 reported `set` as succeeding while storing \
                      nothing that survived the process — if {name} was stored by one of those \
                      versions the value is gone and cannot be recovered.\nStore it again with \
                      `ws -secrets set {name}`, or drop the stale name with `ws -secrets rm {name}`.",

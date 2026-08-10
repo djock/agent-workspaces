@@ -6,10 +6,12 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.6.2] - 2026-08-10
+## [0.6.3] - 2026-08-10
 
-There is no 0.6.1 release: its tag was cut with a Linux keyring backend that
-would not build, and the release never produced artifacts.
+There are no 0.6.1 or 0.6.2 releases. Both tags were cut while the Linux side
+of the keyring fix was still wrong — 0.6.1 would not build against the system
+D-Bus library, and 0.6.2 failed its own test run on a headless runner with no
+Secret Service — so neither produced artifacts.
 
 ### Fixed
 
