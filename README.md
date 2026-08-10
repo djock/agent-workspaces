@@ -65,6 +65,15 @@ own:
   terminal to prompt on: if `$WS_SECRETS_PASSWORD` is not set, redaction reports
   itself unavailable (stderr and the session log) rather than skipping without a
   trace.
+- **Secrets stored with the keyring backend before v0.6.3 are gone.** Up to and
+  including v0.6.2, `ws` linked the `keyring` crate with no platform feature, and
+  that crate then falls back to an in-memory mock: `ws -secrets set` reported
+  success, the name was written to the on-disk index, and the value was discarded
+  when the process exited. Nothing ever reached the OS vault, so nothing can be
+  recovered. The symptom is a name that `ws -secrets list` shows but
+  `ws -secrets get` cannot resolve — from v0.6.3 that case says so explicitly
+  instead of reporting "no such secret". Store those values again. The encrypted
+  `file` backend was never affected.
 - **Codex session identity depends on Codex's hooks being trusted.** ws records
   the session id that Codex reports in its `SessionStart` hook payload and later
   resumes it with `codex resume <uuid>` — exact, not a `--last` guess. But Codex
@@ -75,8 +84,17 @@ own:
   macOS-specific call is `#[cfg]`-gated and the suite runs on `ubuntu-24.04`, and
   releases now ship a statically linked `x86_64-unknown-linux-musl` binary
   alongside Apple Silicon. Treat Linux as working-but-unproven; macOS arm64 is the
-  platform that has actually been used.
-- **Releases are not yet authenticated** beyond TLS, and the updater bootstrap
+  platform that has actually been used. The **keyring backend specifically is
+  covered by nothing on Linux**: its tests need a live Secret Service, the CI
+  runner is headless, and they skip there rather than fail — so a regression in
+  the Linux vault path can reach a tag with CI green. That is the shape of the
+  bug fixed in v0.6.3, which is why it is called out rather than assumed rare.
+- **Releases are attested but not signed.** The workflow generates GitHub build
+  provenance, so `gh attestation verify <archive> --repo djock/agent-workspaces`
+  confirms which workflow and commit built an artifact. What is missing is the
+  minisign signature over `SHA256SUMS`: `MINISIGN_SECRET_KEY` is not set in the
+  repository, so the workflow warns "this release will be UNSIGNED" and
+  continues. Every release through v0.6.3 is unsigned, and the updater bootstrap
   is unverified.
 - **A workspace whose name contains `@` cannot be launched by name**, because
   `@` means "worktree" in a bare argument.
@@ -139,12 +157,15 @@ hook file would let a cloned project execute code the moment you opened it.
 
 - macOS on Apple Silicon, or Linux x86_64, for the prebuilt release.
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Codex](https://developers.openai.com/codex/cli).
-- [GitHub CLI](https://cli.github.com/) authenticated with access to the private repository.
+- [GitHub CLI](https://cli.github.com/), authenticated. The repository is public
+  and `gh release download` works without a login, but `install.sh` checks
+  `gh auth status` and stops if it fails — the check predates the repo going
+  public and has not been relaxed yet.
 - Rust and Cargo only if you choose to build from source.
 
 ## Install
 
-Clone the private repository and run the installer:
+Clone the repository and run the installer:
 
 ```sh
 gh auth login
@@ -219,7 +240,7 @@ ws -conversations [<name>]     Conversation lineage: rotations and agent switche
 ws -rotate [<name>]            Write a handoff skeleton for the next session
 ws -task add|list|rm           Capture tasks without interrupting the agent
                                (the agent is asked about them when a turn ends)
-ws -secrets set|get|list|...   Manage workspace secrets
+ws -secrets set|get|list|...   Manage workspace secrets (`ws -secrets help`)
 ws -limits                     Show known usage limits
 ws -doctor                     Check the installation
 ws setup                       Install or refresh hooks, prompts, and status bars
@@ -229,8 +250,12 @@ ws -update | -uninstall        Update or remove ws
 ws --version                   Show the installed version
 ```
 
-`ws --help` documents the full surface, including every launch flag; a test fails
-if a command exists that the help text omits.
+`ws --help` documents the full surface, including every launch flag. A test reads
+the command tokens straight out of the parser's match arms and fails if one of
+them is missing from the help text, so a newly added command cannot ship
+undocumented. (It used to compare against a hand-written list, which could only
+check commands someone had remembered to add to it — `ws -secrets help` shipped
+missing from the help exactly that way.)
 
 In the picker, `enter` opens the highlighted workspace and the other keys act on
 it too:
@@ -294,7 +319,12 @@ cargo test --all-targets --all-features
 cargo build --release --locked
 ```
 
-Releases use semantic versioning. A tag such as `v0.1.0` runs the release workflow and creates a draft GitHub release with a SHA-256 checksum file and an Apple Silicon binary archive.
+Releases use semantic versioning. A tag such as `v0.1.0` runs the release
+workflow, which builds both targets and creates a **draft** GitHub release
+carrying `install.sh`, a `SHA256SUMS` file, and one archive per target
+(`aarch64-apple-darwin` and `x86_64-unknown-linux-musl`). Drafts are published by
+hand, so an unsigned or half-uploaded release is never public. `docs/releasing.md`
+has the full procedure.
 
 ## License
 

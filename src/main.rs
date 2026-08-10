@@ -178,6 +178,7 @@ fn help_text() -> &'static str {
          \x20 ws -secrets set|get|rm <name>\n\
          \x20 ws -secrets list|purge|export|backend\n\
          \x20 ws -secrets restore <file>   put stored values back into a redacted file\n\
+         \x20 ws -secrets help             the subcommands, in full\n\
          \n\
          Setup\n\
          \x20 ws setup                     install hooks, prompts and status lines\n\
@@ -191,6 +192,58 @@ fn help_text() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    /// Every command token the parser accepts, read out of `cli.rs` itself.
+    ///
+    /// The list this replaces was written by hand, which meant it could only
+    /// confirm that commands *someone had remembered* were documented — the one
+    /// job it could not do was notice a new one. `ws -secrets help` was added,
+    /// left out of the help text, and the test stayed green, while the README
+    /// promised "a test fails if a command exists that the help text omits".
+    /// Reading the match arms makes that promise true: a new arm is covered the
+    /// moment it is written, with nothing to remember to update.
+    ///
+    /// `include_str!` is resolved at compile time relative to this file, so this
+    /// reads the same source that produced the parser it is checking.
+    fn parser_tokens() -> Vec<String> {
+        let src = include_str!("cli.rs");
+        let mut out = Vec::new();
+        // Each dispatch is `match <expr> { "a" | "b" => ..., }`. Scope the
+        // search to the function that owns it: `match sub.as_str()` appears
+        // twice, once for `ws hooks` inside `parse` and once for `-secrets`.
+        for (func, start) in
+            [("pub fn parse(", "match first.as_str() {"), ("fn parse_secrets(", "match sub.as_str() {")]
+        {
+            let Some(f) = src.find(func) else {
+                panic!("{func:?} is gone from cli.rs — this test can no longer see the parser");
+            };
+            let Some(i) = src[f..].find(start).map(|i| f + i) else {
+                panic!("{start:?} is gone from {func:?} — this test can no longer see the parser");
+            };
+            for line in src[i + start.len()..].lines() {
+                // Arms sit at 8 spaces; the match closes at its own indent, so a
+                // line starting with exactly four spaces and `}` ends it.
+                if line.starts_with("    }") {
+                    break;
+                }
+                let Some((pat, _)) = line.split_once("=>") else { continue };
+                // Only pattern positions, and only quoted literals in them.
+                if !pat.trim_start().starts_with('"') {
+                    continue;
+                }
+                for lit in pat.split('|') {
+                    let lit = lit.trim();
+                    if let Some(t) = lit.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                        if !t.is_empty() {
+                            out.push(t.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        assert!(out.len() > 20, "only found {} tokens in cli.rs — extraction broke", out.len());
+        out
+    }
+
     /// The help text is the only user-facing documentation of the command
     /// surface, and it silently fell a third of that surface behind while the
     /// README called it complete. Anything a user can type must appear in it; a
@@ -199,12 +252,28 @@ mod tests {
     #[test]
     fn help_covers_every_command() {
         let help = super::help_text();
+        // Conventional aliases carried for muscle memory. Spelling every one of
+        // them out would pad the help with rows that teach nothing, so they are
+        // exempt *by name* — an exemption has to be added deliberately, which is
+        // the property the hand-written list lacked.
+        let aliases = ["-V", "-h", "--help", "--resume", "-resume", "internal", "statusline"];
+        for token in parser_tokens() {
+            if aliases.contains(&token.as_str()) {
+                continue;
+            }
+            assert!(help.contains(&token), "`ws --help` never mentions {token:?}");
+        }
+    }
+
+    /// The flags are not match arms on the dispatch, so they are still listed by
+    /// hand — but a flag is only reachable through a command the test above
+    /// already covers, so the exposure is much smaller.
+    #[test]
+    fn help_covers_every_launch_flag() {
+        let help = super::help_text();
         for token in [
-            "-pick", "-list", "-ls", "-adopt", "-rm", "-tag", "-status", "-color", "-archive", "-unarchive",
-            "-search", "-limits", "-doctor", "-whoami", "-who", "-conversations", "-rotate",
-            "-task", "-secrets", "restore", "-update", "-uninstall", "setup", "config", "hooks",
-            "--version", "-claude", "-codex", "--agent", "--fresh", "--handoff", "--force",
-            "--merge", "--include-archived", "--archived",
+            "-claude", "-codex", "--agent", "--fresh", "--handoff", "--force", "--merge",
+            "--include-archived", "--archived", "--tag", "--clear", "--check",
         ] {
             assert!(help.contains(token), "`ws --help` never mentions {token:?}");
         }

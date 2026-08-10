@@ -6,6 +6,28 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `ws --help` lists `ws -secrets help`, which shipped in 0.6.3 undocumented.
+- `help_covers_every_command` reads the command tokens out of the parser's match
+  arms instead of comparing against a hand-written list. The old list could only
+  confirm that commands someone had remembered were documented — the one thing it
+  could not do was notice a new one, which is how `-secrets help` shipped missing.
+  Aliases (`-h`, `-V`, ...) are exempt by name, so an exemption is deliberate.
+
+### Documentation
+
+- The README no longer calls the repository private; it is public. `install.sh`
+  still requires `gh auth status` to pass, which is now stated as the installer
+  limitation it is rather than implied to be a privacy requirement.
+- The release description lists what a release actually carries — `install.sh`,
+  `SHA256SUMS`, and both target archives — not just an Apple Silicon binary.
+- "Releases are not yet authenticated beyond TLS" is corrected: build provenance
+  attestation is generated and verifiable; the minisign signature is what is
+  missing, because `MINISIGN_SECRET_KEY` is unset.
+- Known limitations record the pre-0.6.3 keyring data loss, and that the Linux
+  keyring path is covered by no test at all (its tests skip on a headless runner).
+
 ## [0.6.3] - 2026-08-10
 
 There are no 0.6.1 or 0.6.2 releases. Both tags were cut while the Linux side
