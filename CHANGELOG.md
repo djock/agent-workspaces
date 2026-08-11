@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-08-11
+
 ### Added
 
 - `ws -doctor` reports when the current workspace's `.ws/` is gitignored. That
@@ -15,6 +17,36 @@ The project follows [Semantic Versioning](https://semver.org/).
   driver only runs on tracked files. It is reported as a note, not a failure —
   ignoring `.ws/` is the right call for a public repository whose working notes
   are not meant to ship, which is what this repository does.
+
+### Fixed
+
+- The workspace lock could be held by several processes at once. Acquiring it
+  created the lock file and wrote its body as two steps, so between them the
+  file existed with zero bytes — and an empty file is valid TOML with no `pid`,
+  which the takeover path reads as a *stale* lock. A second `ws` arriving in
+  that window therefore deleted the live holder's lock and claimed the
+  workspace. Sixteen racing threads produced up to nine simultaneous "holders".
+  The body is now written to a private temp file and `hard_link`ed into place:
+  `link` still fails if the lock exists, but the name it publishes already has
+  its content, so the lock file is never observable empty. (`rename`, this
+  codebase's usual atomic publish, is wrong here — it replaces the destination,
+  which is the theft this guards against.) The existing contention test caught
+  this at roughly one run in three, which read as flakiness; it now runs enough
+  rounds to make a regression certain rather than occasional.
+- `ws -secrets` no longer prompts for the file backend's master password where
+  no terminal can answer. `secrets()` opened the store before dispatching, and
+  `open` builds the file backend's password eagerly, so every subcommand
+  authenticated and the `/dev/tty` open surfaced raw as `Device not configured
+  (os error 6)` — an errno from which the `$WS_SECRETS_PASSWORD` way out is
+  undiscoverable. Two changes: `ws -secrets backend` reports the configured
+  backend without opening a store (it decrypts nothing, so it must not
+  authenticate, and it now answers outside a workspace too), and the
+  password-needing subcommands check for a usable terminal first and otherwise
+  fail naming `$WS_SECRETS_PASSWORD`. Interactive use is unchanged — the check
+  reads `/dev/tty` exactly as rpassword does, so `ws -secrets set K < value`
+  from a terminal still prompts. This only ever affected
+  `secrets_backend = file`; the default `auto` prefers the OS vault where one
+  works and never prompted.
 
 ## [0.6.4] - 2026-08-10
 
