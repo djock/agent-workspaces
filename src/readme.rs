@@ -102,7 +102,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    const TEMPLATE: &str = "# proj\n\n## Objective\n\n_(captured from the first prompt)_\n\n## Outcome\n\n";
+    const TEMPLATE: &str =
+        "# proj\n\n## Objective\n\n_(captured from the first prompt)_\n\n## Outcome\n\n";
 
     #[test]
     fn replaces_placeholder_only_within_objective() {
@@ -126,7 +127,8 @@ mod tests {
     fn does_not_overwrite_real_objective() {
         let d = TempDir::new().unwrap();
         let f = d.path().join("README.md");
-        std::fs::write(&f, "# p\n\n## Objective\n\nAlready written by hand.\n\n## Outcome\n").unwrap();
+        std::fs::write(&f, "# p\n\n## Objective\n\nAlready written by hand.\n\n## Outcome\n")
+            .unwrap();
 
         let wrote = capture_objective(&f, "New prompt").unwrap();
         assert!(!wrote);

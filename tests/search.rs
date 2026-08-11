@@ -17,7 +17,10 @@ fn search_finds_notebook_text_across_workspaces() {
     std::fs::write(a.join(".ws/notebook/notes.md"), "the kraken retries on 429\n").unwrap();
     std::fs::write(b.join(".ws/README.md"), "# beta\nno sea monsters here\n").unwrap();
 
-    env.cmd().args(["-search", "kraken"]).assert().success()
+    env.cmd()
+        .args(["-search", "kraken"])
+        .assert()
+        .success()
         .stdout(predicate::str::contains("\nalpha\n"))
         .stdout(predicate::str::contains("429"))
         .stdout(predicate::str::contains("\nbeta\n").not());
@@ -33,9 +36,15 @@ fn search_skips_archived_unless_asked() {
     // Anchor on the workspace-header form ("\nold\n"), not a bare "old" substring —
     // macOS temp paths contain "folders", which itself contains "old" as a substring,
     // so a bare `contains("old")` assertion is unreliable in this suite.
-    env.cmd().args(["-search", "kraken"]).assert().success()
+    env.cmd()
+        .args(["-search", "kraken"])
+        .assert()
+        .success()
         .stdout(predicate::str::contains("\nold\n").not());
-    env.cmd().args(["-search", "kraken", "--include-archived"]).assert().success()
+    env.cmd()
+        .args(["-search", "kraken", "--include-archived"])
+        .assert()
+        .success()
         .stdout(predicate::str::contains("\nold\n"));
 }
 
@@ -51,7 +60,10 @@ fn search_never_returns_local_log_contents() {
     // (searching for "hunter2" would make "no matches for \"hunter2\"" fail that
     // assertion even though nothing leaked). Anchor instead on the file name that
     // would appear in a match line, which only shows up if local/ was searched.
-    env.cmd().args(["-search", "hunter2"]).assert().success()
+    env.cmd()
+        .args(["-search", "hunter2"])
+        .assert()
+        .success()
         .stdout(predicate::str::contains("session.log").not())
         .stdout(predicate::str::contains("no matches"));
 }
@@ -60,7 +72,10 @@ fn search_never_returns_local_log_contents() {
 fn search_with_no_matches_says_so() {
     let env = Env::new();
     make_ws(&env, "alpha");
-    env.cmd().args(["-search", "zzzznope"]).assert().success()
+    env.cmd()
+        .args(["-search", "zzzznope"])
+        .assert()
+        .success()
         .stdout(predicate::str::contains("no matches"));
 }
 

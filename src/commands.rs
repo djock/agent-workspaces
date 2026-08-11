@@ -119,7 +119,8 @@ pub fn secrets(cmd: SecretsCmd) -> Result<()> {
 fn secrets_restore(ws_name: &str, store: &dyn secrets::SecretStore, file: &str) -> Result<()> {
     let root = workspace_root(ws_name)?;
     let arg = std::path::Path::new(file);
-    let path = if arg.is_absolute() { arg.to_path_buf() } else { std::env::current_dir()?.join(arg) };
+    let path =
+        if arg.is_absolute() { arg.to_path_buf() } else { std::env::current_dir()?.join(arg) };
     // The same containment rule the hook applies, for a sharper reason: this
     // writes *plaintext credentials*. Resolved rather than compared textually,
     // so neither `../` nor a symlink can spell its way out of the workspace.
@@ -182,7 +183,11 @@ pub fn setup() -> Result<()> {
         if !agent.is_installed() {
             continue;
         }
-        let nh = crate::hooksetup::install_hooks_for(&agent.hooks_config_path(), &ws_bin, agent.as_ref())?;
+        let nh = crate::hooksetup::install_hooks_for(
+            &agent.hooks_config_path(),
+            &ws_bin,
+            agent.as_ref(),
+        )?;
         let np = crate::prompts::install_for(&agent.prompts_dir(), |b| agent.prompt_filename(b))?;
         println!(
             "ws setup [{}]: installed {nh} hook(s) → {}\n            installed {np} prompt(s) → {}",
@@ -276,10 +281,9 @@ pub fn doctor() -> Result<()> {
                     "  … ws hooks not registered in {} — run `ws setup`",
                     cfg_path.display()
                 ),
-                Ok(None) => println!(
-                    "  … {} does not exist yet — run `ws setup`",
-                    cfg_path.display()
-                ),
+                Ok(None) => {
+                    println!("  … {} does not exist yet — run `ws setup`", cfg_path.display())
+                }
                 Err(e) => {
                     println!("  ✗ cannot read {}: {e:#}", cfg_path.display());
                     hard_fail = true;
@@ -401,21 +405,24 @@ pub fn uninstall(force: bool) -> Result<()> {
 }
 
 fn agent_version(bin: &str) -> String {
-    std::process::Command::new(bin).arg("--version").output().ok()
+    std::process::Command::new(bin)
+        .arg("--version")
+        .output()
+        .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string()).unwrap_or_default()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
 }
 
 pub fn adopt(name: Option<String>) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let name = match name {
-        Some(n) => n,
-        None => cwd
-            .file_name()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("cannot derive a workspace name from {}", cwd.display()))?,
-    };
+    let name =
+        match name {
+            Some(n) => n,
+            None => cwd.file_name().and_then(|s| s.to_str()).map(|s| s.to_string()).ok_or_else(
+                || anyhow::anyhow!("cannot derive a workspace name from {}", cwd.display()),
+            )?,
+        };
     if cwd.join(".ws").is_dir() {
         // Already a workspace: just (re)register.
         crate::registry::register(&name, &cwd)?;
@@ -446,8 +453,7 @@ pub(crate) fn resolve_named(name: Option<String>) -> Result<crate::workspace::Wo
 /// else $WS_WORKSPACE, else the current directory if it is a workspace.
 pub(crate) fn current_or_named(name: Option<String>) -> Result<(String, std::path::PathBuf)> {
     if let Some(n) = name {
-        let path = registry::lookup(&n)
-            .ok_or_else(|| anyhow::anyhow!("no such workspace: {n}"))?;
+        let path = registry::lookup(&n).ok_or_else(|| anyhow::anyhow!("no such workspace: {n}"))?;
         return Ok((n, path));
     }
     if let Ok(n) = std::env::var("WS_WORKSPACE") {
@@ -622,7 +628,8 @@ pub fn list(tag: Option<String>, archived: bool) -> Result<()> {
             crate::rows::RowState::Corrupt(e) => format!("  (corrupt: {e})"),
         };
         let flag = if r.archived { "  [archived]" } else { "" };
-        let tags = if r.tags.is_empty() { String::new() } else { format!("  [{}]", r.tags.join(" ")) };
+        let tags =
+            if r.tags.is_empty() { String::new() } else { format!("  [{}]", r.tags.join(" ")) };
         let status = r.status.map(|s| format!("  — {s}")).unwrap_or_default();
         println!("{}\t{}{state}{flag}{tags}{status}", r.name, r.path.display());
     }
@@ -790,7 +797,11 @@ pub fn deletes_whole_directory(path: &std::path::Path) -> bool {
 /// when a live process holds the workspace's lock — `lock::acquire` already
 /// refuses a live workspace for launch, and deleting it out from under a
 /// running agent loses whatever that session has not written yet.
-pub fn remove_one(name: &str, path: &std::path::Path, force: bool) -> std::result::Result<(), RemoveError> {
+pub fn remove_one(
+    name: &str,
+    path: &std::path::Path,
+    force: bool,
+) -> std::result::Result<(), RemoveError> {
     if !force {
         match crate::lock::live_pid_checked(&path.join(".ws/local/lock")) {
             Ok(Some(pid)) => return Err(RemoveError::Live(pid)),
@@ -923,7 +934,8 @@ mod remove_tests {
 
         // With a valid config naming this root, `alpha` is a direct child and
         // the whole directory goes.
-        std::fs::write(&cfg_path, format!("sessions_root = {:?}\n", root.display().to_string())).unwrap();
+        std::fs::write(&cfg_path, format!("sessions_root = {:?}\n", root.display().to_string()))
+            .unwrap();
         assert!(
             super::deletes_whole_directory(&managed),
             "a correctly configured root must still delete the whole directory"
@@ -948,8 +960,8 @@ mod remove_tests {
         let d = TempDir::new().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", d.path().join(".config"));
         std::env::remove_var("WS_ROOT"); // so the config value is what's used
-        // `config set` now rejects "", but a hand-edited config.toml can still
-        // carry one — write it directly so the guard itself is what's tested.
+                                         // `config set` now rejects "", but a hand-edited config.toml can still
+                                         // carry one — write it directly so the guard itself is what's tested.
         let cfg_path = crate::config::config_path();
         std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
         std::fs::write(&cfg_path, "sessions_root = \"\"\n").unwrap();
@@ -1027,7 +1039,10 @@ mod remove_tests {
             "a real deletion failure must not be reported as a registry failure: {err:?}"
         );
         assert!(project.join(".ws").exists(), "nothing was removed");
-        assert!(crate::registry::lookup("myproj").is_some(), "registry entry untouched on a failed delete");
+        assert!(
+            crate::registry::lookup("myproj").is_some(),
+            "registry entry untouched on a failed delete"
+        );
     }
 
     #[test]
@@ -1062,10 +1077,16 @@ mod remove_tests {
     fn remove_one_refuses_a_workspace_whose_lock_is_unreadable() {
         use std::os::unix::fs::PermissionsExt;
         // Running as root defeats file permissions — the read would succeed.
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string()).unwrap_or_default();
-        if uid == "0" { return; }
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if uid == "0" {
+            return;
+        }
 
         let _g = lock_env();
         let d = TempDir::new().unwrap();
@@ -1076,7 +1097,11 @@ mod remove_tests {
         crate::registry::register("busy", &ws).unwrap();
         let me = std::process::id();
         let lock_path = ws.join(".ws/local/lock");
-        std::fs::write(&lock_path, format!("pid = {me}\nhost = \"x\"\ntty = \"?\"\nstarted = \"t\"\n")).unwrap();
+        std::fs::write(
+            &lock_path,
+            format!("pid = {me}\nhost = \"x\"\ntty = \"?\"\nstarted = \"t\"\n"),
+        )
+        .unwrap();
 
         // Write-only, no read: a live pid is recorded (this very process),
         // but `remove_one` cannot read it to find out. Pre-fix, `live_pid`
@@ -1097,7 +1122,10 @@ mod remove_tests {
             matches!(err, super::RemoveError::LockUnreadable(_)),
             "an unreadable lock must be its own error, not silently treated as 'not live': {err:?}"
         );
-        assert!(ws.join(".ws").exists(), "the workspace directory must survive — nothing was proven safe to delete");
+        assert!(
+            ws.join(".ws").exists(),
+            "the workspace directory must survive — nothing was proven safe to delete"
+        );
         assert!(crate::registry::lookup("busy").is_some(), "and it is still registered");
 
         // force overrides, the same escape hatch launch has.
@@ -1110,7 +1138,10 @@ mod remove_tests {
     fn remove_one_reports_unregister_failure_after_a_successful_delete() {
         use std::os::unix::fs::PermissionsExt;
         // Running as root defeats file permissions — the read would succeed.
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
@@ -1254,12 +1285,12 @@ pub fn launch(
     };
 
     // 4. Regenerate context file, seeding a handoff pointer when requested or switching.
-    let hint = if handoff || switching {
-        crate::handoff::latest_handoff(&ws)
-    } else {
-        None
-    };
-    context::regenerate_with_handoff(&ws.root.join(agent.context_file()), &ws.name, hint.as_deref())?;
+    let hint = if handoff || switching { crate::handoff::latest_handoff(&ws) } else { None };
+    context::regenerate_with_handoff(
+        &ws.root.join(agent.context_file()),
+        &ws.name,
+        hint.as_deref(),
+    )?;
 
     if switching {
         let _ = std::fs::remove_file(ws.limit_guard());
@@ -1308,10 +1339,7 @@ pub fn launch(
             && !ask_resume(&ws.name));
 
     // 7. Build + run — the agent owns the fresh/resume decision and persists its own state.
-    let ctx = LaunchCtx {
-        fresh,
-        sessions_root: config::sessions_root(&cfg),
-    };
+    let ctx = LaunchCtx { fresh, sessions_root: config::sessions_root(&cfg) };
     let cmd = agent.launch(&ws, &ctx)?;
 
     // Keep the lock file in place; the launched agent inherits our PID.
@@ -1390,9 +1418,7 @@ pub fn rotate(name: Option<String>) -> Result<()> {
     let actor = crate::actors::actor_slug_in(&root);
     let ts = crate::now_iso();
     let cfg = config::load();
-    let agent = crate::meta::read(&ws.workspace_toml())
-        .default_agent
-        .unwrap_or(cfg.default_agent);
+    let agent = crate::meta::read(&ws.workspace_toml()).default_agent.unwrap_or(cfg.default_agent);
 
     let objective = std::fs::read_to_string(ws.readme())
         .ok()
@@ -1402,8 +1428,7 @@ pub fn rotate(name: Option<String>) -> Result<()> {
         .unwrap_or_else(|| "(none recorded)".to_string());
 
     let dir = ws.ws_dir().join("handoffs");
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("cannot create {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
     // Colons are legal in a filename but awkward in a shell; the timestamp is
     // flattened rather than reformatted so it still sorts lexically.
     let stamp = ts.replace(':', "");
@@ -1482,11 +1507,7 @@ pub fn hooks(cmd: crate::cli::HooksCmd) -> Result<()> {
                         crate::hooksetup::Scope::Always => "(every tool)".to_string(),
                         crate::hooksetup::Scope::Tool(k) => agent.tool_matcher(k).to_string(),
                     };
-                    println!(
-                        "  user      {:<20} {matcher:<32} {}",
-                        h.event,
-                        h.command.display()
-                    );
+                    println!("  user      {:<20} {matcher:<32} {}", h.event, h.command.display());
                 }
                 for (h, _) in skipped {
                     println!("  user      {:<20} skipped — no such event on {agent_id}", h.event);
@@ -1504,7 +1525,6 @@ pub fn whoami() -> Result<()> {
     println!("{}", crate::actors::actor_slug_in(&dir));
     Ok(())
 }
-
 
 #[cfg(test)]
 mod resume_prompt_tests {
@@ -1554,12 +1574,12 @@ mod who_tests {
     }
 
     fn run_git(dir: &std::path::Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        let out = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     // Discriminates the Important review finding: who(None) must resolve the
@@ -1620,7 +1640,10 @@ mod who_tests {
 
         std::env::set_current_dir(&orig_cwd).unwrap();
 
-        assert!(result.is_err(), "with no name and no env var, a non-workspace cwd must error, not print empty");
+        assert!(
+            result.is_err(),
+            "with no name and no env var, a non-workspace cwd must error, not print empty"
+        );
     }
 }
 
@@ -1650,11 +1673,7 @@ pub fn search(query: String, include_archived: bool) -> Result<()> {
         for h in g.iter().take(display_count) {
             // Show the path relative to the workspace root when we can — the absolute
             // prefix is noise once the workspace name is the heading.
-            let shown = h
-                .file
-                .iter()
-                .skip_while(|c| *c != ".ws")
-                .collect::<std::path::PathBuf>();
+            let shown = h.file.iter().skip_while(|c| *c != ".ws").collect::<std::path::PathBuf>();
             println!("  {}:{}: {}", shown.display(), h.line, h.text.trim());
         }
         if truncated {
@@ -1665,7 +1684,10 @@ pub fn search(query: String, include_archived: bool) -> Result<()> {
     }
 
     if any_truncated {
-        println!("\n{shown_total} match(es) in {} workspace(s) (some results hidden)", groups.len());
+        println!(
+            "\n{shown_total} match(es) in {} workspace(s) (some results hidden)",
+            groups.len()
+        );
     } else {
         println!("\n{shown_total} match(es) in {} workspace(s)", groups.len());
     }
@@ -1713,16 +1735,13 @@ pub fn task(cmd: crate::cli::TaskCmd) -> Result<()> {
             // 1-based, matching what `-task list` prints. An index the user
             // cannot see in the listing is a mistake worth refusing rather than
             // silently dropping the wrong task.
-            let t = index
-                .checked_sub(1)
-                .and_then(|i| tasks.get(i))
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "no task {index} in {} ({} task(s) — see `ws -task list`)",
-                        ws.name,
-                        tasks.len()
-                    )
-                })?;
+            let t = index.checked_sub(1).and_then(|i| tasks.get(i)).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no task {index} in {} ({} task(s) — see `ws -task list`)",
+                    ws.name,
+                    tasks.len()
+                )
+            })?;
             crate::queue::remove(&tasks_path, &t.id)?;
             println!("dropped task {index} in {}", ws.name);
             Ok(())

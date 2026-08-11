@@ -4,13 +4,8 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use toml_edit::{Array, DocumentMut, Item, Table};
 
-pub const CODEX_STATUS_LINE: &[&str] = &[
-    "model-with-reasoning",
-    "git-branch",
-    "context-used",
-    "five-hour-limit",
-    "weekly-limit",
-];
+pub const CODEX_STATUS_LINE: &[&str] =
+    &["model-with-reasoning", "git-branch", "context-used", "five-hour-limit", "weekly-limit"];
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct CodexStatuslineBackup {
@@ -74,11 +69,31 @@ pub fn is_known_event(e: &str) -> bool {
 }
 
 pub const HOOKS: &[HookSpec] = &[
-    HookSpec { event: "SessionStart", scope: Scope::Always, handler: "session-start", script: "session-start.sh" },
-    HookSpec { event: "UserPromptSubmit", scope: Scope::Always, handler: "user-prompt", script: "user-prompt.sh" },
+    HookSpec {
+        event: "SessionStart",
+        scope: Scope::Always,
+        handler: "session-start",
+        script: "session-start.sh",
+    },
+    HookSpec {
+        event: "UserPromptSubmit",
+        scope: Scope::Always,
+        handler: "user-prompt",
+        script: "user-prompt.sh",
+    },
     HookSpec { event: "Stop", scope: Scope::Always, handler: "stop", script: "stop.sh" },
-    HookSpec { event: "SessionEnd", scope: Scope::Always, handler: "session-end", script: "session-end.sh" },
-    HookSpec { event: "PostToolUse", scope: Scope::Tool(ToolKind::FileWrite), handler: "secret-redact", script: "secret-redact.sh" },
+    HookSpec {
+        event: "SessionEnd",
+        scope: Scope::Always,
+        handler: "session-end",
+        script: "session-end.sh",
+    },
+    HookSpec {
+        event: "PostToolUse",
+        scope: Scope::Tool(ToolKind::FileWrite),
+        handler: "secret-redact",
+        script: "secret-redact.sh",
+    },
 ];
 
 pub fn hooks_dir() -> PathBuf {
@@ -86,24 +101,15 @@ pub fn hooks_dir() -> PathBuf {
 }
 
 pub fn claude_settings_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".claude")
-        .join("settings.json")
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude").join("settings.json")
 }
 
 pub fn codex_hooks_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".codex")
-        .join("hooks.json")
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".codex").join("hooks.json")
 }
 
 pub fn codex_config_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".codex")
-        .join("config.toml")
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".codex").join("config.toml")
 }
 
 fn shell_quote(value: &str) -> String {
@@ -223,9 +229,7 @@ fn register_settings_locked(
             )
         })?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
-        Err(e) => {
-            return Err(e).context(format!("failed to read {}", settings_path.display()))
-        }
+        Err(e) => return Err(e).context(format!("failed to read {}", settings_path.display())),
     };
     if !root.is_object() {
         anyhow::bail!(
@@ -332,12 +336,13 @@ pub fn register_statuslines(ws_bin: &Path) -> Result<()> {
             )
         })?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
-        Err(e) => {
-            return Err(e).context(format!("failed to read {}", settings_path.display()))
-        }
+        Err(e) => return Err(e).context(format!("failed to read {}", settings_path.display())),
     };
     if !root.is_object() {
-        anyhow::bail!("{} is not a JSON object; refusing to overwrite it.", settings_path.display());
+        anyhow::bail!(
+            "{} is not a JSON object; refusing to overwrite it.",
+            settings_path.display()
+        );
     }
 
     // back up any prior commands (so cs-statusline is recoverable)
@@ -367,7 +372,10 @@ pub fn register_statuslines(ws_bin: &Path) -> Result<()> {
         existing.entry(k).or_insert(v);
     }
     if !existing.is_empty() {
-        crate::atomic::atomic_write(&bpath, serde_json::to_string_pretty(&Value::Object(existing))?)?;
+        crate::atomic::atomic_write(
+            &bpath,
+            serde_json::to_string_pretty(&Value::Object(existing))?,
+        )?;
     }
 
     let obj = root.as_object_mut().unwrap();
@@ -417,9 +425,9 @@ fn codex_status_line_colors_of(tui: Option<&Table>) -> Result<Option<bool>> {
     let Some(item) = tui.and_then(|table| table.get("status_line_use_colors")) else {
         return Ok(None);
     };
-    item.as_bool()
-        .map(Some)
-        .ok_or_else(|| anyhow::anyhow!("Codex config key `tui.status_line_use_colors` is not a boolean"))
+    item.as_bool().map(Some).ok_or_else(|| {
+        anyhow::anyhow!("Codex config key `tui.status_line_use_colors` is not a boolean")
+    })
 }
 
 fn codex_tui_mut(doc: &mut DocumentMut) -> Result<&mut Table> {
@@ -478,10 +486,7 @@ pub fn register_codex_statusline() -> Result<()> {
     }
 
     let tui = codex_tui_mut(&mut doc)?;
-    tui.insert(
-        "status_line",
-        toml_edit::value(codex_status_line_array(CODEX_STATUS_LINE)),
-    );
+    tui.insert("status_line", toml_edit::value(codex_status_line_array(CODEX_STATUS_LINE)));
     tui.insert("status_line_use_colors", toml_edit::value(true));
     crate::atomic::atomic_write(&path, doc.to_string())?;
     Ok(())
@@ -507,8 +512,9 @@ pub fn unregister_codex_statusline() -> Result<usize> {
 
     let backup_path = codex_statusline_backup_path();
     let backup: CodexStatuslineBackup = match std::fs::read_to_string(&backup_path) {
-        Ok(source) => toml::from_str(&source)
-            .with_context(|| format!("{} is corrupt (refusing to modify)", backup_path.display()))?,
+        Ok(source) => toml::from_str(&source).with_context(|| {
+            format!("{} is corrupt (refusing to modify)", backup_path.display())
+        })?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(e) => {
             return Err(e).with_context(|| format!("failed to read {}", backup_path.display()))
@@ -633,11 +639,7 @@ pub fn unregister_statuslines(ws_bin: &Path) -> Result<usize> {
     let owned: Vec<&str> = ["statusLine", "subagentStatusLine"]
         .into_iter()
         .filter(|key| {
-            let suffix = if *key == "statusLine" {
-                "statusline"
-            } else {
-                "subagent-statusline"
-            };
+            let suffix = if *key == "statusLine" { "statusline" } else { "subagent-statusline" };
             let expected = format!("{} {suffix}", ws_bin.display());
             let quoted_expected = format!("{} {suffix}", shell_command(ws_bin));
             root.get(*key)
@@ -652,10 +654,13 @@ pub fn unregister_statuslines(ws_bin: &Path) -> Result<usize> {
 
     let backup_path = crate::config::ws_config_dir().join("statusline-backup.json");
     let mut backup: serde_json::Map<String, Value> = match std::fs::read_to_string(&backup_path) {
-        Ok(s) => serde_json::from_str(&s)
-            .with_context(|| format!("{} is corrupt (refusing to overwrite)", backup_path.display()))?,
+        Ok(s) => serde_json::from_str(&s).with_context(|| {
+            format!("{} is corrupt (refusing to overwrite)", backup_path.display())
+        })?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
-        Err(e) => return Err(e).with_context(|| format!("failed to read {}", backup_path.display())),
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to read {}", backup_path.display()))
+        }
     };
 
     for key in &owned {
@@ -788,7 +793,8 @@ mod tests {
 
         // settings.json has our hooks under the right events
         let settings: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(claude_settings_path()).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(claude_settings_path()).unwrap())
+                .unwrap();
         let ss = &settings["hooks"]["SessionStart"];
         assert!(ss.is_array());
         let cmd = ss[0]["hooks"][0]["command"].as_str().unwrap();
@@ -811,15 +817,34 @@ mod tests {
         std::fs::create_dir_all(sp.parent().unwrap()).unwrap();
         std::fs::write(&sp, r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/cs/session-start.sh"}]}]}}"#).unwrap();
 
-        install_hooks_for(&claude_settings_path(), std::path::Path::new("/opt/ws/ws"), &ClaudeAgent).unwrap();
-        install_hooks_for(&claude_settings_path(), std::path::Path::new("/opt/ws/ws"), &ClaudeAgent).unwrap(); // twice
+        install_hooks_for(
+            &claude_settings_path(),
+            std::path::Path::new("/opt/ws/ws"),
+            &ClaudeAgent,
+        )
+        .unwrap();
+        install_hooks_for(
+            &claude_settings_path(),
+            std::path::Path::new("/opt/ws/ws"),
+            &ClaudeAgent,
+        )
+        .unwrap(); // twice
 
         let settings: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
         let arr = settings["hooks"]["SessionStart"].as_array().unwrap();
         // exactly one foreign + exactly one ws entry (idempotent)
-        let foreign = arr.iter().filter(|g| g["hooks"][0]["command"].as_str().unwrap().contains("/cs/")).count();
-        let ours = arr.iter().filter(|g| g["hooks"][0]["command"].as_str().unwrap().contains("session-start.sh") && !g["hooks"][0]["command"].as_str().unwrap().contains("/cs/")).count();
+        let foreign = arr
+            .iter()
+            .filter(|g| g["hooks"][0]["command"].as_str().unwrap().contains("/cs/"))
+            .count();
+        let ours = arr
+            .iter()
+            .filter(|g| {
+                g["hooks"][0]["command"].as_str().unwrap().contains("session-start.sh")
+                    && !g["hooks"][0]["command"].as_str().unwrap().contains("/cs/")
+            })
+            .count();
         assert_eq!(foreign, 1);
         assert_eq!(ours, 1);
     }
@@ -841,12 +866,22 @@ mod tests {
         install_hooks_for(&claude_settings_path(), &ws_bin, &ClaudeAgent).unwrap();
 
         let settings: Value =
-            serde_json::from_str(&std::fs::read_to_string(claude_settings_path()).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(claude_settings_path()).unwrap())
+                .unwrap();
         let groups = settings["hooks"]["SessionEnd"].as_array().unwrap();
-        assert_eq!(groups.len(), 1, "re-running setup must replace, not duplicate, the quoted hook");
+        assert_eq!(
+            groups.len(),
+            1,
+            "re-running setup must replace, not duplicate, the quoted hook"
+        );
         let command = groups[0]["hooks"][0]["command"].as_str().unwrap();
         assert!(command.starts_with('\'') && command.ends_with('\''));
-        assert!(std::process::Command::new("sh").arg("-c").arg(command).status().unwrap().success());
+        assert!(std::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .status()
+            .unwrap()
+            .success());
     }
 
     #[test]
@@ -860,8 +895,7 @@ mod tests {
         let removed = unregister_hooks_for(&sp).unwrap();
 
         assert_eq!(removed, HOOKS.len());
-        let settings: Value =
-            serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
+        let settings: Value = serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
         assert_eq!(settings["other"], "keep");
         let groups = settings["hooks"]["SessionStart"].as_array().unwrap();
         assert_eq!(groups.len(), 1);
@@ -885,8 +919,7 @@ mod tests {
 
         // One key now, not two: the subagent status line was removed.
         assert_eq!(removed, 1);
-        let settings: Value =
-            serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
+        let settings: Value = serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
         assert_eq!(settings["statusLine"]["command"], "/opt/my-status");
         assert!(settings.get("subagentStatusLine").is_none());
         assert_eq!(settings["other"], "keep");
@@ -962,7 +995,11 @@ mod tests {
         let garbage = "{ this is not json ,,, ";
         std::fs::write(&sp, garbage).unwrap();
 
-        let result = install_hooks_for(&claude_settings_path(), std::path::Path::new("/opt/ws/ws"), &ClaudeAgent);
+        let result = install_hooks_for(
+            &claude_settings_path(),
+            std::path::Path::new("/opt/ws/ws"),
+            &ClaudeAgent,
+        );
         assert!(result.is_err(), "install must error on unparseable settings.json");
         // the original file must be untouched
         assert_eq!(std::fs::read_to_string(&sp).unwrap(), garbage);
@@ -980,24 +1017,38 @@ mod tests {
         });
         std::fs::write(&sp, serde_json::to_string(&settings).unwrap()).unwrap();
 
-        install_hooks_for(&claude_settings_path(), std::path::Path::new("/opt/ws/ws"), &ClaudeAgent).unwrap();
+        install_hooks_for(
+            &claude_settings_path(),
+            std::path::Path::new("/opt/ws/ws"),
+            &ClaudeAgent,
+        )
+        .unwrap();
 
         let out: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
         let arr = out["hooks"]["SessionStart"].as_array().unwrap();
         // the sibling foreign hook must survive (path-boundary match, not string prefix)
-        assert!(arr.iter().any(|g| g["hooks"][0]["command"].as_str().unwrap().contains("-legacy/foo.sh")),
-            "sibling-prefix foreign hook was wrongly dropped");
+        assert!(
+            arr.iter()
+                .any(|g| g["hooks"][0]["command"].as_str().unwrap().contains("-legacy/foo.sh")),
+            "sibling-prefix foreign hook was wrongly dropped"
+        );
     }
 
     #[test]
     #[cfg(unix)]
     fn an_unreadable_settings_file_is_never_replaced_by_an_empty_one() {
         use std::os::unix::fs::PermissionsExt;
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string()).unwrap_or_default();
-        if uid == "0" { return; }
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if uid == "0" {
+            return;
+        }
         let _guard = lock();
         let _d = iso();
         let sp = claude_settings_path();
@@ -1027,10 +1078,16 @@ mod tests {
     #[cfg(unix)]
     fn an_unreadable_settings_file_is_never_replaced_when_registering_statuslines() {
         use std::os::unix::fs::PermissionsExt;
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string()).unwrap_or_default();
-        if uid == "0" { return; }
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if uid == "0" {
+            return;
+        }
         let _guard = lock();
         let _d = iso();
         let sp = claude_settings_path();
@@ -1048,7 +1105,10 @@ mod tests {
         perms.set_mode(0o644);
         std::fs::set_permissions(&sp, perms).unwrap();
 
-        assert!(result.is_err(), "register_statuslines must refuse to overwrite an unreadable settings.json");
+        assert!(
+            result.is_err(),
+            "register_statuslines must refuse to overwrite an unreadable settings.json"
+        );
         assert_eq!(
             std::fs::read_to_string(&sp).unwrap(),
             original,
@@ -1060,22 +1120,35 @@ mod tests {
     #[cfg(unix)]
     fn an_unreadable_backup_is_never_replaced_by_one_missing_the_original_command() {
         use std::os::unix::fs::PermissionsExt;
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string()).unwrap_or_default();
-        if uid == "0" { return; }
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if uid == "0" {
+            return;
+        }
         let _guard = lock();
         let _d = iso();
 
         // register once with a foreign statusLine so a backup gets created
         let sp = claude_settings_path();
         std::fs::create_dir_all(sp.parent().unwrap()).unwrap();
-        std::fs::write(&sp, r#"{"statusLine":{"type":"command","command":"~/my-original-statusline --flag"}}"#).unwrap();
+        std::fs::write(
+            &sp,
+            r#"{"statusLine":{"type":"command","command":"~/my-original-statusline --flag"}}"#,
+        )
+        .unwrap();
         register_statuslines(std::path::Path::new("/opt/ws/ws")).unwrap();
 
         let bpath = crate::config::ws_config_dir().join("statusline-backup.json");
         let before = std::fs::read_to_string(&bpath).unwrap();
-        assert!(before.contains("my-original-statusline"), "sanity: backup captured the original command");
+        assert!(
+            before.contains("my-original-statusline"),
+            "sanity: backup captured the original command"
+        );
 
         // Write-only, no read: this isolates the *read* failure from a write
         // failure. A plain `fs::write` (the pre-fix code) would still succeed
@@ -1088,14 +1161,21 @@ mod tests {
 
         // A second, different foreign statusLine (simulating another tool having
         // taken over statusLine in between) triggers another backup merge.
-        std::fs::write(&sp, r#"{"statusLine":{"type":"command","command":"~/another-tool-statusline"}}"#).unwrap();
+        std::fs::write(
+            &sp,
+            r#"{"statusLine":{"type":"command","command":"~/another-tool-statusline"}}"#,
+        )
+        .unwrap();
         let result = register_statuslines(std::path::Path::new("/opt/ws/ws"));
 
         let mut perms = std::fs::metadata(&bpath).unwrap().permissions();
         perms.set_mode(0o644);
         std::fs::set_permissions(&bpath, perms).unwrap();
 
-        assert!(result.is_err(), "register_statuslines must refuse to overwrite an unreadable backup file");
+        assert!(
+            result.is_err(),
+            "register_statuslines must refuse to overwrite an unreadable backup file"
+        );
         assert_eq!(
             std::fs::read_to_string(&bpath).unwrap(),
             before,

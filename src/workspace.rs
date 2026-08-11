@@ -59,12 +59,8 @@ impl Workspace {
 }
 
 pub fn resolve(name: &str, cfg: &Config) -> Workspace {
-    let root = registry::lookup(name)
-        .unwrap_or_else(|| config::sessions_root(cfg).join(name));
-    Workspace {
-        name: name.to_string(),
-        root,
-    }
+    let root = registry::lookup(name).unwrap_or_else(|| config::sessions_root(cfg).join(name));
+    Workspace { name: name.to_string(), root }
 }
 
 pub fn open_or_create(name: &str, agent: &str, cfg: &Config) -> Result<(Workspace, bool)> {

@@ -200,7 +200,8 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
                     other => bail!("unexpected argument: {other}"),
                 }
             }
-            let query = query.ok_or_else(|| anyhow::anyhow!("usage: ws -search <query> [--include-archived]"))?;
+            let query = query
+                .ok_or_else(|| anyhow::anyhow!("usage: ws -search <query> [--include-archived]"))?;
             Ok(Cmd::Search { query, include_archived })
         }
         "-adopt" => {
@@ -292,9 +293,15 @@ fn parse_secrets(args: Vec<String>) -> Result<Cmd> {
     let mut it = args.into_iter();
     let sub = it.next().unwrap_or_default();
     let cmd = match sub.as_str() {
-        "set" => SecretsCmd::Set(it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -secrets set <name>"))?),
-        "get" => SecretsCmd::Get(it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -secrets get <name>"))?),
-        "rm" => SecretsCmd::Rm(it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -secrets rm <name>"))?),
+        "set" => SecretsCmd::Set(
+            it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -secrets set <name>"))?,
+        ),
+        "get" => SecretsCmd::Get(
+            it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -secrets get <name>"))?,
+        ),
+        "rm" => SecretsCmd::Rm(
+            it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -secrets rm <name>"))?,
+        ),
         "list" => SecretsCmd::List,
         "purge" => SecretsCmd::Purge,
         "export" => SecretsCmd::Export,
@@ -317,7 +324,12 @@ fn parse_list(args: Vec<String>) -> Result<Cmd> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--archived" => archived = true,
-            "--tag" => tag = Some(it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -list [--tag <tag>] [--archived]"))?),
+            "--tag" => {
+                tag =
+                    Some(it.next().ok_or_else(|| {
+                        anyhow::anyhow!("usage: ws -list [--tag <tag>] [--archived]")
+                    })?)
+            }
             other => bail!("unexpected argument: {other}"),
         }
     }
@@ -356,9 +368,7 @@ fn take_workspace(args: Vec<String>) -> Result<(Option<String>, Vec<String>)> {
 /// whole point of the command.
 fn parse_task(args: Vec<String>) -> Result<Cmd> {
     let mut it = args.into_iter();
-    let sub = it
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("usage: ws -task add|list|rm ..."))?;
+    let sub = it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -task add|list|rm ..."))?;
     match sub.as_str() {
         "add" => {
             let words: Vec<String> = it.collect();
@@ -420,7 +430,11 @@ fn parse_tag(args: Vec<String>) -> Result<Cmd> {
             if tags.is_empty() {
                 bail!("usage: ws -tag {sub} [--workspace <name>] <tag>...");
             }
-            if sub == "add" { TagCmd::Add { name, tags } } else { TagCmd::Rm { name, tags } }
+            if sub == "add" {
+                TagCmd::Add { name, tags }
+            } else {
+                TagCmd::Rm { name, tags }
+            }
         }
         "list" => {
             if !tags.is_empty() {
@@ -438,7 +452,12 @@ fn parse_status(args: Vec<String>) -> Result<Cmd> {
     let args: Vec<String> = args
         .into_iter()
         .filter(|a| {
-            if a == "--clear" { clear = true; false } else { true }
+            if a == "--clear" {
+                clear = true;
+                false
+            } else {
+                true
+            }
         })
         .collect();
     let (name, rest) = take_workspace(args)?;
@@ -461,7 +480,12 @@ fn parse_color(args: Vec<String>) -> Result<Cmd> {
     let args: Vec<String> = args
         .into_iter()
         .filter(|a| {
-            if a == "--clear" { clear = true; false } else { true }
+            if a == "--clear" {
+                clear = true;
+                false
+            } else {
+                true
+            }
         })
         .collect();
     let (name, rest) = take_workspace(args)?;
@@ -475,11 +499,17 @@ fn parse_color(args: Vec<String>) -> Result<Cmd> {
         1 => {
             let color = rest[0].to_ascii_lowercase();
             if crate::term::rgb(&color).is_none() {
-                bail!("ws -color: unknown color: {color} (want {})", crate::term::PALETTE.join("|"));
+                bail!(
+                    "ws -color: unknown color: {color} (want {})",
+                    crate::term::PALETTE.join("|")
+                );
             }
             Ok(Cmd::Color { name, color: Some(color) })
         }
-        _ => bail!("usage: ws -color [--workspace <name>] <{}> | --clear", crate::term::PALETTE.join("|")),
+        _ => bail!(
+            "usage: ws -color [--workspace <name>] <{}> | --clear",
+            crate::term::PALETTE.join("|")
+        ),
     }
 }
 
@@ -514,10 +544,7 @@ fn parse_config(args: Vec<String>) -> Result<Cmd> {
             if rest.len() != 2 {
                 bail!("usage: ws config set <key> <value>");
             }
-            Ok(Cmd::Config(ConfigCmd::Set {
-                key: rest[0].clone(),
-                value: rest[1].clone(),
-            }))
+            Ok(Cmd::Config(ConfigCmd::Set { key: rest[0].clone(), value: rest[1].clone() }))
         }
         Some(other) => bail!("unknown config subcommand: {other}"),
     }
@@ -534,7 +561,10 @@ mod tests {
     #[test]
     fn a_name_with_an_at_parses_as_a_worktree_not_a_launch() {
         assert_eq!(p(&["api@retry"]), Cmd::Worktree { spec: "api@retry".into(), merge: false });
-        assert_eq!(p(&["api@retry", "--merge"]), Cmd::Worktree { spec: "api@retry".into(), merge: true });
+        assert_eq!(
+            p(&["api@retry", "--merge"]),
+            Cmd::Worktree { spec: "api@retry".into(), merge: true }
+        );
     }
 
     // ---- refocus: the new surface, and proof the old surface is gone ----
@@ -627,10 +657,7 @@ mod tests {
             vec!["-queue", "drain", "proj"],
         ] {
             let owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-            assert!(
-                super::parse(owned).is_err(),
-                "removed command {argv:?} must be rejected"
-            );
+            assert!(super::parse(owned).is_err(), "removed command {argv:?} must be rejected");
         }
     }
 
@@ -657,9 +684,13 @@ mod tests {
     /// chain, and then always errored "added in a later task". Gone.
     #[test]
     fn config_set_rejects_the_workspace_flag() {
-        assert!(super::parse(
-            vec!["config".into(), "set".into(), "--workspace".into(), "k".into(), "v".into()]
-        )
+        assert!(super::parse(vec![
+            "config".into(),
+            "set".into(),
+            "--workspace".into(),
+            "k".into(),
+            "v".into()
+        ])
         .is_err());
     }
 
@@ -667,7 +698,13 @@ mod tests {
     fn a_plain_name_still_launches() {
         assert_eq!(
             p(&["api"]),
-            Cmd::Launch { name: "api".into(), agent: None, fresh: false, force: false, handoff: false }
+            Cmd::Launch {
+                name: "api".into(),
+                agent: None,
+                fresh: false,
+                force: false,
+                handoff: false
+            }
         );
     }
 
@@ -684,7 +721,13 @@ mod tests {
     fn launch_defaults() {
         assert_eq!(
             p(&["mywork"]),
-            Cmd::Launch { name: "mywork".into(), agent: None, fresh: false, force: false, handoff: false }
+            Cmd::Launch {
+                name: "mywork".into(),
+                agent: None,
+                fresh: false,
+                force: false,
+                handoff: false
+            }
         );
     }
 
@@ -692,7 +735,13 @@ mod tests {
     fn launch_flags() {
         assert_eq!(
             p(&["mywork", "--agent", "claude", "--fresh", "--force"]),
-            Cmd::Launch { name: "mywork".into(), agent: Some("claude".into()), fresh: true, force: true, handoff: false }
+            Cmd::Launch {
+                name: "mywork".into(),
+                agent: Some("claude".into()),
+                fresh: true,
+                force: true,
+                handoff: false
+            }
         );
     }
 
@@ -728,7 +777,9 @@ mod tests {
     /// it is now an error that explains the default.
     #[test]
     fn resume_is_rejected_with_an_explanation_rather_than_silently_ignored() {
-        for args in [vec!["proj", "-resume"], vec!["proj", "--resume"], vec!["proj", "-resume", "-codex"]] {
+        for args in
+            [vec!["proj", "-resume"], vec!["proj", "--resume"], vec!["proj", "-resume", "-codex"]]
+        {
             let err = parse(args.iter().map(|x| x.to_string()).collect())
                 .expect_err("-resume must not be silently accepted")
                 .to_string();
@@ -745,7 +796,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn unknown_dash() {
         assert!(parse(vec!["-nope".into()]).is_err());
@@ -753,16 +803,13 @@ mod tests {
 
     #[test]
     fn adopt_rejects_extra_args() {
-        assert!(parse(vec!["-adopt".into(),"a".into(),"b".into()]).is_err());
+        assert!(parse(vec!["-adopt".into(), "a".into(), "b".into()]).is_err());
     }
 
     #[test]
     fn parses_setup_and_internal() {
         assert_eq!(p(&["setup"]), Cmd::Setup);
-        assert_eq!(
-            p(&["internal", "session-start"]),
-            Cmd::Internal(vec!["session-start".into()])
-        );
+        assert_eq!(p(&["internal", "session-start"]), Cmd::Internal(vec!["session-start".into()]));
         assert_eq!(
             p(&["internal", "hook-payload", "source"]),
             Cmd::Internal(vec!["hook-payload".into(), "source".into()])
@@ -871,7 +918,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn update_and_uninstall_parse() {
         assert_eq!(p(&["-update"]), Cmd::Update { check: false, force: false });
@@ -909,11 +955,4 @@ mod tests {
         );
         assert!(parse(vec!["-archive".into()]).is_err());
     }
-
-
-
-
-
-
-
 }

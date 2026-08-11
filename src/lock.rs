@@ -48,10 +48,18 @@ fn pid_alive(pid: u32) -> bool {
 fn read_pid(lock_file: &Path) -> Result<Option<u32>> {
     let s = match std::fs::read_to_string(lock_file) {
         Ok(s) => s,
-        Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
             return Ok(None)
         }
-        Err(e) => return Err(e).with_context(|| format!("failed to read lock file {}", lock_file.display())),
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("failed to read lock file {}", lock_file.display()))
+        }
     };
     let pid = toml::from_str::<toml::Table>(&s)
         .ok()
@@ -211,8 +219,9 @@ pub fn acquire(lock_file: &Path, force: bool) -> Result<LockGuard> {
             "another ws process claimed this workspace while a stale lock was being \
              reclaimed; nothing was changed, re-run the command."
         ),
-        Err(e) => Err(e)
-            .with_context(|| format!("failed to create lock file {}", lock_file.display())),
+        Err(e) => {
+            Err(e).with_context(|| format!("failed to create lock file {}", lock_file.display()))
+        }
     }
 }
 
@@ -241,7 +250,8 @@ mod tests {
         assert_eq!(live_pid(&lf), None, "dead pid → not live");
 
         let me = std::process::id();
-        std::fs::write(&lf, format!("pid = {me}\nhost = \"x\"\ntty = \"?\"\nstarted = \"t\"\n")).unwrap();
+        std::fs::write(&lf, format!("pid = {me}\nhost = \"x\"\ntty = \"?\"\nstarted = \"t\"\n"))
+            .unwrap();
         assert_eq!(live_pid(&lf), Some(me));
     }
 
@@ -271,7 +281,8 @@ mod tests {
         let d = TempDir::new().unwrap();
         let lf = d.path().join("lock");
         let mypid = std::process::id();
-        std::fs::write(&lf, format!("pid = {mypid}\nhost = \"x\"\ntty = \"?\"\nstarted = \"t\"\n")).unwrap();
+        std::fs::write(&lf, format!("pid = {mypid}\nhost = \"x\"\ntty = \"?\"\nstarted = \"t\"\n"))
+            .unwrap();
         assert!(acquire(&lf, false).is_err());
         // force overrides
         let _g = acquire(&lf, true).unwrap();
@@ -292,7 +303,8 @@ mod tests {
         let original = "pid = 4242\nhost = \"other\"\ntty = \"?\"\nstarted = \"earlier\"\n";
         std::fs::write(&lf, original).unwrap();
 
-        let err = create_exclusive(&lf, "pid = 1\n").expect_err("must not create over an existing file");
+        let err =
+            create_exclusive(&lf, "pid = 1\n").expect_err("must not create over an existing file");
         assert_eq!(
             err.kind(),
             std::io::ErrorKind::AlreadyExists,
@@ -394,7 +406,8 @@ mod tests {
         let d = TempDir::new().unwrap();
         let lf = d.path().join("lock");
         let mypid = std::process::id();
-        std::fs::write(&lf, format!("pid = {mypid}\nhost = \"x\"\ntty = \"?\"\nstarted = \"t\"\n")).unwrap();
+        std::fs::write(&lf, format!("pid = {mypid}\nhost = \"x\"\ntty = \"?\"\nstarted = \"t\"\n"))
+            .unwrap();
         assert!(acquire(&lf, false).is_err(), "live lock blocks without force");
         let _g = acquire(&lf, true).expect("force must reclaim");
         // The reclaimed file records *this* acquisition, not the old contents.
@@ -408,10 +421,16 @@ mod tests {
     fn an_unreadable_lock_file_is_never_reclaimed() {
         use std::os::unix::fs::PermissionsExt;
         // Running as root defeats file permissions — the read would succeed.
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string()).unwrap_or_default();
-        if uid == "0" { return; }
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if uid == "0" {
+            return;
+        }
 
         let d = TempDir::new().unwrap();
         let lf = d.path().join("lock");

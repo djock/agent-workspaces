@@ -87,8 +87,7 @@ pub fn acquire(target: &Path) -> Result<Txn> {
                 let contended = e.kind() == std::io::ErrorKind::WouldBlock
                     || e.raw_os_error() == Some(libc_ewouldblock());
                 if !contended {
-                    return Err(e)
-                        .with_context(|| format!("failed to lock {}", lp.display()));
+                    return Err(e).with_context(|| format!("failed to lock {}", lp.display()));
                 }
                 if Instant::now() >= deadline {
                     anyhow::bail!(
@@ -179,7 +178,8 @@ mod tests {
 
         let final_value: u32 = std::fs::read_to_string(&target).unwrap().trim().parse().unwrap();
         assert_eq!(
-            final_value, N as u32,
+            final_value,
+            N as u32,
             "every increment must survive; {} updates were lost",
             N as u32 - final_value
         );

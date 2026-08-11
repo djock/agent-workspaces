@@ -81,9 +81,7 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
             picker::Outcome::Quit => {}
             // run() has already restored the terminal; launch execs into the
             // agent from here, replacing this process.
-            picker::Outcome::Launch(name) => {
-                commands::launch(name, None, false, false, false)?
-            }
+            picker::Outcome::Launch(name) => commands::launch(name, None, false, false, false)?,
         },
         Cmd::Worktree { spec, merge } => {
             let s = worktree::parse_name(&spec)
@@ -210,9 +208,10 @@ mod tests {
         // Each dispatch is `match <expr> { "a" | "b" => ..., }`. Scope the
         // search to the function that owns it: `match sub.as_str()` appears
         // twice, once for `ws hooks` inside `parse` and once for `-secrets`.
-        for (func, start) in
-            [("pub fn parse(", "match first.as_str() {"), ("fn parse_secrets(", "match sub.as_str() {")]
-        {
+        for (func, start) in [
+            ("pub fn parse(", "match first.as_str() {"),
+            ("fn parse_secrets(", "match sub.as_str() {"),
+        ] {
             let Some(f) = src.find(func) else {
                 panic!("{func:?} is gone from cli.rs — this test can no longer see the parser");
             };
@@ -272,8 +271,18 @@ mod tests {
     fn help_covers_every_launch_flag() {
         let help = super::help_text();
         for token in [
-            "-claude", "-codex", "--agent", "--fresh", "--handoff", "--force", "--merge",
-            "--include-archived", "--archived", "--tag", "--clear", "--check",
+            "-claude",
+            "-codex",
+            "--agent",
+            "--fresh",
+            "--handoff",
+            "--force",
+            "--merge",
+            "--include-archived",
+            "--archived",
+            "--tag",
+            "--clear",
+            "--check",
         ] {
             assert!(help.contains(token), "`ws --help` never mentions {token:?}");
         }

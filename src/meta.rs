@@ -64,8 +64,8 @@ pub fn read_checked(ws_toml: &Path) -> Result<Option<Meta>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).with_context(|| format!("failed to read {}", ws_toml.display())),
     };
-    let t: toml::Table = toml::from_str(&body)
-        .with_context(|| format!("{} is corrupt", ws_toml.display()))?;
+    let t: toml::Table =
+        toml::from_str(&body).with_context(|| format!("{} is corrupt", ws_toml.display()))?;
     Ok(Some(from_table(&t)))
 }
 
@@ -89,10 +89,7 @@ pub fn update(ws_toml: &Path, f: impl FnOnce(&mut toml::Table)) -> Result<()> {
     crate::txn::transaction(ws_toml, || {
         let mut t = match std::fs::read_to_string(ws_toml) {
             Ok(s) => toml::from_str(&s).with_context(|| {
-                format!(
-                    "{} is corrupt (refusing to overwrite)",
-                    ws_toml.display()
-                )
+                format!("{} is corrupt (refusing to overwrite)", ws_toml.display())
             })?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
             Err(e) => return Err(e).context("failed to read workspace.toml"),
@@ -225,11 +222,10 @@ mod tests {
 
     #[test]
     fn read_full_and_missing() {
-        let (_d, p) = wt(
-            "name = \"proj\"\ncreated = \"2026-07-24T10:00:00Z\"\ncontract_version = 1\n\
+        let (_d, p) =
+            wt("name = \"proj\"\ncreated = \"2026-07-24T10:00:00Z\"\ncontract_version = 1\n\
              default_agent = \"codex\"\narchived = true\ntags = [\"rust\", \"cli\"]\n\
-             status = \"waiting on review\"\ncolor = \"blue\"\n",
-        );
+             status = \"waiting on review\"\ncolor = \"blue\"\n");
         let m = read(&p);
         assert_eq!(m.name, "proj");
         assert_eq!(m.contract_version, 1);
@@ -403,7 +399,10 @@ mod tests {
     fn update_refuses_when_an_existing_file_cannot_be_read() {
         use std::os::unix::fs::PermissionsExt;
         // Running as root defeats file permissions — the read would succeed.
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_default();

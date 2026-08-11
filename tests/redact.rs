@@ -40,10 +40,13 @@ fn redact_rewrites_secret_and_stores_it() {
     let envfile = proj.join(".env");
     std::fs::write(&envfile, "PORT=8080\nAPI_KEY=supersecret123\n").unwrap();
 
-    let payload = format!(r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}"}}}}"#, envfile.display());
+    let payload =
+        format!(r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}"}}}}"#, envfile.display());
     env.cmd()
-        .env("WS_WORKSPACE", "rp").env("WS_DIR", &proj)
-        .env("WS_SECRETS_BACKEND", "file").env("WS_SECRETS_PASSWORD", "pw")
+        .env("WS_WORKSPACE", "rp")
+        .env("WS_DIR", &proj)
+        .env("WS_SECRETS_BACKEND", "file")
+        .env("WS_SECRETS_PASSWORD", "pw")
         .args(["internal", "secret-redact"])
         .write_stdin(payload)
         .assert()
@@ -52,12 +55,20 @@ fn redact_rewrites_secret_and_stores_it() {
     // file rewritten: the literal is gone, a placeholder took its place; PORT untouched
     let after = std::fs::read_to_string(&envfile).unwrap();
     assert!(!after.contains("supersecret123"), "secret literal must be gone");
-    assert!(after.contains("API_KEY={{ws:secret:API_KEY}}"), "placeholder must be present: {after}");
+    assert!(
+        after.contains("API_KEY={{ws:secret:API_KEY}}"),
+        "placeholder must be present: {after}"
+    );
     assert!(after.contains("PORT=8080"), "non-secret untouched");
 
     // the value is retrievable from the store
-    env.cmd().env("WS_WORKSPACE","rp").env("WS_SECRETS_BACKEND","file").env("WS_SECRETS_PASSWORD","pw")
-        .args(["-secrets","get","API_KEY"]).assert().success()
+    env.cmd()
+        .env("WS_WORKSPACE", "rp")
+        .env("WS_SECRETS_BACKEND", "file")
+        .env("WS_SECRETS_PASSWORD", "pw")
+        .args(["-secrets", "get", "API_KEY"])
+        .assert()
+        .success()
         .stdout(predicates::str::diff("supersecret123\n"));
 }
 
@@ -90,8 +101,10 @@ fn redact_handles_a_codex_apply_patch_payload() {
     .to_string();
 
     env.cmd()
-        .env("WS_WORKSPACE", "cx").env("WS_DIR", &proj)
-        .env("WS_SECRETS_BACKEND", "file").env("WS_SECRETS_PASSWORD", "pw")
+        .env("WS_WORKSPACE", "cx")
+        .env("WS_DIR", &proj)
+        .env("WS_SECRETS_BACKEND", "file")
+        .env("WS_SECRETS_PASSWORD", "pw")
         .args(["internal", "secret-redact"])
         .write_stdin(payload)
         .assert()
@@ -99,11 +112,19 @@ fn redact_handles_a_codex_apply_patch_payload() {
 
     let after = std::fs::read_to_string(&envfile).unwrap();
     assert!(!after.contains("codexsecret456"), "secret literal must be gone: {after}");
-    assert!(after.contains("API_KEY={{ws:secret:API_KEY}}"), "placeholder must be present: {after}");
+    assert!(
+        after.contains("API_KEY={{ws:secret:API_KEY}}"),
+        "placeholder must be present: {after}"
+    );
     assert!(after.contains("PORT=8080"), "non-secret untouched: {after}");
 
-    env.cmd().env("WS_WORKSPACE","cx").env("WS_SECRETS_BACKEND","file").env("WS_SECRETS_PASSWORD","pw")
-        .args(["-secrets","get","API_KEY"]).assert().success()
+    env.cmd()
+        .env("WS_WORKSPACE", "cx")
+        .env("WS_SECRETS_BACKEND", "file")
+        .env("WS_SECRETS_PASSWORD", "pw")
+        .args(["-secrets", "get", "API_KEY"])
+        .assert()
+        .success()
         .stdout(predicates::str::diff("codexsecret456\n"));
 }
 
@@ -135,8 +156,10 @@ fn redact_handles_every_file_in_a_multi_file_codex_patch() {
     .to_string();
 
     env.cmd()
-        .env("WS_WORKSPACE", "cxm").env("WS_DIR", &proj)
-        .env("WS_SECRETS_BACKEND", "file").env("WS_SECRETS_PASSWORD", "pw")
+        .env("WS_WORKSPACE", "cxm")
+        .env("WS_DIR", &proj)
+        .env("WS_SECRETS_BACKEND", "file")
+        .env("WS_SECRETS_PASSWORD", "pw")
         .args(["internal", "secret-redact"])
         .write_stdin(payload)
         .assert()
@@ -154,10 +177,17 @@ fn redact_ignores_non_secret_files() {
     let proj = adopt(&env, "rp2");
     let f = proj.join("notes.txt");
     std::fs::write(&f, "just some text PORT=1\n").unwrap();
-    let payload = format!(r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}"}}}}"#, f.display());
-    env.cmd().env("WS_WORKSPACE","rp2").env("WS_DIR",&proj)
-        .env("WS_SECRETS_BACKEND","file").env("WS_SECRETS_PASSWORD","pw")
-        .args(["internal","secret-redact"]).write_stdin(payload).assert().success();
+    let payload =
+        format!(r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}"}}}}"#, f.display());
+    env.cmd()
+        .env("WS_WORKSPACE", "rp2")
+        .env("WS_DIR", &proj)
+        .env("WS_SECRETS_BACKEND", "file")
+        .env("WS_SECRETS_PASSWORD", "pw")
+        .args(["internal", "secret-redact"])
+        .write_stdin(payload)
+        .assert()
+        .success();
     // unchanged (no secret-looking assignment)
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "just some text PORT=1\n");
 }
@@ -168,12 +198,22 @@ fn redact_does_not_corrupt_non_secret_lookalikes() {
     let proj = adopt(&env, "rp3");
     let f = proj.join("app.toml");
     std::fs::write(&f, "api_url = \"https://example.com\"\nMONKEY = \"banana\"\n").unwrap();
-    let payload = format!(r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}"}}}}"#, f.display());
-    env.cmd().env("WS_WORKSPACE","rp3").env("WS_DIR",&proj)
-        .env("WS_SECRETS_BACKEND","file").env("WS_SECRETS_PASSWORD","pw")
-        .args(["internal","secret-redact"]).write_stdin(payload).assert().success();
+    let payload =
+        format!(r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}"}}}}"#, f.display());
+    env.cmd()
+        .env("WS_WORKSPACE", "rp3")
+        .env("WS_DIR", &proj)
+        .env("WS_SECRETS_BACKEND", "file")
+        .env("WS_SECRETS_PASSWORD", "pw")
+        .args(["internal", "secret-redact"])
+        .write_stdin(payload)
+        .assert()
+        .success();
     // neither line is a secret name → file byte-for-byte unchanged
-    assert_eq!(std::fs::read_to_string(&f).unwrap(), "api_url = \"https://example.com\"\nMONKEY = \"banana\"\n");
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "api_url = \"https://example.com\"\nMONKEY = \"banana\"\n"
+    );
 }
 
 // ---------- task 4: two-signal classification ----------
@@ -190,7 +230,8 @@ fn redact_leaves_configuration_lookalikes_untouched() {
     let env = Env::new();
     let proj = adopt(&env, "fp");
     let f = proj.join("config.env");
-    let original = "PASSWORD_MIN_LENGTH=8\nTOKENIZER=gpt2\nTOKEN_BUDGET=4096\nSECRET_SCAN_ENABLED=true\n";
+    let original =
+        "PASSWORD_MIN_LENGTH=8\nTOKENIZER=gpt2\nTOKEN_BUDGET=4096\nSECRET_SCAN_ENABLED=true\n";
     std::fs::write(&f, original).unwrap();
 
     write_hook(&env, "fp", &proj, &f).assert().success();

@@ -27,15 +27,11 @@ fn launch_refuses_a_workspace_created_by_a_newer_ws() {
     let bumped = body.replace("contract_version = 1", "contract_version = 999");
     std::fs::write(&wt, bumped).unwrap();
 
-    launch_cmd(&env, &shim)
-        .arg("proj")
-        .assert()
-        .failure()
-        .stderr(
-            predicate::str::contains("newer ws")
-                .and(predicate::str::contains("v999"))
-                .and(predicate::str::contains("update ws")),
-        );
+    launch_cmd(&env, &shim).arg("proj").assert().failure().stderr(
+        predicate::str::contains("newer ws")
+            .and(predicate::str::contains("v999"))
+            .and(predicate::str::contains("update ws")),
+    );
 }
 
 /// The equal, older and absent cases must all pass — only strictly greater
@@ -87,11 +83,7 @@ fn list_does_not_refuse_for_a_workspace_with_a_newer_contract_version() {
     let bumped = body.replace("contract_version = 1", "contract_version = 999");
     std::fs::write(&wt, bumped).unwrap();
 
-    env.cmd()
-        .arg("-list")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("proj"));
+    env.cmd().arg("-list").assert().success().stdout(predicate::str::contains("proj"));
 }
 
 /// Same, for `-search`.
@@ -109,10 +101,7 @@ fn search_does_not_refuse_for_a_workspace_with_a_newer_contract_version() {
     let bumped = body.replace("contract_version = 1", "contract_version = 999");
     std::fs::write(&wt, bumped).unwrap();
 
-    env.cmd()
-        .args(["-search", "unique-search-token"])
-        .assert()
-        .success();
+    env.cmd().args(["-search", "unique-search-token"]).assert().success();
 }
 
 /// Mutating single-workspace commands (tag/status/archive/msg/queue) are also

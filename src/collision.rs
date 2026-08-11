@@ -97,9 +97,7 @@ pub fn prompt(name: &str, pid: u32, all_workspaces: &[String]) -> Result<Choice>
 
     let picked = read_digit()?;
     writeln!(err)?;
-    Ok(picked
-        .and_then(|d| opts.get(d.checked_sub(1)? as usize).cloned())
-        .unwrap_or(Choice::Cancel))
+    Ok(picked.and_then(|d| opts.get(d.checked_sub(1)? as usize).cloned()).unwrap_or(Choice::Cancel))
 }
 
 /// One keypress, no Enter. Raw mode is entered only for the read and restored

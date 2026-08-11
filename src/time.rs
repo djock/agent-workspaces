@@ -11,10 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Seconds since the Unix epoch, clamped at 0.
 pub fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 /// ISO-8601 UTC, second precision: `2026-07-24T10:43:12Z`.

@@ -53,14 +53,11 @@ pub fn workspace_toml(path: &Path) -> PathBuf {
 fn last_activity(ws_dir: &Path) -> Option<i64> {
     let mut newest: Option<i64> = None;
     let mut consider = |p: PathBuf| {
-        if let Ok(secs) = std::fs::metadata(&p)
-            .and_then(|m| m.modified())
-            .and_then(|t| {
-                t.duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .map_err(std::io::Error::other)
-            })
-        {
+        if let Ok(secs) = std::fs::metadata(&p).and_then(|m| m.modified()).and_then(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .map_err(std::io::Error::other)
+        }) {
             if newest.is_none_or(|n| secs > n) {
                 newest = Some(secs);
             }
@@ -239,7 +236,8 @@ mod tests {
         let with_archived = list_all(&ListOpts { tag: None, include_archived: true }).unwrap();
         assert!(with_archived.rows.iter().any(|r| r.name == "old-one"));
 
-        let tagged = list_all(&ListOpts { tag: Some("nope".into()), include_archived: true }).unwrap();
+        let tagged =
+            list_all(&ListOpts { tag: Some("nope".into()), include_archived: true }).unwrap();
         assert!(tagged.rows.is_empty(), "tag filter excludes everything untagged");
     }
 

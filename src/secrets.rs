@@ -10,12 +10,7 @@ use std::path::{Path, PathBuf};
 /// mock in-memory store, which loses every secret at process exit while still
 /// reporting success — see the `keyring` note in `Cargo.toml`. The failure is
 /// invisible in-process, so no unit test can catch it; refuse to build instead.
-#[cfg(not(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "windows",
-    unix,
-)))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", unix,)))]
 compile_error!(
     "no keyring platform store is enabled for this target: `ws` would silently \
      store secrets in an in-memory mock and lose them at exit. Add a \
@@ -71,7 +66,9 @@ impl FileStore {
             // it to empty means the next `set` writes a store containing only
             // the new secret over every existing one.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-            Err(e) => return Err(e).with_context(|| format!("failed to read {}", self.path.display())),
+            Err(e) => {
+                return Err(e).with_context(|| format!("failed to read {}", self.path.display()))
+            }
         };
         if bytes.len() < 28 {
             bail!("corrupt secrets file (too short)");
@@ -232,8 +229,8 @@ fn transact_index(index: &Path, f: impl FnOnce(Vec<String>) -> Vec<String>) -> R
 }
 
 pub struct KeyringStore {
-    service: String,      // "ws:<ws_name>"
-    index: PathBuf,       // <secrets_dir>/<ws_name>.keyring-index
+    service: String, // "ws:<ws_name>"
+    index: PathBuf,  // <secrets_dir>/<ws_name>.keyring-index
 }
 
 impl KeyringStore {
@@ -568,7 +565,10 @@ mod tests {
         let d = TempDir::new().unwrap();
         file_store(d.path(), "right").set("K", "v").unwrap();
         let err = file_store(d.path(), "wrong").get("K").unwrap_err();
-        assert!(err.to_string().to_lowercase().contains("password") || err.to_string().to_lowercase().contains("corrupt"));
+        assert!(
+            err.to_string().to_lowercase().contains("password")
+                || err.to_string().to_lowercase().contains("corrupt")
+        );
     }
 
     #[test]
@@ -580,17 +580,15 @@ mod tests {
         // Scan windows of exactly the needle length (a length mismatch would make
         // this vacuously pass — the value name and the window width must agree).
         assert_eq!(needle.len(), 16);
-        assert!(
-            !bytes.windows(needle.len()).any(|w| w == needle),
-            "plaintext leaked into .enc"
-        );
+        assert!(!bytes.windows(needle.len()).any(|w| w == needle), "plaintext leaked into .enc");
     }
 
     #[test]
     fn purge_clears_all() {
         let d = TempDir::new().unwrap();
         let s = file_store(d.path(), "pw");
-        s.set("A", "1").unwrap(); s.set("B", "2").unwrap();
+        s.set("A", "1").unwrap();
+        s.set("B", "2").unwrap();
         s.purge().unwrap();
         assert!(s.list().unwrap().is_empty());
     }
@@ -619,10 +617,16 @@ mod tests {
     fn an_unreadable_store_is_never_replaced_by_a_store_with_one_secret() {
         use std::os::unix::fs::PermissionsExt;
         // Running as root defeats file permissions — the read would succeed.
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string()).unwrap_or_default();
-        if uid == "0" { return; }
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if uid == "0" {
+            return;
+        }
 
         let d = TempDir::new().unwrap();
         let store = file_store(d.path(), "hunter2");
@@ -643,7 +647,11 @@ mod tests {
         std::fs::set_permissions(&path, perms).unwrap();
 
         assert!(result.is_err(), "an unreadable store must not be treated as empty");
-        assert_eq!(std::fs::read(&path).unwrap(), before, "and the existing secrets must survive byte-for-byte");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "and the existing secrets must survive byte-for-byte"
+        );
         // and they are still retrievable
         assert_eq!(store.get("FIRST").unwrap().as_deref(), Some("one"));
     }
@@ -659,16 +667,20 @@ mod tests {
     fn an_unreadable_keyring_index_is_never_rewritten_as_empty() {
         use std::os::unix::fs::PermissionsExt;
         // Running as root defeats file permissions — the read would succeed.
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string()).unwrap_or_default();
-        if uid == "0" { return; }
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if uid == "0" {
+            return;
+        }
 
         let d = TempDir::new().unwrap();
-        let store = KeyringStore {
-            service: "ws:__test__".into(),
-            index: d.path().join("w.keyring-index"),
-        };
+        let store =
+            KeyringStore { service: "ws:__test__".into(), index: d.path().join("w.keyring-index") };
         let original = "ALPHA\nBETA\nGAMMA\n";
         std::fs::write(&store.index, original).unwrap();
 
@@ -687,7 +699,10 @@ mod tests {
 
         assert!(removed.is_err(), "remove must not treat an unreadable index as empty");
         assert!(listed.is_err(), "list must not silently under-report");
-        assert!(purged.is_err(), "purge must not report success when it could not enumerate what to purge");
+        assert!(
+            purged.is_err(),
+            "purge must not report success when it could not enumerate what to purge"
+        );
         assert_eq!(
             std::fs::read_to_string(&store.index).unwrap(),
             original,
@@ -705,7 +720,10 @@ mod tests {
             index: d.path().join("never-written.keyring-index"),
         };
         assert!(store.list().unwrap().is_empty());
-        assert!(store.purge().is_ok(), "purging a store that was never used is a no-op, not an error");
+        assert!(
+            store.purge().is_ok(),
+            "purging a store that was never used is a no-op, not an error"
+        );
     }
 
     // ---------- Task 1 hardening ----------
@@ -719,10 +737,16 @@ mod tests {
     fn purge_propagates_a_removal_failure_instead_of_reporting_success() {
         use std::os::unix::fs::PermissionsExt;
         // Running as root defeats directory permissions — the unlink would succeed.
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string()).unwrap_or_default();
-        if uid == "0" { return; }
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if uid == "0" {
+            return;
+        }
 
         let d = TempDir::new().unwrap();
         let s = file_store(d.path(), "hunter2");
@@ -739,7 +763,10 @@ mod tests {
         perms.set_mode(0o700);
         std::fs::set_permissions(d.path(), perms).unwrap();
 
-        assert!(result.is_err(), "purge must not report success when the file could not be removed");
+        assert!(
+            result.is_err(),
+            "purge must not report success when the file could not be removed"
+        );
         let msg = result.unwrap_err().to_string();
         assert!(!msg.to_lowercase().contains("purged"), "the error must not claim success: {msg}");
         // The strongest evidence purge did not lie: the secret is still there.
@@ -754,7 +781,10 @@ mod tests {
     fn purge_on_absent_file_is_ok() {
         let d = TempDir::new().unwrap();
         let s = file_store(d.path(), "pw");
-        assert!(s.purge().is_ok(), "purging a store that was never written is a no-op, not an error");
+        assert!(
+            s.purge().is_ok(),
+            "purging a store that was never written is a no-op, not an error"
+        );
     }
 
     #[test]
@@ -771,10 +801,8 @@ mod tests {
     #[test]
     fn keyring_store_get_and_remove_reject_invalid_names() {
         let d = TempDir::new().unwrap();
-        let store = KeyringStore {
-            service: "ws:__test__".into(),
-            index: d.path().join("w.keyring-index"),
-        };
+        let store =
+            KeyringStore { service: "ws:__test__".into(), index: d.path().join("w.keyring-index") };
         assert!(store.get("bad name!").is_err(), "get must validate the name, same as set");
         assert!(store.remove("bad name!").is_err(), "remove must validate the name, same as set");
     }

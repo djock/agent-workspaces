@@ -81,10 +81,7 @@ fn a_corrupt_registry_refuses_to_create_a_duplicate_workspace() {
     assert!(!out.status.success(), "must not silently create a second workspace");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("registry.toml"), "stderr names the file: {err}");
-    assert!(
-        !env.root.join("proj/.ws").exists(),
-        "and nothing was created on disk"
-    );
+    assert!(!env.root.join("proj/.ws").exists(), "and nothing was created on disk");
 }
 
 /// Task 2 item 1 (claude launch panic). A `state.toml` that has gone corrupt or
@@ -158,14 +155,10 @@ fn unknown_agent_errors_clearly() {
     let shim = env.fake_claude();
     // `gemini` is deliberately not an agent: ws supports claude and codex only,
     // so it must fall through to the same error as any other unknown name.
-    launch_cmd(&env, &shim)
-        .args(["proj", "--agent", "gemini"])
-        .assert()
-        .failure()
-        .stderr(
-            predicates::str::contains("unknown agent")
-                .and(predicates::str::contains("claude and codex")),
-        );
+    launch_cmd(&env, &shim).args(["proj", "--agent", "gemini"]).assert().failure().stderr(
+        predicates::str::contains("unknown agent")
+            .and(predicates::str::contains("claude and codex")),
+    );
 }
 
 /// The refocused Codex identity path, end to end.
@@ -368,12 +361,7 @@ fn re_reporting_the_same_session_id_is_not_a_rotation() {
 fn the_hook_records_nothing_without_an_agent() {
     let env = Env::new();
     let shim = env.fake_claude();
-    env.cmd()
-        .env("WS_CLAUDE_BIN", &shim)
-        .env("WS_NO_EXEC", "1")
-        .arg("noagent")
-        .assert()
-        .success();
+    env.cmd().env("WS_CLAUDE_BIN", &shim).env("WS_NO_EXEC", "1").arg("noagent").assert().success();
     let root = env.root.join("noagent");
     let before = std::fs::read_to_string(root.join(".ws/local/state.toml")).unwrap_or_default();
 
@@ -397,16 +385,24 @@ fn switching_agents_clears_guard_and_records_default() {
     let codex = env.fake_codex();
 
     // first launch with claude (default recorded = claude)
-    env.cmd().env("WS_CLAUDE_BIN", &claude).env("WS_NO_EXEC","1")
-        .arg("switchproj").assert().success();
+    env.cmd()
+        .env("WS_CLAUDE_BIN", &claude)
+        .env("WS_NO_EXEC", "1")
+        .arg("switchproj")
+        .assert()
+        .success();
     let root = env.root.join("switchproj");
     // plant a limit guard as if a threshold had been crossed
     std::fs::create_dir_all(root.join(".ws/local")).unwrap();
     std::fs::write(root.join(".ws/local/limit-guard"), "x").unwrap();
 
     // switch to codex
-    env.cmd().env("WS_CODEX_BIN", &codex).env("WS_NO_EXEC","1")
-        .args(["switchproj","--agent","codex"]).assert().success();
+    env.cmd()
+        .env("WS_CODEX_BIN", &codex)
+        .env("WS_NO_EXEC", "1")
+        .args(["switchproj", "--agent", "codex"])
+        .assert()
+        .success();
 
     // guard cleared on switch; default_agent now codex; AGENTS.md generated
     assert!(!root.join(".ws/local/limit-guard").exists(), "switch clears the limit guard");
@@ -445,16 +441,11 @@ fn force_takes_a_held_workspace_without_offering_the_menu() {
     let lock = env.root.join("held/.ws/local/lock");
     std::fs::write(&lock, format!("pid = {}\n", std::process::id())).unwrap();
 
-    let out = launch_cmd(&env, &shim)
-        .args(["held", "--force"])
-        .assert()
-        .success()
-        .get_output()
-        .clone();
+    let out =
+        launch_cmd(&env, &shim).args(["held", "--force"]).assert().success().get_output().clone();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("already open"), "--force must not ask: {stderr}");
 }
-
 
 /// A changelog shaped like the real one: an `[Unreleased]` heading first, then
 /// releases newest-first with wrapped bullets.
@@ -573,7 +564,11 @@ fn a_failed_release_lookup_neither_fails_nor_repeats() {
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.contains("Update available"), "must stay quiet: {stdout}");
-    assert!(env.update_cache().contains('-'), "the failure must be recorded: {}", env.update_cache());
+    assert!(
+        env.update_cache().contains('-'),
+        "the failure must be recorded: {}",
+        env.update_cache()
+    );
 }
 
 /// A changelog that cannot be fetched must not cost a fetch attempt on every

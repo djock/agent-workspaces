@@ -121,9 +121,7 @@ pub fn render(links: &[Link], current: &[(String, String)]) -> String {
     if links.is_empty() {
         return "no conversation history recorded yet\n".to_string();
     }
-    let is_current = |agent: &str, id: &str| {
-        current.iter().any(|(a, c)| a == agent && c == id)
-    };
+    let is_current = |agent: &str, id: &str| current.iter().any(|(a, c)| a == agent && c == id);
     let mut out = String::new();
     for l in links {
         match l {
@@ -135,10 +133,9 @@ pub fn render(links: &[Link], current: &[(String, String)]) -> String {
                         short(f),
                         short(to)
                     )),
-                    None => out.push_str(&format!(
-                        "{ts}  {agent}: {} ({reason}){marker}\n",
-                        short(to)
-                    )),
+                    None => {
+                        out.push_str(&format!("{ts}  {agent}: {} ({reason}){marker}\n", short(to)))
+                    }
                 }
             }
             Link::Switch { ts, from, to, handoff } => {
@@ -227,8 +224,10 @@ mod tests {
     #[test]
     fn out_of_order_lines_are_sorted_chronologically() {
         let text = concat!(
-            r#"{"ts":"2026-07-27T12:00:00Z","kind":"rotated","agent":"claude","from":"x","to":"y","reason":"fresh"}"#, "\n",
-            r#"{"ts":"2026-07-27T10:00:00Z","kind":"rotated","agent":"claude","from":null,"to":"x","reason":"first"}"#, "\n",
+            r#"{"ts":"2026-07-27T12:00:00Z","kind":"rotated","agent":"claude","from":"x","to":"y","reason":"fresh"}"#,
+            "\n",
+            r#"{"ts":"2026-07-27T10:00:00Z","kind":"rotated","agent":"claude","from":null,"to":"x","reason":"first"}"#,
+            "\n",
         );
         let links = parse(text);
         assert_eq!(links.len(), 2);

@@ -24,7 +24,8 @@ pub struct Hit {
 fn is_searchable(path: &Path) -> bool {
     // Never read the local/ subtree or encrypted secrets.
     let mut in_ws_local = false;
-    let comps: Vec<_> = path.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect();
+    let comps: Vec<_> =
+        path.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect();
     for (i, c) in comps.iter().enumerate() {
         if c == "local" && i > 0 && comps[i - 1] == ".ws" {
             in_ws_local = true;
@@ -133,7 +134,8 @@ mod tests {
         let ws = d.path().join(".ws");
         std::fs::create_dir_all(ws.join("notebook")).unwrap();
         std::fs::create_dir_all(ws.join("local/log")).unwrap();
-        std::fs::write(ws.join("README.md"), "# proj\n\nObjective: ship the Kraken parser\n").unwrap();
+        std::fs::write(ws.join("README.md"), "# proj\n\nObjective: ship the Kraken parser\n")
+            .unwrap();
         std::fs::write(
             ws.join("notebook/notebook.me.md"),
             "day 1\nthe kraken retries on 429\nday 2\n",
@@ -169,7 +171,10 @@ mod tests {
         for (p, _, text) in &hits {
             let s = p.to_string_lossy();
             assert!(!s.contains("/local/"), "search must never read .ws/local: {s}");
-            assert!(!s.to_lowercase().ends_with(".enc"), "search must never read encrypted secrets: {s}");
+            assert!(
+                !s.to_lowercase().ends_with(".enc"),
+                "search must never read encrypted secrets: {s}"
+            );
             assert!(!text.contains("hunter2"), "a secret leaked into search output");
         }
         assert!(

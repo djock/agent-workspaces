@@ -114,7 +114,8 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
 
     // Not through `git_ok`: a failure here has already written into a
     // repository `ws` does not own, and must be undone before we bail.
-    let out = crate::git::raw(base, &["merge", "--no-ff", "-m", &format!("merge {branch}"), branch])?;
+    let out =
+        crate::git::raw(base, &["merge", "--no-ff", "-m", &format!("merge {branch}"), branch])?;
     if !out.status.success() {
         let detail = crate::git::combined(&out);
         // C1: on a conflict git leaves MERGE_HEAD set, conflict markers in the
@@ -137,7 +138,8 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
                     "\n!! {} is STILL mid-merge — `git merge --abort` there before anything else{}",
                     base.display(),
                     match other {
-                        Ok(o) => format!(" (git merge --abort failed: {})", crate::git::combined(&o)),
+                        Ok(o) =>
+                            format!(" (git merge --abort failed: {})", crate::git::combined(&o)),
                         Err(e) => format!(" ({e})"),
                     }
                 ),

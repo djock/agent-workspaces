@@ -6,7 +6,8 @@ use std::io::{IsTerminal, Write};
 /// workspace's tab background and its status-line chip are the same color as the
 /// accent Claude paints its own session with. `rgb` accepts a few names outside
 /// this list (see below), but only these are ever handed out automatically.
-pub const PALETTE: &[&str] = &["red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"];
+pub const PALETTE: &[&str] =
+    &["red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"];
 
 /// Foreground for text sitting on a palette background. One value for all eight:
 /// a near-white that keeps its contrast on the darkest (`blue`) and the lightest

@@ -65,11 +65,7 @@ fn adopt_current_dir() {
     assert!(proj.join(".ws/workspace.toml").is_file());
 
     // Now listed by name (dir basename).
-    env.cmd()
-        .arg("-list")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("myproj"));
+    env.cmd().arg("-list").assert().success().stdout(predicates::str::contains("myproj"));
 }
 
 #[test]
@@ -113,11 +109,17 @@ fn adopt_inside_existing_repo_does_not_nested_init() {
     let env = Env::new();
     let repo = env.home.path().join("outer");
     std::fs::create_dir_all(&repo).unwrap();
-    std::process::Command::new("git").args(["-C"]).arg(&repo).arg("init").arg("-q").status().unwrap();
+    std::process::Command::new("git")
+        .args(["-C"])
+        .arg(&repo)
+        .arg("init")
+        .arg("-q")
+        .status()
+        .unwrap();
     let sub = repo.join("sub");
     std::fs::create_dir_all(&sub).unwrap();
 
-    env.cmd().current_dir(&sub).args(["-adopt","sub"]).assert().success();
+    env.cmd().current_dir(&sub).args(["-adopt", "sub"]).assert().success();
     // no nested repo created in the subdirectory
     assert!(!sub.join(".git").exists(), "adopt must not init a nested repo inside an existing one");
 }
@@ -127,8 +129,11 @@ fn rm_prints_removed_only_on_success() {
     let env = Env::new();
     let proj = env.home.path().join("rmok");
     std::fs::create_dir_all(&proj).unwrap();
-    env.cmd().current_dir(&proj).args(["-adopt","rmok"]).assert().success();
-    env.cmd().args(["-rm","rmok","--force"]).assert().success()
+    env.cmd().current_dir(&proj).args(["-adopt", "rmok"]).assert().success();
+    env.cmd()
+        .args(["-rm", "rmok", "--force"])
+        .assert()
+        .success()
         .stdout(predicates::str::contains("removed rmok"));
     // unregistered
     env.cmd().arg("-list").assert().stdout(predicates::str::contains("rmok").not());
@@ -139,13 +144,16 @@ fn rm_cleans_up_missing_workspace_entry() {
     let env = Env::new();
     let proj = env.home.path().join("gone");
     std::fs::create_dir_all(&proj).unwrap();
-    env.cmd().current_dir(&proj).args(["-adopt","gone"]).assert().success();
+    env.cmd().current_dir(&proj).args(["-adopt", "gone"]).assert().success();
 
     // user manually deletes the directory out from under ws → stale (missing) registry entry
     std::fs::remove_dir_all(&proj).unwrap();
 
     // -rm must still succeed and unregister the stale entry
-    env.cmd().args(["-rm","gone","--force"]).assert().success()
+    env.cmd()
+        .args(["-rm", "gone", "--force"])
+        .assert()
+        .success()
         .stdout(predicates::str::contains("removed gone"));
     env.cmd().arg("-list").assert().stdout(predicates::str::contains("gone").not());
 }

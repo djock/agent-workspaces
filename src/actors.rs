@@ -84,7 +84,11 @@ mod tests {
 
     fn run_git(dir: &std::path::Path, args: &[&str]) {
         let out = Command::new("git").args(args).current_dir(dir).output().unwrap();
-        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     #[test]
@@ -148,7 +152,10 @@ mod tests {
         run_git(root, &["commit", "-q", "-m", "unrelated"]);
 
         let ranked = who(&root.join(".ws")).unwrap();
-        assert_eq!(ranked, vec![("alice-example-com".to_string(), 2), ("bob-example-com".to_string(), 1)]);
+        assert_eq!(
+            ranked,
+            vec![("alice-example-com".to_string(), 2), ("bob-example-com".to_string(), 1)]
+        );
     }
 
     #[test]

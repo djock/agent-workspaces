@@ -46,10 +46,8 @@ impl Env {
     pub fn write_update_cache(&self, version: &str) {
         let dir = self.home.path().join(".cache/ws");
         std::fs::create_dir_all(&dir).unwrap();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         std::fs::write(dir.join("update-check"), format!("{now} {version}\n")).unwrap();
     }
 

@@ -307,8 +307,5 @@ fn who_falls_back_when_there_is_no_timeline_yet() {
     let out = env.cmd().args(["-who", "fresh"]).output().unwrap();
     assert!(out.status.success(), "must not fail just because nothing happened yet");
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        text.contains("no timeline yet") || text.contains("no recorded activity"),
-        "{text}"
-    );
+    assert!(text.contains("no timeline yet") || text.contains("no recorded activity"), "{text}");
 }

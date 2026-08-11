@@ -9,7 +9,8 @@ fn doctor_reports_agents_and_hook_state() {
     // run setup so there's something to check
     env.cmd().env("WS_CLAUDE_BIN", &claude).arg("setup").assert().success();
 
-    env.cmd().env("WS_CLAUDE_BIN", &claude)
+    env.cmd()
+        .env("WS_CLAUDE_BIN", &claude)
         .arg("-doctor")
         .assert()
         .success()
@@ -22,7 +23,9 @@ fn doctor_reports_agents_and_hook_state() {
 fn workspace_repo(env: &Env, name: &str, ignore_ws: bool) -> std::path::PathBuf {
     let proj = env.home.path().join(name);
     std::fs::create_dir_all(&proj).unwrap();
-    for args in [vec!["init", "-q"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+    for args in
+        [vec!["init", "-q"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]]
+    {
         std::process::Command::new("git").arg("-C").arg(&proj).args(&args).output().unwrap();
     }
     if ignore_ws {
@@ -96,5 +99,7 @@ fn doctor_flags_no_agents_installed() {
         .arg("-doctor")
         .assert()
         .failure()
-        .stderr(predicates::str::contains("no agent").or(predicates::str::contains("not installed")));
+        .stderr(
+            predicates::str::contains("no agent").or(predicates::str::contains("not installed")),
+        );
 }

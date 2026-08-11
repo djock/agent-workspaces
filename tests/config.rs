@@ -22,10 +22,7 @@ fn removed_placebo_keys_are_neither_listed_nor_settable() {
     let out = String::from_utf8(listed.get_output().stdout.clone()).unwrap();
     for key in ["prompt_on_launch", "nerd_fonts"] {
         assert!(!out.contains(key), "{key} must no longer be listed:\n{out}");
-        env.cmd()
-            .args(["config", "set", key, "true"])
-            .assert()
-            .failure();
+        env.cmd().args(["config", "set", key, "true"]).assert().failure();
     }
 }
 
@@ -74,11 +71,17 @@ fn unknown_key_errors() {
 #[test]
 fn config_set_preserves_other_keys() {
     let env = Env::new();
-    env.cmd().args(["config","set","default_agent","codex"]).assert().success();
-    env.cmd().args(["config","set","theme","dark"]).assert().success();
+    env.cmd().args(["config", "set", "default_agent", "codex"]).assert().success();
+    env.cmd().args(["config", "set", "theme", "dark"]).assert().success();
     // first key survives the second write
-    env.cmd().args(["config","get","default_agent"]).assert().success()
+    env.cmd()
+        .args(["config", "get", "default_agent"])
+        .assert()
+        .success()
         .stdout(predicates::str::diff("codex\n"));
-    env.cmd().args(["config","get","theme"]).assert().success()
+    env.cmd()
+        .args(["config", "get", "theme"])
+        .assert()
+        .success()
         .stdout(predicates::str::diff("dark\n"));
 }

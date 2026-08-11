@@ -52,7 +52,6 @@ pub trait Agent {
     fn hook_trust_note(&self) -> Option<&'static str> {
         None
     }
-
 }
 
 pub fn for_id(id: &str) -> anyhow::Result<Box<dyn Agent>> {

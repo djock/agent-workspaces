@@ -156,7 +156,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|n| n.contains("tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "temp files must not survive a successful write: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temp files must not survive a successful write: {leftovers:?}"
+        );
 
         // A fixed temp name is the bug this helper exists to prevent: two live
         // processes sharing one temp path interleave their writes.

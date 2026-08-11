@@ -59,9 +59,7 @@ fn one_user_hook_registers_for_both_agents_with_each_ones_matcher() {
     let user_group = |v: &serde_json::Value| {
         groups(v)
             .into_iter()
-            .find(|g| {
-                g["hooks"][0]["command"].as_str().unwrap_or_default().contains("user-")
-            })
+            .find(|g| g["hooks"][0]["command"].as_str().unwrap_or_default().contains("user-"))
             .expect("a user hook group must be registered")
     };
 
@@ -302,12 +300,8 @@ fn uninstall_removes_user_hook_shims_and_refuses_to_delete_a_build_artifact() {
     let shim = env.home.path().join(".config/ws/hooks/user-stop-h.sh");
     assert!(shim.is_file(), "precondition: the shim exists");
 
-    let out = env
-        .cmd()
-        .env("WS_CLAUDE_BIN", &claude)
-        .args(["-uninstall", "--force"])
-        .output()
-        .unwrap();
+    let out =
+        env.cmd().env("WS_CLAUDE_BIN", &claude).args(["-uninstall", "--force"]).output().unwrap();
 
     assert!(!shim.exists(), "the user shim must be removed too");
     assert!(!out.status.success(), "and the build artifact must not be deleted");

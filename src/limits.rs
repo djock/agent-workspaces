@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn threshold_detection() {
         assert_eq!(over_threshold(&snap(50.0, 50.0), 85, 90), None);
-        assert_eq!(over_threshold(&snap(85.0, 50.0), 85, 90), Some("5h"));   // at threshold counts
+        assert_eq!(over_threshold(&snap(85.0, 50.0), 85, 90), Some("5h")); // at threshold counts
         assert_eq!(over_threshold(&snap(50.0, 95.0), 85, 90), Some("week"));
         // 5h takes priority when both cross
         assert_eq!(over_threshold(&snap(90.0, 95.0), 85, 90), Some("5h"));
@@ -139,8 +139,8 @@ mod tests {
     fn countdown_formats() {
         assert_eq!(countdown(1_000_000, 1_000_000 - 4800), "1h20m"); // 80 min
         assert_eq!(countdown(1_000_000, 1_000_000 - 45), "0h0m");
-        assert_eq!(countdown(1_000_000, 1_000_000 + 10), "0m");      // already passed
-        assert_eq!(countdown(0, 1_000_000), "0m");                    // unknown
+        assert_eq!(countdown(1_000_000, 1_000_000 + 10), "0m"); // already passed
+        assert_eq!(countdown(0, 1_000_000), "0m"); // unknown
     }
 
     #[test]

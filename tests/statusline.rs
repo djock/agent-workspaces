@@ -20,10 +20,13 @@ fn statusline_renders_and_captures() {
     // create a ws workspace so capture has a home
     let proj = env.home.path().join("sl");
     std::fs::create_dir_all(&proj).unwrap();
-    env.cmd().current_dir(&proj).args(["-adopt","sl"]).assert().success();
+    env.cmd().current_dir(&proj).args(["-adopt", "sl"]).assert().success();
 
-    let out = env.cmd()
-        .env("WS_WORKSPACE","sl").env("WS_DIR",&proj).env("NO_COLOR","1")
+    let out = env
+        .cmd()
+        .env("WS_WORKSPACE", "sl")
+        .env("WS_DIR", &proj)
+        .env("NO_COLOR", "1")
         .arg("statusline")
         .write_stdin(SAMPLE)
         .assert()
@@ -69,7 +72,8 @@ fn the_status_line_leads_with_a_colored_workspace_chip() {
         if no_color {
             c.env("NO_COLOR", "1");
         }
-        let out = c.arg("statusline").write_stdin(SAMPLE).assert().success().get_output().stdout.clone();
+        let out =
+            c.arg("statusline").write_stdin(SAMPLE).assert().success().get_output().stdout.clone();
         String::from_utf8(out).unwrap()
     };
 
@@ -108,13 +112,6 @@ fn the_chip_is_absent_outside_a_workspace() {
 #[test]
 fn statusline_survives_garbage_stdin() {
     let env = Env::new();
-    env.cmd()
-        .env("NO_COLOR","1")
-        .arg("statusline")
-        .write_stdin("not json")
-        .assert()
-        .success(); // never errors
+    env.cmd().env("NO_COLOR", "1").arg("statusline").write_stdin("not json").assert().success();
+    // never errors
 }
-
-
-

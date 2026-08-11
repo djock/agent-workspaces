@@ -28,9 +28,7 @@ pub const CONTRACT_VERSION: i64 = 1;
 /// with the path in the error (fail-closed), not silently be treated as an
 /// absent/legacy file that trivially passes the gate.
 pub fn check_gate(name: &str, ws_toml: &Path) -> Result<()> {
-    let stored = crate::meta::read_checked(ws_toml)?
-        .map(|m| m.contract_version)
-        .unwrap_or(0);
+    let stored = crate::meta::read_checked(ws_toml)?.map(|m| m.contract_version).unwrap_or(0);
     if stored > CONTRACT_VERSION {
         anyhow::bail!(
             "workspace '{name}' was created by a newer ws (contract v{stored} > v{CONTRACT_VERSION}); update ws"
@@ -69,7 +67,9 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
     // README.md
     write_if_absent(
         &ws.join("README.md"),
-        &format!("# {name}\n\n## Objective\n\n_(captured from the first prompt)_\n\n## Outcome\n\n"),
+        &format!(
+            "# {name}\n\n## Objective\n\n_(captured from the first prompt)_\n\n## Outcome\n\n"
+        ),
     )?;
 
     // notebook
@@ -93,10 +93,7 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
     // and friends). They are per-machine coordination state with no meaning in
     // another checkout, and committing one would put a file in the repo that a
     // co-developer's ws then locks against for no reason.
-    write_if_absent(
-        &ws.join(".gitignore"),
-        "local/\n*.enc\n*.lock\n",
-    )?;
+    write_if_absent(&ws.join(".gitignore"), "local/\n*.enc\n*.lock\n")?;
 
     // .ws/.gitattributes — union-merge every append-only file.
     //
@@ -112,7 +109,8 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
 
     // git init only if this dir is not already inside a repo (direct or ancestor)
     let inside = Command::new("git")
-        .arg("-C").arg(root)
+        .arg("-C")
+        .arg(root)
         .args(["rev-parse", "--is-inside-work-tree"])
         .output()
         .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
@@ -377,7 +375,10 @@ mod tests {
             .unwrap();
         let status = String::from_utf8_lossy(&status.stdout).to_string();
         assert!(status.contains("A  staged.txt"), "the user's staged file stays staged: {status}");
-        assert!(status.contains("?? wip.txt"), "and their untracked file stays untracked: {status}");
+        assert!(
+            status.contains("?? wip.txt"),
+            "and their untracked file stays untracked: {status}"
+        );
     }
 
     /// A partial commit (`git commit -- <path>`) is what C1 scoped the
@@ -407,7 +408,10 @@ mod tests {
         assert!(!out.status.success(), "a partial commit must fail mid-merge");
         assert_eq!(out.status.code(), Some(128));
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("cannot do a partial commit during a merge"), "unexpected stderr: {stderr}");
+        assert!(
+            stderr.contains("cannot do a partial commit during a merge"),
+            "unexpected stderr: {stderr}"
+        );
     }
 
     /// The merge case. C1's fix scoped the convenience commit to `-- .ws`,
@@ -454,12 +458,12 @@ mod tests {
         crate::git::ok(root, &["commit", "-qam", "main change"]).unwrap();
 
         // Conflicts, and leaves the cherry-pick in progress.
-        let out = Command::new("git")
-            .arg("-C").arg(root)
-            .args(["cherry-pick", "side"])
-            .output()
-            .unwrap();
-        assert!(!out.status.success(), "the cherry-pick must conflict for this fixture to mean anything");
+        let out =
+            Command::new("git").arg("-C").arg(root).args(["cherry-pick", "side"]).output().unwrap();
+        assert!(
+            !out.status.success(),
+            "the cherry-pick must conflict for this fixture to mean anything"
+        );
         let cherry_head = root.join(".git/CHERRY_PICK_HEAD");
         assert!(cherry_head.exists(), "git must have left CHERRY_PICK_HEAD behind");
     }
@@ -489,7 +493,10 @@ mod tests {
             "and it is registered — the failure this fix exists to prevent is the unregistered workspace"
         );
         // The user's conflicted cherry-pick is left exactly as it was.
-        assert!(root.join(".git/CHERRY_PICK_HEAD").exists(), "ws must not resolve the user's cherry-pick");
+        assert!(
+            root.join(".git/CHERRY_PICK_HEAD").exists(),
+            "ws must not resolve the user's cherry-pick"
+        );
     }
 
     /// The same, for a conflicted revert (REVERT_HEAD) — the third state the
@@ -514,11 +521,15 @@ mod tests {
 
         // Reverting "second" conflicts because "third" touched the same line.
         let out = Command::new("git")
-            .arg("-C").arg(&root)
+            .arg("-C")
+            .arg(&root)
             .args(["revert", "--no-edit", "HEAD~1"])
             .output()
             .unwrap();
-        assert!(!out.status.success(), "the revert must conflict for this fixture to mean anything");
+        assert!(
+            !out.status.success(),
+            "the revert must conflict for this fixture to mean anything"
+        );
         assert!(root.join(".git/REVERT_HEAD").exists(), "git must have left REVERT_HEAD behind");
 
         init("proj", &root, "claude", true).expect("init must not fail mid-revert");
@@ -543,14 +554,19 @@ mod tests {
     fn check_gate_refuses_a_newer_contract_version() {
         let d = TempDir::new().unwrap();
         let p = d.path().join("workspace.toml");
-        std::fs::write(&p, format!("name = \"proj\"\ncontract_version = {}\n", CONTRACT_VERSION + 7)).unwrap();
+        std::fs::write(
+            &p,
+            format!("name = \"proj\"\ncontract_version = {}\n", CONTRACT_VERSION + 7),
+        )
+        .unwrap();
 
         let err = check_gate("proj", &p).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("proj"), "names the workspace: {msg}");
         assert!(msg.contains("newer ws"), "says why: {msg}");
         assert!(
-            msg.contains(&format!("v{}", CONTRACT_VERSION + 7)) && msg.contains(&format!("v{CONTRACT_VERSION}")),
+            msg.contains(&format!("v{}", CONTRACT_VERSION + 7))
+                && msg.contains(&format!("v{CONTRACT_VERSION}")),
             "states both versions: {msg}"
         );
         assert!(msg.contains("update ws"), "says the fix: {msg}");
@@ -560,7 +576,8 @@ mod tests {
     fn check_gate_passes_the_current_version() {
         let d = TempDir::new().unwrap();
         let p = d.path().join("workspace.toml");
-        std::fs::write(&p, format!("name = \"proj\"\ncontract_version = {CONTRACT_VERSION}\n")).unwrap();
+        std::fs::write(&p, format!("name = \"proj\"\ncontract_version = {CONTRACT_VERSION}\n"))
+            .unwrap();
         assert!(check_gate("proj", &p).is_ok());
     }
 

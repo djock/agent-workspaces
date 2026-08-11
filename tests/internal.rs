@@ -73,7 +73,9 @@ fn user_prompt_captures_objective() {
 
     // README starts with the placeholder
     let readme = proj.join(".ws/README.md");
-    assert!(std::fs::read_to_string(&readme).unwrap().contains("_(captured from the first prompt)_"));
+    assert!(std::fs::read_to_string(&readme)
+        .unwrap()
+        .contains("_(captured from the first prompt)_"));
 
     env.cmd()
         .env("WS_WORKSPACE", "obj")
@@ -94,12 +96,15 @@ fn session_start_injects_captured_objective() {
     let env = Env::new();
     let proj = adopt_ws(&env, "cap");
     env.cmd()
-        .env("WS_WORKSPACE", "cap").env("WS_DIR", &proj)
+        .env("WS_WORKSPACE", "cap")
+        .env("WS_DIR", &proj)
         .args(["internal", "user-prompt"])
         .write_stdin(r#"{"prompt":"Ship the invoice exporter"}"#)
-        .assert().success();
+        .assert()
+        .success();
     env.cmd()
-        .env("WS_WORKSPACE", "cap").env("WS_DIR", &proj)
+        .env("WS_WORKSPACE", "cap")
+        .env("WS_DIR", &proj)
         .args(["internal", "session-start"])
         .write_stdin(r#"{"source":"startup"}"#)
         .assert()
@@ -111,11 +116,7 @@ fn session_start_injects_captured_objective() {
 #[test]
 fn unknown_internal_handler_is_silent_success() {
     let env = Env::new();
-    env.cmd()
-        .args(["internal", "does-not-exist"])
-        .write_stdin("{}")
-        .assert()
-        .success();
+    env.cmd().args(["internal", "does-not-exist"]).write_stdin("{}").assert().success();
 }
 
 #[test]
@@ -135,7 +136,8 @@ fn stop_reminds_then_cools_down() {
 
     // First stop → block with a reminder
     env.cmd()
-        .env("WS_WORKSPACE", "nb").env("WS_DIR", &proj)
+        .env("WS_WORKSPACE", "nb")
+        .env("WS_DIR", &proj)
         .args(["internal", "stop"])
         .write_stdin("{}")
         .assert()
@@ -147,7 +149,8 @@ fn stop_reminds_then_cools_down() {
     // Stop's only valid decision is "block"; "approve" is invalid JSON for
     // this event.
     env.cmd()
-        .env("WS_WORKSPACE", "nb").env("WS_DIR", &proj)
+        .env("WS_WORKSPACE", "nb")
+        .env("WS_DIR", &proj)
         .args(["internal", "stop"])
         .write_stdin("{}")
         .assert()
@@ -174,7 +177,8 @@ fn stop_stands_down_on_a_continuation_stop() {
 
     // The same payload that would otherwise block, flagged as a continuation.
     env.cmd()
-        .env("WS_WORKSPACE", "loop").env("WS_DIR", &proj)
+        .env("WS_WORKSPACE", "loop")
+        .env("WS_DIR", &proj)
         .args(["internal", "stop"])
         .write_stdin(r#"{"hook_event_name":"Stop","stop_hook_active":true}"#)
         .assert()
@@ -205,7 +209,8 @@ fn the_notebook_prompt_can_be_turned_off() {
     std::process::Command::new("touch").args(["-t", "200001010000"]).arg(&nb).status().unwrap();
 
     env.cmd()
-        .env("WS_WORKSPACE", "nboff").env("WS_DIR", &proj)
+        .env("WS_WORKSPACE", "nboff")
+        .env("WS_DIR", &proj)
         .args(["internal", "stop"])
         .write_stdin("{}")
         .assert()
@@ -229,7 +234,8 @@ fn bash_audit_logs_command() {
     let env = Env::new();
     let proj = adopt_ws(&env, "aud");
     env.cmd()
-        .env("WS_WORKSPACE", "aud").env("WS_DIR", &proj)
+        .env("WS_WORKSPACE", "aud")
+        .env("WS_DIR", &proj)
         .args(["internal", "bash-audit"])
         .write_stdin(r#"{"tool_name":"Bash","tool_input":{"command":"echo hi"}}"#)
         .assert()
@@ -248,7 +254,8 @@ fn bash_audit_ignores_non_bash() {
 
     // Establish a baseline: one real Bash command logged.
     env.cmd()
-        .env("WS_WORKSPACE", "aud2").env("WS_DIR", &proj)
+        .env("WS_WORKSPACE", "aud2")
+        .env("WS_DIR", &proj)
         .args(["internal", "bash-audit"])
         .write_stdin(r#"{"tool_name":"Bash","tool_input":{"command":"echo hi"}}"#)
         .assert()
@@ -259,7 +266,8 @@ fn bash_audit_ignores_non_bash() {
 
     // A non-Bash tool must not add another BASH line.
     env.cmd()
-        .env("WS_WORKSPACE", "aud2").env("WS_DIR", &proj)
+        .env("WS_WORKSPACE", "aud2")
+        .env("WS_DIR", &proj)
         .args(["internal", "bash-audit"])
         .write_stdin(r#"{"tool_name":"Edit","tool_input":{"command":""}}"#)
         .assert()
@@ -274,7 +282,8 @@ fn session_end_records_closed() {
     let env = Env::new();
     let proj = adopt_ws(&env, "end");
     env.cmd()
-        .env("WS_WORKSPACE", "end").env("WS_DIR", &proj)
+        .env("WS_WORKSPACE", "end")
+        .env("WS_DIR", &proj)
         .args(["internal", "session-end"])
         .write_stdin(r#"{"reason":"exit"}"#)
         .assert()

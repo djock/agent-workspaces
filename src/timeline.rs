@@ -24,10 +24,7 @@ pub fn record(timeline_path: &Path, kind: &str, actor: &str, extra: Value) -> Re
     let mut line = serde_json::to_string(&event)?;
     line.push('\n');
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(timeline_path)?;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(timeline_path)?;
     f.write_all(line.as_bytes())?;
     Ok(())
 }

@@ -6,7 +6,11 @@ fn setup_installs_codex_hooks_and_prompts_when_codex_present() {
     let env = Env::new();
     // Make codex "installed" by pointing WS_CODEX_BIN at a shim that exits 0 on --version.
     let shim = env.fake_codex();
-    env.cmd().env("WS_CODEX_BIN", &shim).arg("setup").assert().success()
+    env.cmd()
+        .env("WS_CODEX_BIN", &shim)
+        .arg("setup")
+        .assert()
+        .success()
         .stdout(predicates::str::contains("codex"))
         .stdout(predicates::str::contains("/hooks")); // trust note surfaced
 
@@ -30,18 +34,16 @@ fn setup_installs_codex_hooks_and_prompts_when_codex_present() {
         "per-event entries must be matcher-groups holding a command list"
     );
     assert!(doc["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-        .as_str().unwrap().contains("session-start.sh"));
+        .as_str()
+        .unwrap()
+        .contains("session-start.sh"));
 
     // The matchers must be Codex's tool names, not Claude's. Verified against
     // Codex CLI 0.145.0: shell arrives as `Bash`, a file edit as `apply_patch`.
     // PreToolUse has no built-in hook any more: the only one was a bash audit
     // that wrote a log nothing in ws ever read. `ToolKind::Shell` survives for
     // user-defined hooks, which is where a shell matcher now comes from.
-    assert!(
-        doc["hooks"]["PreToolUse"].is_null(),
-        "no built-in PreToolUse hook: {}",
-        doc["hooks"]
-    );
+    assert!(doc["hooks"]["PreToolUse"].is_null(), "no built-in PreToolUse hook: {}", doc["hooks"]);
     let redact = doc["hooks"]["PostToolUse"][0]["matcher"].as_str().unwrap();
     assert!(
         redact.contains("apply_patch"),
@@ -94,11 +96,7 @@ fn setup_installs_hooks_and_prompts() {
     // PreToolUse has no built-in hook any more: the only one was a bash audit
     // that wrote a log nothing in ws ever read. `ToolKind::Shell` survives for
     // user-defined hooks, which is where a shell matcher now comes from.
-    assert!(
-        doc["hooks"]["PreToolUse"].is_null(),
-        "no built-in PreToolUse hook: {}",
-        doc["hooks"]
-    );
+    assert!(doc["hooks"]["PreToolUse"].is_null(), "no built-in PreToolUse hook: {}", doc["hooks"]);
     // Every write-side Claude tool, not just Write/Edit: MultiEdit and
     // NotebookEdit put content on disk too, and redaction never fired for them.
     let redact = doc["hooks"]["PostToolUse"][0]["matcher"].as_str().unwrap();
@@ -121,7 +119,8 @@ fn setup_registers_statuslines_and_backs_up_prior() {
     // pre-existing foreign statusline (cs) must be backed up, not lost
     let sp = env.home.path().join(".claude/settings.json");
     std::fs::create_dir_all(sp.parent().unwrap()).unwrap();
-    std::fs::write(&sp, r#"{"statusLine":{"type":"command","command":"/opt/cs/cs-statusline"}}"#).unwrap();
+    std::fs::write(&sp, r#"{"statusLine":{"type":"command","command":"/opt/cs/cs-statusline"}}"#)
+        .unwrap();
 
     let shim = env.fake_claude();
     env.cmd().env("WS_CLAUDE_BIN", &shim).arg("setup").assert().success();
@@ -137,9 +136,8 @@ fn setup_registers_statuslines_and_backs_up_prior() {
     );
 
     // the prior cs command was recorded to the backup file
-    let backup = std::fs::read_to_string(
-        env.home.path().join(".config/ws/statusline-backup.json")
-    ).unwrap_or_default();
+    let backup = std::fs::read_to_string(env.home.path().join(".config/ws/statusline-backup.json"))
+        .unwrap_or_default();
     assert!(backup.contains("cs-statusline"), "prior statusline must be backed up");
 }
 
@@ -148,15 +146,24 @@ fn setup_backs_up_arbitrary_prior_statusline() {
     let env = Env::new();
     let sp = env.home.path().join(".claude/settings.json");
     std::fs::create_dir_all(sp.parent().unwrap()).unwrap();
-    std::fs::write(&sp, r#"{"statusLine":{"type":"command","command":"/usr/local/bin/my-custom-line --flag"}}"#).unwrap();
+    std::fs::write(
+        &sp,
+        r#"{"statusLine":{"type":"command","command":"/usr/local/bin/my-custom-line --flag"}}"#,
+    )
+    .unwrap();
 
     let shim = env.fake_claude();
     env.cmd().env("WS_CLAUDE_BIN", &shim).arg("setup").assert().success();
 
-    let backup = std::fs::read_to_string(env.home.path().join(".config/ws/statusline-backup.json")).unwrap_or_default();
-    assert!(backup.contains("/usr/local/bin/my-custom-line --flag"), "prior custom statusline must be backed up verbatim, got: {backup}");
+    let backup = std::fs::read_to_string(env.home.path().join(".config/ws/statusline-backup.json"))
+        .unwrap_or_default();
+    assert!(
+        backup.contains("/usr/local/bin/my-custom-line --flag"),
+        "prior custom statusline must be backed up verbatim, got: {backup}"
+    );
     // and settings.json now points at ws
-    let settings: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
     assert!(settings["statusLine"]["command"].as_str().unwrap().ends_with(" statusline"));
 }
 
@@ -167,7 +174,8 @@ fn setup_backup_merges_and_never_drops_a_prior_original() {
     std::fs::create_dir_all(sp.parent().unwrap()).unwrap();
 
     // Run 1: only a foreign statusLine present.
-    std::fs::write(&sp, r#"{"statusLine":{"type":"command","command":"/opt/cs/cs-statusline"}}"#).unwrap();
+    std::fs::write(&sp, r#"{"statusLine":{"type":"command","command":"/opt/cs/cs-statusline"}}"#)
+        .unwrap();
     let shim = env.fake_claude();
     env.cmd().env("WS_CLAUDE_BIN", &shim).arg("setup").assert().success();
 
@@ -175,13 +183,15 @@ fn setup_backup_merges_and_never_drops_a_prior_original() {
     // keep the *first* original it ever saw rather than overwriting the backup
     // with whatever it happens to find on a later run — losing the only record of
     // what the user had before ws touched anything.
-    let mut s: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
+    let mut s: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sp).unwrap()).unwrap();
     s["statusLine"] = serde_json::json!({"type":"command","command":"/opt/other/thing"});
     std::fs::write(&sp, serde_json::to_string(&s).unwrap()).unwrap();
 
     // Run 2.
     env.cmd().env("WS_CLAUDE_BIN", &shim).arg("setup").assert().success();
 
-    let backup = std::fs::read_to_string(env.home.path().join(".config/ws/statusline-backup.json")).unwrap_or_default();
+    let backup = std::fs::read_to_string(env.home.path().join(".config/ws/statusline-backup.json"))
+        .unwrap_or_default();
     assert!(backup.contains("cs-statusline"), "run-1 original must survive: {backup}");
 }

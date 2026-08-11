@@ -37,12 +37,25 @@ pub struct Task {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum Record {
-    Add { ts: String, id: String, text: String, actor: String },
-    State { ts: String, id: String, state: TaskState, note: Option<String> },
+    Add {
+        ts: String,
+        id: String,
+        text: String,
+        actor: String,
+    },
+    State {
+        ts: String,
+        id: String,
+        state: TaskState,
+        note: Option<String>,
+    },
     /// `-task rm`. Append-only: the task is retired by a later record rather
     /// than by rewriting the log, because a rewrite would need a lock this
     /// O_APPEND-only file deliberately does not have.
-    Drop { ts: String, id: String },
+    Drop {
+        ts: String,
+        id: String,
+    },
 }
 
 /// Ceiling on one appended **line**, in bytes.
@@ -63,8 +76,7 @@ pub const MAX_TASK_LINE_BYTES: usize = 8192;
 
 fn append(tasks_path: &Path, rec: &Record) -> Result<()> {
     if let Some(dir) = tasks_path.parent() {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("cannot create {}", dir.display()))?;
+        std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
     let mut line = serde_json::to_string(rec)?;
     if line.len() + 1 > MAX_TASK_LINE_BYTES {
@@ -113,9 +125,7 @@ pub fn tasks(tasks_path: &Path) -> Result<Vec<Task>> {
     let raw = match std::fs::read_to_string(tasks_path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => {
-            return Err(e).with_context(|| format!("cannot read {}", tasks_path.display()))
-        }
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", tasks_path.display())),
     };
     let mut out: Vec<Task> = Vec::new();
     for (i, line) in raw.lines().enumerate() {
@@ -126,13 +136,9 @@ pub fn tasks(tasks_path: &Path) -> Result<Vec<Task>> {
             format!("corrupt queue record at {}:{}", tasks_path.display(), i + 1)
         })?;
         match rec {
-            Record::Add { ts, id, text, .. } => out.push(Task {
-                id,
-                text,
-                state: TaskState::Pending,
-                added: ts,
-                note: None,
-            }),
+            Record::Add { ts, id, text, .. } => {
+                out.push(Task { id, text, state: TaskState::Pending, added: ts, note: None })
+            }
             Record::Drop { id, .. } => {
                 out.retain(|t| t.id != id);
             }
@@ -152,10 +158,7 @@ pub fn tasks(tasks_path: &Path) -> Result<Vec<Task>> {
 }
 
 pub fn pending(tasks_path: &Path) -> Result<Vec<Task>> {
-    Ok(tasks(tasks_path)?
-        .into_iter()
-        .filter(|t| t.state == TaskState::Pending)
-        .collect())
+    Ok(tasks(tasks_path)?.into_iter().filter(|t| t.state == TaskState::Pending).collect())
 }
 
 /// Mark every `Running` task `Failed`. Called at the start of a drain: a task
@@ -267,8 +270,6 @@ mod tests {
         assert_eq!(pending(&p).unwrap().len(), 2);
     }
 
-
-
     #[test]
     fn a_missing_queue_is_empty_but_a_corrupt_line_is_an_error() {
         let td = TempDir::new().unwrap();
@@ -284,5 +285,4 @@ mod tests {
         // a drain skips work the user asked for.
         assert!(tasks(&p).is_err());
     }
-
 }

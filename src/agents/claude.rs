@@ -122,7 +122,6 @@ impl Agent for ClaudeAgent {
             .env("WS_AGENT", self.id());
         Ok(cmd)
     }
-
 }
 
 #[cfg(test)]
@@ -143,7 +142,9 @@ mod tests {
     }
 
     fn env_of(cmd: &std::process::Command, key: &str) -> Option<String> {
-        cmd.get_envs().find(|(k, _)| *k == OsStr::new(key)).and_then(|(_, v)| v)
+        cmd.get_envs()
+            .find(|(k, _)| *k == OsStr::new(key))
+            .and_then(|(_, v)| v)
             .map(|v| v.to_string_lossy().to_string())
     }
 
@@ -156,7 +157,10 @@ mod tests {
         let a = args_of(&cmd);
         assert_eq!(a[0], "--session-id");
         // recorded to state.toml
-        assert_eq!(crate::contract::read_session_id(&ws.state_toml(), "claude"), Some(a[1].clone()));
+        assert_eq!(
+            crate::contract::read_session_id(&ws.state_toml(), "claude"),
+            Some(a[1].clone())
+        );
     }
 
     #[test]
@@ -189,7 +193,10 @@ mod tests {
         let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into() };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         let a = args_of(&cmd);
-        assert_eq!(a[0], "--session-id", "a corrupt state.toml must fall back to fresh, not resume or panic: {a:?}");
+        assert_eq!(
+            a[0], "--session-id",
+            "a corrupt state.toml must fall back to fresh, not resume or panic: {a:?}"
+        );
     }
 
     /// Same failure mode, but the file is missing outright rather than
@@ -202,7 +209,10 @@ mod tests {
         let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into() };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         let a = args_of(&cmd);
-        assert_eq!(a[0], "--session-id", "no state.toml at all must fall back to fresh, not panic: {a:?}");
+        assert_eq!(
+            a[0], "--session-id",
+            "no state.toml at all must fall back to fresh, not panic: {a:?}"
+        );
     }
 
     /// And unreadable: permission-denied rather than corrupt or absent.
@@ -221,7 +231,10 @@ mod tests {
         // Restore permissions unconditionally so TempDir cleanup can remove the file.
         std::fs::set_permissions(ws.state_toml(), std::fs::Permissions::from_mode(0o644)).unwrap();
         let a = args_of(&result.unwrap());
-        assert_eq!(a[0], "--session-id", "an unreadable state.toml must fall back to fresh, not panic: {a:?}");
+        assert_eq!(
+            a[0], "--session-id",
+            "an unreadable state.toml must fall back to fresh, not panic: {a:?}"
+        );
     }
 
     #[test]
@@ -230,7 +243,10 @@ mod tests {
         let ws = ws_at(d.path());
         let ctx = LaunchCtx { fresh: true, sessions_root: "/root".into() };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
-        assert_eq!(env_of(&cmd, "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"), Some(ws.memory_dir().to_string_lossy().to_string()));
+        assert_eq!(
+            env_of(&cmd, "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"),
+            Some(ws.memory_dir().to_string_lossy().to_string())
+        );
         assert_eq!(env_of(&cmd, "WS_WORKSPACE"), Some("proj".into()));
         assert_eq!(env_of(&cmd, "WS_DIR"), Some(ws.root.to_string_lossy().to_string()));
         assert_eq!(env_of(&cmd, "WS_ROOT"), Some("/root".into()));
@@ -243,8 +259,4 @@ mod tests {
         std::env::remove_var("WS_CLAUDE_BIN");
         assert_eq!(b, "/fake/claude");
     }
-
-
-
-
 }

@@ -428,7 +428,13 @@ fn clip(s: &str, width: u16) -> String {
 /// Every field is optional and an absent one is omitted rather than rendered
 /// blank — an empty value column reads as a bug, and a heading with nothing
 /// under it reads as missing data rather than as data that does not exist.
-pub fn render_info(r: &WorkspaceRow, d: &Detail, now: i64, width: u16, theme: &Theme) -> Vec<String> {
+pub fn render_info(
+    r: &WorkspaceRow,
+    d: &Detail,
+    now: i64,
+    width: u16,
+    theme: &Theme,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let w = width.max(20) as usize;
 
@@ -475,10 +481,13 @@ pub fn render_info(r: &WorkspaceRow, d: &Detail, now: i64, width: u16, theme: &T
             })
             .unwrap_or_default(),
     );
-    fact("tasks", match d.queue {
-        Some(n) if n > 0 => format!("{n} open"),
-        _ => String::new(),
-    });
+    fact(
+        "tasks",
+        match d.queue {
+            Some(n) if n > 0 => format!("{n} open"),
+            _ => String::new(),
+        },
+    );
     fact("tags", if r.tags.is_empty() { String::new() } else { format!("#{}", r.tags.join(" #")) });
 
     if let Some(obj) = &d.objective {
@@ -622,7 +631,10 @@ impl Drop for RawGuard {
 
 /// Terminal key → picker key. Pure, so the mapping is testable — which matters
 /// now that one of these letters deletes a workspace.
-fn map_key(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyModifiers) -> Option<Key> {
+fn map_key(
+    code: crossterm::event::KeyCode,
+    modifiers: crossterm::event::KeyModifiers,
+) -> Option<Key> {
     use crossterm::event::{KeyCode, KeyModifiers};
     let held = modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
     match code {
@@ -786,7 +798,10 @@ mod tests {
     }
 
     fn plain() -> Theme {
-        crate::theme::resolve("dark", &crate::theme::ThemeEnv { no_color: true, ..Default::default() })
+        crate::theme::resolve(
+            "dark",
+            &crate::theme::ThemeEnv { no_color: true, ..Default::default() },
+        )
     }
 
     fn three() -> State {
@@ -989,7 +1004,9 @@ mod tests {
     /// confirmation, and enter is the key most likely to be leaned on.
     #[test]
     fn only_y_confirms_a_delete() {
-        for cancel in [Key::Enter, Key::Escape, Key::Quit, Key::Char('n'), Key::Char('x'), Key::Down] {
+        for cancel in
+            [Key::Enter, Key::Escape, Key::Quit, Key::Char('n'), Key::Char('x'), Key::Down]
+        {
             let mut s = three();
             s.on_key(Key::Delete);
             assert_eq!(s.mode(), Mode::ConfirmDelete);
@@ -1261,10 +1278,7 @@ mod tests {
         };
         let lines = render_info(&row("big"), &d, 0, 60, &plain());
 
-        assert_eq!(
-            lines.iter().filter(|l| l.starts_with("  · note")).count(),
-            INFO_NOTEBOOK_LINES
-        );
+        assert_eq!(lines.iter().filter(|l| l.starts_with("  · note")).count(), INFO_NOTEBOOK_LINES);
         assert!(lines.iter().any(|l| l.contains("note 39")), "the tail is the recent end");
         assert_eq!(lines.iter().filter(|l| l.contains("opened")).count(), INFO_RECENT_LINES);
         for l in &lines {
@@ -1284,7 +1298,11 @@ mod tests {
             assert_eq!(map_key(KeyCode::Char(c), M::ALT), None, "alt-{c} is not {c}");
         }
         assert_eq!(map_key(KeyCode::Char('a'), M::CONTROL), None, "ctrl-a is not archive");
-        assert_eq!(map_key(KeyCode::Char('d'), M::NONE), Some(Key::Char('d')), "plain d still acts");
+        assert_eq!(
+            map_key(KeyCode::Char('d'), M::NONE),
+            Some(Key::Char('d')),
+            "plain d still acts"
+        );
         assert_eq!(map_key(KeyCode::Char('A'), M::SHIFT), Some(Key::Char('A')), "shift is typing");
     }
 

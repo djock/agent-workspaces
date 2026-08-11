@@ -52,7 +52,12 @@ fn session_start() {
 
     // timeline: opened (only on a real start/resume, not clear/compact)
     if h.source == "startup" || h.source == "resume" {
-        let _ = timeline::record(&ws.timeline(), "opened", &actors::actor_slug(), serde_json::json!({}));
+        let _ = timeline::record(
+            &ws.timeline(),
+            "opened",
+            &actors::actor_slug(),
+            serde_json::json!({}),
+        );
     }
 
     // Record which agent session this is, and the lineage if it replaced one.
@@ -107,13 +112,7 @@ fn record_session_identity(ws: &Workspace, h: &hookio::HookInput) {
         ws,
         &format!("{agent} session {} recorded (source: {})", h.session_id, h.source),
     );
-    crate::conversations::record_rotation(
-        ws,
-        &agent,
-        prior.as_deref(),
-        &h.session_id,
-        &h.source,
-    );
+    crate::conversations::record_rotation(ws, &agent, prior.as_deref(), &h.session_id, &h.source);
 }
 
 fn user_prompt() {
@@ -293,9 +292,7 @@ fn notify(msg: &str) {
     #[cfg(target_os = "macos")]
     {
         let script = format!("display notification {:?} with title \"ws\"", msg);
-        let _ = std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .status();
+        let _ = std::process::Command::new("osascript").args(["-e", &script]).status();
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -325,10 +322,7 @@ fn age_secs(path: &std::path::Path) -> Option<u64> {
 }
 
 fn system_time_age_secs(t: std::time::SystemTime) -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(t)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(t).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 fn build_context(ws: &Workspace) -> String {
@@ -398,7 +392,8 @@ fn session_end() {
         Some(w) => w,
         None => return,
     };
-    let _ = timeline::record(&ws.timeline(), "closed", &actors::actor_slug(), serde_json::json!({}));
+    let _ =
+        timeline::record(&ws.timeline(), "closed", &actors::actor_slug(), serde_json::json!({}));
 }
 
 /// The files a `PostToolUse` payload says were just written.
@@ -504,11 +499,7 @@ pub fn contained(root: &std::path::Path, path: &std::path::Path) -> Result<PathB
     if real.starts_with(&real_root) {
         Ok(real)
     } else {
-        Err(format!(
-            "{} is outside the workspace root {}",
-            path.display(),
-            real_root.display()
-        ))
+        Err(format!("{} is outside the workspace root {}", path.display(), real_root.display()))
     }
 }
 
@@ -523,10 +514,7 @@ pub fn contained(root: &std::path::Path, path: &std::path::Path) -> Result<PathB
 /// README promised it. Never includes the value.
 fn report_skipped(ws: &Workspace, path: &std::path::Path, reason: &str) {
     let msg = format!("redaction skipped: secret store unavailable ({reason})");
-    eprintln!(
-        "ws: {msg} — {} still contains what the agent wrote.",
-        path.display()
-    );
+    eprintln!("ws: {msg} — {} still contains what the agent wrote.", path.display());
     let _ = append_log(ws, &msg);
 }
 
@@ -724,8 +712,18 @@ fn parse_assignment(line: &str) -> Option<(&str, &str)> {
 /// the name does not end there); `DSN` and `WEBHOOK` are here because both
 /// routinely carry an embedded credential in their value.
 const SECRET_NAME_PARTS: &[&str] = &[
-    "SECRET", "TOKEN", "PASSWORD", "PASSWD", "PASSPHRASE", "APIKEY", "API_KEY", "ACCESS_KEY",
-    "CREDENTIAL", "WEBHOOK", "DSN", "BEARER",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PASSWD",
+    "PASSPHRASE",
+    "APIKEY",
+    "API_KEY",
+    "ACCESS_KEY",
+    "CREDENTIAL",
+    "WEBHOOK",
+    "DSN",
+    "BEARER",
 ];
 
 /// Value prefixes that identify a credential on their own, regardless of what
@@ -733,8 +731,20 @@ const SECRET_NAME_PARTS: &[&str] = &[
 /// GitHub `ghp_`/`gho_`/`github_pat_`, GitLab `glpat-`, Slack `xox*-`, AWS
 /// `AKIA`/`ASIA`, Google `AIza`, npm `npm_`, PyPI `pypi-`.
 const SECRET_VALUE_PREFIXES: &[&str] = &[
-    "sk-", "ghp_", "gho_", "github_pat_", "glpat-", "xoxb-", "xoxp-", "xoxa-", "xoxs-", "AKIA",
-    "ASIA", "AIza", "npm_", "pypi-",
+    "sk-",
+    "ghp_",
+    "gho_",
+    "github_pat_",
+    "glpat-",
+    "xoxb-",
+    "xoxp-",
+    "xoxa-",
+    "xoxs-",
+    "AKIA",
+    "ASIA",
+    "AIza",
+    "npm_",
+    "pypi-",
 ];
 
 /// Values that are configuration, never credentials, whatever the name is.
@@ -946,10 +956,16 @@ mod tests {
     fn an_unreadable_manifest_is_never_replaced_by_one_missing_prior_entries() {
         use std::os::unix::fs::PermissionsExt;
         // Running as root defeats file permissions — the read would succeed.
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string()).unwrap_or_default();
-        if uid == "0" { return; }
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if uid == "0" {
+            return;
+        }
 
         let d = TempDir::new().unwrap();
         let ws = Workspace { name: "w".into(), root: d.path().to_path_buf() };
@@ -1054,7 +1070,10 @@ mod tests {
         assert!(got.contains(&std::path::PathBuf::from("/abs/b.env")), "{got:?}");
         assert!(got.contains(&std::path::PathBuf::from("/work/d.env")), "Move to target: {got:?}");
         // A deleted file has no content left to scan, and scanning it would be an error.
-        assert!(!got.contains(&std::path::PathBuf::from("/work/c.env")), "deletion must be skipped: {got:?}");
+        assert!(
+            !got.contains(&std::path::PathBuf::from("/work/c.env")),
+            "deletion must be skipped: {got:?}"
+        );
         assert_eq!(got.len(), 3, "exactly the three written files: {got:?}");
     }
 
@@ -1097,19 +1116,16 @@ mod tests {
             ("TOKENIZER", "gpt2"),
             ("TOKEN_BUDGET", "4096"),
             ("SECRET_SCAN_ENABLED", "true"),
-            ("API_KEY_ENABLED", "FALSE"),          // stop-word, case-insensitively
-            ("SESSION_TOKEN_TTL", "3600000000"),   // long but purely digits
-            ("TOKEN_HEADER", "X-Auth Token"),      // whitespace: prose, not a token
-            ("API_KEY", ""),                       // nothing to store
+            ("API_KEY_ENABLED", "FALSE"), // stop-word, case-insensitively
+            ("SESSION_TOKEN_TTL", "3600000000"), // long but purely digits
+            ("TOKEN_HEADER", "X-Auth Token"), // whitespace: prose, not a token
+            ("API_KEY", ""),              // nothing to store
             // No name signal, however credential-shaped the value looks.
             ("PORT", "8080"),
             ("MONKEY", "banana"),
             ("HOMEPAGE_URL", "https://example.com/some/long/path"),
         ] {
-            assert!(
-                !is_secret_assignment(name, value),
-                "{name}={value:?} must NOT be redacted"
-            );
+            assert!(!is_secret_assignment(name, value), "{name}={value:?} must NOT be redacted");
         }
 
         for (name, value) in [
@@ -1126,10 +1142,7 @@ mod tests {
             // floor and is still unmistakably an OpenAI key.
             ("OPENAI_TOKEN", "sk-abc"),
         ] {
-            assert!(
-                is_secret_assignment(name, value),
-                "{name}={value:?} MUST be redacted"
-            );
+            assert!(is_secret_assignment(name, value), "{name}={value:?} MUST be redacted");
         }
     }
 
@@ -1228,10 +1241,9 @@ mod tests {
     #[test]
     fn an_unknown_name_keeps_its_placeholder_and_is_reported_once() {
         let text = "A={{ws:secret:A}}\nB={{ws:secret:GONE}}\nC={{ws:secret:GONE}}\n";
-        let got = resolve_placeholders(text, |n| {
-            Ok(if n == "A" { Some("v".to_string()) } else { None })
-        })
-        .unwrap();
+        let got =
+            resolve_placeholders(text, |n| Ok(if n == "A" { Some("v".to_string()) } else { None }))
+                .unwrap();
         assert_eq!(got.text, "A=v\nB={{ws:secret:GONE}}\nC={{ws:secret:GONE}}\n");
         assert_eq!(got.resolved, 1);
         assert_eq!(got.missing, vec!["GONE".to_string()]);
@@ -1434,11 +1446,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let nb = dir.join("notebook.a.md");
         std::fs::write(&nb, "# Notebook\n").unwrap();
-        std::process::Command::new("touch")
-            .args(["-t", "200001010000"])
-            .arg(&nb)
-            .status()
-            .unwrap();
+        std::process::Command::new("touch").args(["-t", "200001010000"]).arg(&nb).status().unwrap();
     }
 
     /// A workspace nobody has written a notebook in has nothing to be reminded

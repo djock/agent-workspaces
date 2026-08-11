@@ -54,13 +54,23 @@ fn sc(env: &Env) -> assert_cmd::Command {
 fn set_from_stdin_get_list_rm() {
     let env = Env::new();
     // set prints ONLY the confirmation — never the value (security invariant).
-    sc(&env).args(["-secrets", "set", "API_KEY"]).write_stdin("s3cr3t\n").assert().success()
+    sc(&env)
+        .args(["-secrets", "set", "API_KEY"])
+        .write_stdin("s3cr3t\n")
+        .assert()
+        .success()
         .stdout(predicates::str::diff("stored API_KEY\n"));
-    sc(&env).args(["-secrets", "get", "API_KEY"]).assert().success()
+    sc(&env)
+        .args(["-secrets", "get", "API_KEY"])
+        .assert()
+        .success()
         .stdout(predicates::str::diff("s3cr3t\n"));
-    sc(&env).args(["-secrets", "list"]).assert().success()
+    sc(&env)
+        .args(["-secrets", "list"])
+        .assert()
+        .success()
         .stdout(predicates::str::contains("API_KEY"))
-        .stdout(predicates::str::contains("s3cr3t").not());  // list never shows values
+        .stdout(predicates::str::contains("s3cr3t").not()); // list never shows values
     sc(&env).args(["-secrets", "rm", "API_KEY"]).assert().success();
     sc(&env).args(["-secrets", "get", "API_KEY"]).assert().failure(); // absent
 }
@@ -69,9 +79,15 @@ fn set_from_stdin_get_list_rm() {
 fn export_and_backend() {
     let env = Env::new();
     sc(&env).args(["-secrets", "set", "TOKEN"]).write_stdin("abc").assert().success();
-    sc(&env).args(["-secrets", "export"]).assert().success()
+    sc(&env)
+        .args(["-secrets", "export"])
+        .assert()
+        .success()
         .stdout(predicates::str::contains("export TOKEN='abc'"));
-    sc(&env).args(["-secrets", "backend"]).assert().success()
+    sc(&env)
+        .args(["-secrets", "backend"])
+        .assert()
+        .success()
         .stdout(predicates::str::contains("file"));
 }
 
@@ -124,11 +140,13 @@ fn purge_refuses_without_tty() {
     let env = Env::new();
     sc(&env).args(["-secrets", "set", "K"]).write_stdin("v").assert().success();
     // assert_cmd runs with non-TTY stdin → purge must refuse (never silently wipe).
-    sc(&env).args(["-secrets", "purge"]).assert().failure()
+    sc(&env)
+        .args(["-secrets", "purge"])
+        .assert()
+        .failure()
         .stderr(predicates::str::contains("without a TTY"));
     // the secret survived the refused purge
-    sc(&env).args(["-secrets", "get", "K"]).assert().success()
-        .stdout(predicates::str::diff("v\n"));
+    sc(&env).args(["-secrets", "get", "K"]).assert().success().stdout(predicates::str::diff("v\n"));
 }
 
 /// The keyring backend must survive process exit.
@@ -189,7 +207,10 @@ fn help_lists_subcommands_without_a_workspace_or_password() {
             .stdout(predicates::str::contains("restore <file>"));
     }
     // An unknown subcommand still fails, but now says what the options are.
-    sc(&env).args(["-secrets", "frobnicate"]).assert().failure()
+    sc(&env)
+        .args(["-secrets", "frobnicate"])
+        .assert()
+        .failure()
         .stderr(predicates::str::contains("unknown -secrets subcommand: frobnicate"))
         .stderr(predicates::str::contains("usage: ws -secrets"));
 }
@@ -214,13 +235,19 @@ fn a_listed_but_unresolvable_name_reports_data_loss_not_a_typo() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("sw.keyring-index"), "GHOST\n").unwrap();
 
-    kc(&env, "sw").args(["-secrets", "get", "GHOST"]).assert().failure()
+    kc(&env, "sw")
+        .args(["-secrets", "get", "GHOST"])
+        .assert()
+        .failure()
         .stderr(predicates::str::contains("value is missing"))
         .stderr(predicates::str::contains("cannot be recovered"))
         .stderr(predicates::str::contains("ws -secrets set GHOST"));
 
     // A name that was never listed keeps the plain message.
-    kc(&env, "sw").args(["-secrets", "get", "NEVERSTORED"]).assert().failure()
+    kc(&env, "sw")
+        .args(["-secrets", "get", "NEVERSTORED"])
+        .assert()
+        .failure()
         .stderr(predicates::str::contains("no such secret: NEVERSTORED"));
 }
 
@@ -230,8 +257,12 @@ fn secrets_outside_workspace_errors() {
     // no WS_WORKSPACE and cwd isn't a workspace (force cwd to a dir with no
     // `.ws`, since the dev repo checkout itself may have a stray `.ws/` from
     // manual testing).
-    env.cmd().env("WS_SECRETS_BACKEND","file").env("WS_SECRETS_PASSWORD","x")
+    env.cmd()
+        .env("WS_SECRETS_BACKEND", "file")
+        .env("WS_SECRETS_PASSWORD", "x")
         .current_dir(env.home.path())
-        .args(["-secrets","list"]).assert().failure()
+        .args(["-secrets", "list"])
+        .assert()
+        .failure()
         .stderr(predicates::str::contains("not in a workspace"));
 }

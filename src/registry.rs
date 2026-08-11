@@ -43,8 +43,7 @@ pub fn register(name: &str, path: &Path) -> Result<()> {
     // cannot deadlock against itself.
     crate::txn::transaction(&registry_path(), || {
         let mut r = load()?;
-        r.workspaces
-            .insert(name.to_string(), path.to_string_lossy().to_string());
+        r.workspaces.insert(name.to_string(), path.to_string_lossy().to_string());
         save(&r)
     })
 }
@@ -86,19 +85,11 @@ pub fn lookup_checked(name: &str) -> Result<Option<PathBuf>> {
 /// user is watching, so it must be able to tell "no workspaces" from "I could
 /// not read the file that lists them".
 pub fn all_checked() -> Result<Vec<(String, PathBuf)>> {
-    Ok(load()?
-        .workspaces
-        .into_iter()
-        .map(|(n, p)| (n, PathBuf::from(p)))
-        .collect())
+    Ok(load()?.workspaces.into_iter().map(|(n, p)| (n, PathBuf::from(p))).collect())
 }
 
 pub fn all() -> Vec<(String, PathBuf)> {
-    load_or_warn()
-        .workspaces
-        .into_iter()
-        .map(|(n, p)| (n, PathBuf::from(p)))
-        .collect()
+    load_or_warn().workspaces.into_iter().map(|(n, p)| (n, PathBuf::from(p))).collect()
 }
 
 #[cfg(test)]
@@ -151,8 +142,14 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "this is not valid toml {{{").unwrap();
 
-        assert!(lookup_checked("anything").is_err(), "a corrupt registry must not read as 'no such workspace'");
-        assert!(lookup("anything").is_none(), "the lenient reader still degrades for its existing callers");
+        assert!(
+            lookup_checked("anything").is_err(),
+            "a corrupt registry must not read as 'no such workspace'"
+        );
+        assert!(
+            lookup("anything").is_none(),
+            "the lenient reader still degrades for its existing callers"
+        );
     }
 
     #[test]
@@ -177,10 +174,7 @@ mod tests {
         std::fs::write(&path, "this is not valid toml {{{").unwrap();
 
         let result = register("x", std::path::Path::new("/x/x"));
-        assert!(
-            result.is_err(),
-            "register() must refuse to save over a corrupt registry.toml"
-        );
+        assert!(result.is_err(), "register() must refuse to save over a corrupt registry.toml");
 
         // The corrupt file must still be there untouched (not silently wiped).
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -192,7 +186,10 @@ mod tests {
     fn register_refuses_when_an_existing_registry_cannot_be_read() {
         use std::os::unix::fs::PermissionsExt;
         // Running as root defeats file permissions — the read would succeed.
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_default();

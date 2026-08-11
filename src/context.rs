@@ -10,10 +10,7 @@ fn render(workspace_name: &str, handoff_hint: Option<&Path>) -> String {
     let body = TEMPLATE.replace("{{name}}", workspace_name);
     match handoff_hint {
         Some(p) => {
-            let file = p
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("handoff.md");
+            let file = p.file_name().and_then(|s| s.to_str()).unwrap_or("handoff.md");
             format!(
                 "{BEGIN}\nSTART HERE: read the handoff .ws/handoffs/{file} first, then continue.\n\n{body}\n{END}\n"
             )
@@ -40,11 +37,7 @@ pub fn regenerate_with_handoff(
     crate::txn::transaction(path, || regenerate_locked(path, workspace_name, handoff_hint))
 }
 
-fn regenerate_locked(
-    path: &Path,
-    workspace_name: &str,
-    handoff_hint: Option<&Path>,
-) -> Result<()> {
+fn regenerate_locked(path: &Path, workspace_name: &str, handoff_hint: Option<&Path>) -> Result<()> {
     let block = render(workspace_name, handoff_hint);
     let new_contents = match std::fs::read_to_string(path) {
         Ok(existing) => splice(&existing, &block),
@@ -120,7 +113,10 @@ mod tests {
     fn regenerate_refuses_when_an_existing_file_cannot_be_read() {
         use std::os::unix::fs::PermissionsExt;
         // Running as root defeats file permissions — the read would succeed.
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_default();

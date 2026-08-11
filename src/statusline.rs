@@ -119,7 +119,11 @@ fn hairline_for(bg: (u8, u8, u8)) -> (u8, u8, u8) {
     let (r, g, b) = bg;
     let (ir, ig, ib) = ink_for(bg);
     // Halfway between the block and its text: present as a seam, not as a stripe.
-    ((r as u16 + ir as u16) as u8 / 2, (g as u16 + ig as u16) as u8 / 2, (b as u16 + ib as u16) as u8 / 2)
+    (
+        (r as u16 + ir as u16) as u8 / 2,
+        (g as u16 + ig as u16) as u8 / 2,
+        (b as u16 + ib as u16) as u8 / 2,
+    )
 }
 
 /// The quiet backing for a gauge with headroom: a neutral light grey, a shade
@@ -547,8 +551,9 @@ mod tests {
     fn no_workspace_means_no_prefix_at_all() {
         let bare = render(&input("Sonnet 5", 1.0, 2.0, 3.0), None, PLAIN);
         assert!(bare.starts_with("Sonnet 5"), "{bare:?}");
-        assert!(text_of(&render(&input("Sonnet 5", 1.0, 2.0, 3.0), None, BAR))
-            .starts_with(" Sonnet 5"));
+        assert!(
+            text_of(&render(&input("Sonnet 5", 1.0, 2.0, 3.0), None, BAR)).starts_with(" Sonnet 5")
+        );
     }
 
     #[test]

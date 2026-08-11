@@ -38,14 +38,8 @@ fn conversations_renders_the_lineage_chain_and_marks_the_live_session() {
     std::fs::create_dir_all(state.parent().unwrap()).unwrap();
     std::fs::write(&state, "[claude]\nsession_id = \"2222222222222222\"\n").unwrap();
 
-    let out = env
-        .cmd()
-        .args(["-conversations", "lin"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
+    let out =
+        env.cmd().args(["-conversations", "lin"]).assert().success().get_output().stdout.clone();
     let out = String::from_utf8(out).unwrap();
 
     assert!(out.contains("(first)"), "the first conversation is labelled:\n{out}");

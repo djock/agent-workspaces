@@ -82,8 +82,8 @@ pub fn load_from(path: &Path) -> Result<Vec<UserHook>> {
         None => return Ok(Vec::new()),
         Some(s) => s,
     };
-    let parsed: RawFile = toml::from_str(&raw)
-        .with_context(|| format!("{} is not valid TOML", path.display()))?;
+    let parsed: RawFile =
+        toml::from_str(&raw).with_context(|| format!("{} is not valid TOML", path.display()))?;
 
     let mut out = Vec::new();
     for (i, h) in parsed.hook.into_iter().enumerate() {
@@ -297,7 +297,8 @@ mod tests {
     #[test]
     fn a_missing_command_refuses() {
         let d = TempDir::new().unwrap();
-        let p = write_toml(d.path(), "[[hook]]\nevent = \"Stop\"\ncommand = \"/no/such/hook.sh\"\n");
+        let p =
+            write_toml(d.path(), "[[hook]]\nevent = \"Stop\"\ncommand = \"/no/such/hook.sh\"\n");
         let err = format!("{:#}", load_from(&p).unwrap_err());
         assert!(err.contains("does not exist"), "{err}");
     }

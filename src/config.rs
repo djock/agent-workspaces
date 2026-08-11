@@ -67,9 +67,7 @@ pub fn ws_config_dir() -> PathBuf {
             return PathBuf::from(dir).join("ws");
         }
     }
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("ws")
+    dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config")).join("ws")
 }
 
 pub fn config_path() -> PathBuf {
@@ -166,9 +164,7 @@ fn set_locked(path: &std::path::Path, key: &str, value: &str) -> Result<()> {
             )
         })?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
-        Err(e) => {
-            return Err(e).with_context(|| format!("failed to read {}", path.display()))
-        }
+        Err(e) => return Err(e).with_context(|| format!("failed to read {}", path.display())),
     };
     match key {
         // Validated, not stored blindly. An unknown agent used to be accepted
@@ -282,7 +278,7 @@ mod tests {
     #[test]
     fn limit_action_default_and_set() {
         assert_eq!(Config::default().limit_action, "handoff-stop");
-        assert!(list(&Config::default()).iter().any(|(k,_)| k == "limit_action"));
+        assert!(list(&Config::default()).iter().any(|(k, _)| k == "limit_action"));
     }
 
     /// C3: an empty or relative sessions_root is a foot-gun (it used to make
@@ -318,10 +314,16 @@ mod tests {
     fn set_refuses_to_clobber_an_unreadable_config() {
         use std::os::unix::fs::PermissionsExt;
         // Running as root defeats file permissions — the read would succeed.
-        let uid = std::process::Command::new("id").arg("-u").output().ok()
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string()).unwrap_or_default();
-        if uid == "0" { return; }
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if uid == "0" {
+            return;
+        }
 
         let d = tempfile::TempDir::new().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", d.path());
@@ -342,6 +344,10 @@ mod tests {
         std::fs::set_permissions(&p, perms).unwrap();
 
         assert!(result.is_err(), "set must refuse to overwrite an unreadable config");
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), original, "the original config must survive untouched");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            original,
+            "the original config must survive untouched"
+        );
     }
 }

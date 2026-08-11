@@ -50,7 +50,8 @@ pub fn gather(row: &WorkspaceRow, max_lines: usize) -> Detail {
     let notebook = newest_notebook(&ws.join("notebook"))
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|s| {
-            let lines: Vec<String> = s.lines().filter(|l| !l.trim().is_empty()).map(String::from).collect();
+            let lines: Vec<String> =
+                s.lines().filter(|l| !l.trim().is_empty()).map(String::from).collect();
             lines[lines.len().saturating_sub(max_lines)..].to_vec()
         })
         .unwrap_or_default();
@@ -86,9 +87,16 @@ mod tests {
 
     fn ws_at(path: std::path::PathBuf) -> WorkspaceRow {
         WorkspaceRow {
-            name: "alpha".into(), path, state: RowState::Ok, agent: "claude".into(),
-            live_pid: None, archived: false, tags: vec![], status: None,
-            last_activity: None, limits: None,
+            name: "alpha".into(),
+            path,
+            state: RowState::Ok,
+            agent: "claude".into(),
+            live_pid: None,
+            archived: false,
+            tags: vec![],
+            status: None,
+            last_activity: None,
+            limits: None,
         }
     }
 
@@ -102,7 +110,8 @@ mod tests {
             "# Workspace: alpha\n\n## Objective\n\nShip the TUI.\n\n## Environment\n\nmacOS\n",
         )
         .unwrap();
-        std::fs::write(ws.join("notebook/notebook.me.md"), "line one\nline two\nline three\n").unwrap();
+        std::fs::write(ws.join("notebook/notebook.me.md"), "line one\nline two\nline three\n")
+            .unwrap();
         std::fs::write(
             ws.join("timeline.jsonl"),
             "{\"ts\":\"2026-07-01T00:00:00Z\",\"kind\":\"created\",\"actor\":\"me\"}\n\
@@ -112,8 +121,11 @@ mod tests {
 
         let det = gather(&ws_at(d.path().to_path_buf()), 2);
         assert_eq!(det.objective.as_deref(), Some("Ship the TUI."));
-        assert_eq!(det.notebook, vec!["line two".to_string(), "line three".to_string()],
-                   "the tail, newest last");
+        assert_eq!(
+            det.notebook,
+            vec!["line two".to_string(), "line three".to_string()],
+            "the tail, newest last"
+        );
         assert_eq!(det.chain.len(), 2);
         assert_eq!(det.chain[1].kind, "opened", "newest last");
         assert_eq!(det.queue, Some(0));
@@ -141,6 +153,4 @@ mod tests {
         let det = gather(&ws_at(d.path().to_path_buf()), 5);
         assert_eq!(det.chain.len(), 1);
     }
-
-
 }

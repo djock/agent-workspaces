@@ -56,11 +56,7 @@ fn create_makes_a_worktree_and_registers_it() {
     assert!(wt.join(".ws/workspace.toml").is_file(), "the contract bootstrap ran");
     assert!(wt.join(".ws/base").is_file(), "it records which workspace it came from");
 
-    env.cmd()
-        .arg("-list")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("api@feat"));
+    env.cmd().arg("-list").assert().success().stdout(predicates::str::contains("api@feat"));
 }
 
 /// I1. `ws 'api@$(x)'` used to run `git worktree add` — a real branch and
@@ -87,11 +83,7 @@ fn create_with_an_invalid_feature_name_leaves_no_branch_or_worktree_behind() {
     let worktrees = git(&base, &["worktree", "list"]);
     assert_eq!(worktrees.lines().count(), 1, "only the base checkout is listed: {worktrees}");
 
-    env.cmd()
-        .arg("-list")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("$(x)").not());
+    env.cmd().arg("-list").assert().success().stdout(predicates::str::contains("$(x)").not());
 }
 
 /// Merge preflight parity: a dirty base must refuse before `git merge` ever
@@ -107,23 +99,15 @@ fn merge_refuses_when_the_base_workspace_is_dirty() {
 
     std::fs::write(base.join("dirty.txt"), "uncommitted work\n").unwrap();
 
-    env.cmd()
-        .args(["api@feat", "--merge"])
-        .assert()
-        .failure()
-        .stderr(
-            predicates::str::contains("uncommitted changes")
-                .and(predicates::str::contains(base.display().to_string())),
-        );
+    env.cmd().args(["api@feat", "--merge"]).assert().failure().stderr(
+        predicates::str::contains("uncommitted changes")
+            .and(predicates::str::contains(base.display().to_string())),
+    );
 
     // A refusal must not touch either side.
     assert!(wt.exists(), "a refused merge must not remove the worktree");
     assert!(base.join("dirty.txt").is_file(), "the base's untracked file survives");
-    env.cmd()
-        .arg("-list")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("api@feat"));
+    env.cmd().arg("-list").assert().success().stdout(predicates::str::contains("api@feat"));
 }
 
 /// The documented round trip, end to end through the binary: create, do real
@@ -155,11 +139,7 @@ fn merge_lands_feature_changes_in_base_and_removes_the_worktree() {
     assert!(!log.trim().is_empty(), "--no-ff produced a merge commit: {log}");
     assert!(!wt.exists(), "the worktree is removed");
 
-    env.cmd()
-        .arg("-list")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("api@feat").not());
+    env.cmd().arg("-list").assert().success().stdout(predicates::str::contains("api@feat").not());
 }
 
 /// The contract-version gate must cover worktree creation too: `create` writes
@@ -175,7 +155,8 @@ fn create_refuses_when_the_base_has_a_newer_contract_version() {
     let wt_toml = base.join(".ws/workspace.toml");
     let body = std::fs::read_to_string(&wt_toml).unwrap();
     assert!(body.contains("contract_version = 1"), "sanity: {body}");
-    std::fs::write(&wt_toml, body.replace("contract_version = 1", "contract_version = 999")).unwrap();
+    std::fs::write(&wt_toml, body.replace("contract_version = 1", "contract_version = 999"))
+        .unwrap();
 
     env.cmd()
         .arg("api@feat")

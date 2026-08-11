@@ -254,11 +254,7 @@ fn summarize(changelog: &str, installed: &str, cap: usize) -> Vec<(String, Strin
                 out.push((version, text));
             }
             entry.clear();
-            let version = heading
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim_matches(['[', ']']);
+            let version = heading.split_whitespace().next().unwrap_or("").trim_matches(['[', ']']);
             // `[Unreleased]` heads the file and is not a release; skip it rather
             // than letting it parse as 0.0.0 and end the scan immediately.
             if version.eq_ignore_ascii_case("unreleased") {
@@ -308,7 +304,8 @@ fn first_sentence(entry: &str) -> Option<String> {
     let end = text.find(". ").map(|i| i + 1).unwrap_or(text.len());
     let mut sentence = text[..end].trim().to_string();
     if sentence.chars().count() > SUMMARY_WIDTH {
-        sentence = sentence.chars().take(SUMMARY_WIDTH - 1).collect::<String>().trim_end().to_string();
+        sentence =
+            sentence.chars().take(SUMMARY_WIDTH - 1).collect::<String>().trim_end().to_string();
         sentence.push('…');
     }
     Some(sentence)
@@ -429,7 +426,7 @@ fn version_greater(a: &str, b: &str) -> bool {
     }
     match (ap, bp) {
         (None, None) => false,
-        (None, Some(_)) => true,  // release beats its own pre-release
+        (None, Some(_)) => true, // release beats its own pre-release
         (Some(_), None) => false,
         (Some(x), Some(y)) => x > y,
     }
@@ -438,9 +435,7 @@ fn version_greater(a: &str, b: &str) -> bool {
 fn latest_tag(repository: &str) -> Result<String> {
     let output = run_gh(
         repository,
-        &[
-            "release", "view", "--repo", repository, "--json", "tagName", "--jq", ".tagName",
-        ],
+        &["release", "view", "--repo", repository, "--json", "tagName", "--jq", ".tagName"],
     )
     .context("cannot read the latest GitHub release; run `gh auth login` and try again")?;
     let tag = output.trim();
@@ -452,10 +447,8 @@ fn latest_tag(repository: &str) -> Result<String> {
 
 fn run_gh(_repository: &str, args: &[&str]) -> Result<String> {
     let gh = std::env::var("WS_GH_BIN").unwrap_or_else(|_| "gh".to_string());
-    let output = Command::new(&gh)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run `{gh}`"))?;
+    let output =
+        Command::new(&gh).args(args).output().with_context(|| format!("failed to run `{gh}`"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("`gh {}` failed: {}", args.join(" "), stderr.trim());
@@ -467,9 +460,7 @@ fn validate_version(version: &str) -> Result<()> {
     let core = version.split_once('-').map_or(version, |(v, _)| v);
     let parts: Vec<&str> = core.split('.').collect();
     if parts.len() != 3
-        || parts
-            .iter()
-            .any(|part| part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()))
+        || parts.iter().any(|part| part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()))
     {
         bail!("release tag has an unsupported version: {version}");
     }
@@ -549,7 +540,8 @@ mod tests {
     fn a_headline_is_one_plain_sentence() {
         let notes = summarize(CHANGELOG, "0.4.0", 5);
         assert_eq!(notes[0].1, "Update notice.");
-        let notes = summarize("## [1.0.0]\n\n- One `wrapped`\n  bullet, no full stop\n", "0.1.0", 5);
+        let notes =
+            summarize("## [1.0.0]\n\n- One `wrapped`\n  bullet, no full stop\n", "0.1.0", 5);
         assert_eq!(notes[0].1, "One wrapped bullet, no full stop");
     }
 
@@ -580,7 +572,6 @@ mod tests {
         assert_eq!(strip_markdown("**bold** and `code`"), "bold and code");
         assert_eq!(strip_markdown("see [the docs](https://x.dev/y) now"), "see the docs now");
     }
-
 
     #[test]
     fn newer_releases_compare_greater() {

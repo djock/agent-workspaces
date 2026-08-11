@@ -70,7 +70,9 @@ mod tests {
 
     #[test]
     fn parses_known_fields_and_defaults() {
-        let h = parse(r#"{"source":"startup","cwd":"/x","tool_name":"Bash","tool_input":{"command":"ls -la"}}"#);
+        let h = parse(
+            r#"{"source":"startup","cwd":"/x","tool_name":"Bash","tool_input":{"command":"ls -la"}}"#,
+        );
         assert_eq!(h.source, "startup");
         assert_eq!(h.cwd, "/x");
         assert_eq!(h.tool_name, "Bash");

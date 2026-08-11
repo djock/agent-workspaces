@@ -10,8 +10,8 @@ fn list_reports_a_corrupt_workspace_instead_of_hiding_it() {
     e.cmd().args(["-adopt", "broken"]).current_dir(&ws).assert().success();
 
     let out = e.cmd().arg("-list").output().unwrap();
-    let text = String::from_utf8_lossy(&out.stdout).to_string()
-        + &String::from_utf8_lossy(&out.stderr);
+    let text =
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
     assert!(text.contains("broken"), "the workspace is still listed: {text}");
     assert!(text.contains("corrupt"), "and its state is reported: {text}");
 }
@@ -79,8 +79,8 @@ fn pick_emits_no_terminal_control_sequences_without_a_tty() {
     e.cmd().args(["-adopt", "proj"]).current_dir(&ws).assert().success();
 
     let out = e.cmd().arg("-pick").output().unwrap();
-    let all = String::from_utf8_lossy(&out.stdout).to_string()
-        + &String::from_utf8_lossy(&out.stderr);
+    let all =
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
     for seq in ["\x1b[?1049h", "\x1b[2J", "\x1b[7m"] {
         assert!(!all.contains(seq), "must not emit {seq:?}: {all:?}");
     }

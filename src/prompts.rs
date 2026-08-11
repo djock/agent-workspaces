@@ -30,10 +30,7 @@ pub fn install_for(dir: &std::path::Path, filename_of: impl Fn(&str) -> String) 
 }
 
 /// Remove only the prompt files whose names are owned by ws.
-pub fn uninstall_for(
-    dir: &std::path::Path,
-    filename_of: impl Fn(&str) -> String,
-) -> Result<usize> {
+pub fn uninstall_for(dir: &std::path::Path, filename_of: impl Fn(&str) -> String) -> Result<usize> {
     let mut removed = 0;
     for (name, _) in PROMPTS {
         let base = name.strip_suffix(".md").unwrap_or(name);
@@ -67,7 +64,9 @@ mod tests {
         }
         // namespaced under commands/ws (so /ws:summary, never clobbering cs's /summary)
         assert!(commands_dir().ends_with("commands/ws"));
-        assert!(std::fs::read_to_string(commands_dir().join("rotate.md")).unwrap().contains("handoff"));
+        assert!(std::fs::read_to_string(commands_dir().join("rotate.md"))
+            .unwrap()
+            .contains("handoff"));
     }
 
     #[test]
