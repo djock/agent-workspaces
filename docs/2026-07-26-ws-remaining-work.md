@@ -1,5 +1,14 @@
 # ws — what remains to be implemented
 
+> **Historical. Superseded as of v0.6.5 (2026-08-11).** This is the ledger for
+> shipping *v0.2.0*; everything in §2 happened long ago, and the version
+> numbers, commit hashes and test counts below are all pre-v0.2.0. It is kept
+> because the independent audit cites it, including by line number — read it as
+> a record of what was planned in July, never as a to-do list.
+>
+> For what is actually outstanding now, see
+> [`going-public-checklist.md`](going-public-checklist.md).
+
 **Written:** 2026-07-26
 **Branch:** `phase8-orchestration` (10 commits off `main` @ `d0060cd`)
 **HEAD:** `79296b6`

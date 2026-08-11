@@ -97,9 +97,21 @@ git log --all --name-only --format= | sort -u | grep -Ei '\.(key|pem|p12|env)$|m
 A hit in history is not fixed by deleting the file in a new commit — the blob is
 still reachable. Rotate the credential; rewriting history is a last resort.
 
-Also worth a read before it is public: `AGENTS.md` is a committed file that `ws`
-splices a managed block into on every Codex launch, so whatever is in that block
-becomes public too.
+Also worth a check before it is public: on every launch `ws` splices a managed
+block into the workspace root's context file — `CLAUDE.md` for Claude,
+`AGENTS.md` for Codex (`agents::Agent::context_file`, written at
+`commands.rs`'s `ensure_context`). This repository is developed from inside a
+`ws` workspace whose root *is* the repository, so those files can appear at the
+repository root, untracked and unignored, and be committed by accident along
+with whatever the managed block contains.
+
+Neither file exists in the tree today. Confirm that still holds, since the
+window is one `git add -A` wide:
+
+```sh
+git ls-files | grep -E '^(CLAUDE|AGENTS)\.md$'   # must print nothing
+ls CLAUDE.md AGENTS.md 2>/dev/null               # and so must this
+```
 
 Then:
 
