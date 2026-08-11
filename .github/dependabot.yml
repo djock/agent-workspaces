@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Cargo dependencies. Grouped into one PR per week rather than one per crate:
+  # this tree resolves 255 packages, and a PR per patch bump would bury the
+  # updates that matter (aes-gcm, argon2, keyring) under churn nobody reads.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo:
+        patterns:
+          - "*"
+
+  # The workflows pin actions by major version, so these do move on their own —
+  # but only for tags the publisher chooses to move. CI already carries a
+  # deprecation warning for the Node 20 runtime in actions/checkout@v4 and
+  # actions/upload-artifact@v4, which is exactly the kind of thing this surfaces
+  # as a reviewable PR instead of an annotation nobody reads.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly

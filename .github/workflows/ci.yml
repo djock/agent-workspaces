@@ -36,12 +36,54 @@ jobs:
       - name: Install tmux (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y tmux
+      # The style is pinned in rustfmt.toml to what this codebase already
+      # writes (max_width 100 — the 99th-percentile line was 99 columns —
+      # with the small-function heuristics off). Default rustfmt disagreed
+      # with 706 places, almost all of it the narrow 60-column call-width
+      # heuristic breaking up deliberately dense chains.
+      - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-targets --all-features
       - run: cargo build --release --locked
 
-  # NOTE: `cargo fmt --check` is deliberately NOT a gate yet. Repo-wide rustfmt
-  # currently fails, so adding it here would turn CI red on every commit for
-  # reasons unrelated to the change under review. Fixing the formatting is one
-  # mechanical commit; the gate belongs in that same commit, not before it.
-  # `rustfmt` stays installed above so that commit needs no workflow edit.
+  # The target releases actually ship. Without this, musl is first compiled by
+  # `release.yml` — after the tag exists, and tags are one-way. That is not
+  # hypothetical: v0.6.1 and v0.6.2 are both burned tags with no artifacts,
+  # the first because `sync-secret-service` pulls `libdbus-sys` (needs system
+  # headers absent from the musl runner), the second because a headless runner
+  # has no Secret Service for the keyring tests to talk to at all.
+  #
+  # `check`, not `build`: this is a compile-and-link-metadata gate meant to
+  # cost seconds on every push. `release.yml` still does the real build.
+  musl:
+    name: check x86_64-unknown-linux-musl
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl
+      - run: cargo check --all-targets --all-features --target x86_64-unknown-linux-musl
+
+  # Advisory scanning for a tool that stores credentials. 255 packages resolve
+  # into the lockfile, including aes-gcm, argon2 and keyring, and nothing was
+  # watching any of them.
+  #
+  # Not `fail-fast` on the whole workflow: an advisory landing in a transitive
+  # dependency is real information, but it is not a reason to block an
+  # unrelated change from merging, so this job reports rather than gates.
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: audit
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
