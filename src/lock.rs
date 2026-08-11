@@ -97,20 +97,61 @@ fn lock_body() -> String {
     )
 }
 
-/// Create the lock file only if it does not already exist, atomically.
+/// Create the lock file only if it does not already exist, atomically, and
+/// with its body already in it.
 ///
-/// `create_new` maps to `O_CREAT|O_EXCL`, so when two processes race the kernel
-/// picks exactly one winner and the loser gets `AlreadyExists`. This is the
-/// whole mechanism — the previous `exists()`-then-`write` sequence had a window
-/// between the two calls in which both racers saw "no lock" and both wrote,
-/// leaving two processes each believing it held the workspace exclusively.
+/// Two properties, and the second is as load-bearing as the first:
+///
+/// 1. **Exclusive.** The claim is a single syscall that fails if the path
+///    exists, so when two processes race the kernel picks exactly one winner.
+///    An `exists()`-then-`write` sequence has a window in which both racers see
+///    "no lock" and both write.
+/// 2. **Never observable empty.** `create_new` + `write_all` satisfies (1) but
+///    not (2): between the two calls the lock file exists with zero bytes. An
+///    empty file is valid TOML with no `pid`, which `acquire` step 2 reads as a
+///    stale lock and reclaims — so a loser deleted the winner's lock and took
+///    the workspace. Sixteen racing threads produced up to nine simultaneous
+///    "holders" that way.
+///
+/// Writing the body into a private temp file and then `hard_link`ing it into
+/// place gets both: `link` fails with `EEXIST` if the target exists, and the
+/// name it publishes already has the content behind it. There is no moment at
+/// which the lock file exists but is empty.
+///
+/// `rename` is the wrong primitive here despite being the codebase's usual
+/// atomic-publish tool (`crate::atomic`) — it *replaces* the destination, which
+/// is exactly the "steal a live lock" behaviour this function exists to
+/// prevent.
 fn create_exclusive(lock_file: &Path, body: &str) -> std::io::Result<()> {
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(lock_file)?;
-    f.write_all(body.as_bytes())
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Unique per claim, not merely per process: `crate::atomic`'s pid-suffixed
+    // temp name is enough for whole-file writers, but threads within one
+    // process race here (the test does exactly that), and a shared temp name
+    // would let two claimants scribble over each other's body before either
+    // linked it.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let tmp = lock_file.with_extension(format!(
+        "tmp.{}.{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+
+    let write = || -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        f.write_all(body.as_bytes())
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+
+    let linked = std::fs::hard_link(&tmp, lock_file);
+    // The temp name has served its purpose either way: on success the inode
+    // lives on under the lock's name, on failure it must not be left behind.
+    let _ = std::fs::remove_file(&tmp);
+    linked
 }
 
 pub fn acquire(lock_file: &Path, force: bool) -> Result<LockGuard> {
@@ -285,43 +326,63 @@ mod tests {
     /// change that lets two callers through under contention for some reason
     /// unrelated to atomicity — but the proof of the fix itself is
     /// `create_exclusive_refuses_an_existing_file_and_leaves_it_intact` above.
+    ///
+    /// **It did catch one**, at roughly one run in three: when `create_exclusive`
+    /// created the file and wrote the body as two steps, the winner's lock was
+    /// observable *empty*. An empty file parses as a valid TOML table with no
+    /// `pid`, which step 2 classifies as stale — so a loser deleted the winner's
+    /// lock and took it. The pid-sharing argument above is what makes this the
+    /// one window threads can still expose: it does not depend on comparing
+    /// pids, only on reading the file mid-claim.
+    ///
+    /// Hence the repetition: one round caught it ~37% of the time, which reads
+    /// as flakiness. Rounds make a regression a certainty rather than a rumour.
     #[test]
     fn exactly_one_of_many_simultaneous_acquirers_wins() {
         use std::sync::{Arc, Barrier};
 
+        const N: usize = 16;
+        const ROUNDS: usize = 24;
+
         let d = TempDir::new().unwrap();
-        let lf = d.path().join("lock");
         // Ensure the parent exists up front so the race is over the lock file
         // itself and not over create_dir_all.
         std::fs::create_dir_all(d.path()).unwrap();
 
-        const N: usize = 16;
-        let barrier = Arc::new(Barrier::new(N));
-        let mut handles = Vec::with_capacity(N);
-        for _ in 0..N {
-            let lf = lf.clone();
-            let barrier = Arc::clone(&barrier);
-            handles.push(std::thread::spawn(move || {
-                // Release all threads at the same instant to widen the window.
-                barrier.wait();
-                acquire(&lf, false)
-            }));
-        }
+        for round in 0..ROUNDS {
+            // A fresh path per round: a surviving guard from the previous round
+            // would otherwise decide the next one.
+            let lf = d.path().join(format!("lock{round}"));
+            let barrier = Arc::new(Barrier::new(N));
+            let mut handles = Vec::with_capacity(N);
+            for _ in 0..N {
+                let lf = lf.clone();
+                let barrier = Arc::clone(&barrier);
+                handles.push(std::thread::spawn(move || {
+                    // Release all threads at the same instant to widen the window.
+                    barrier.wait();
+                    acquire(&lf, false)
+                }));
+            }
 
-        // Hold every guard until after counting: dropping a winner's guard
-        // deletes the file and would let a later caller win too, masking a
-        // double-acquire.
-        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        let winners = results.iter().filter(|r| r.is_ok()).count();
-        assert_eq!(winners, 1, "exactly one acquirer may hold the lock, got {winners}");
+            // Hold every guard until after counting: dropping a winner's guard
+            // deletes the file and would let a later caller win too, masking a
+            // double-acquire.
+            let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            let winners = results.iter().filter(|r| r.is_ok()).count();
+            assert_eq!(
+                winners, 1,
+                "exactly one acquirer may hold the lock, got {winners} in round {round}"
+            );
 
-        for r in &results {
-            if let Err(e) = r {
-                let msg = e.to_string();
-                assert!(
-                    msg.contains("in use") || msg.contains("claimed this workspace"),
-                    "a loser must say why it lost, got: {msg}"
-                );
+            for r in &results {
+                if let Err(e) = r {
+                    let msg = e.to_string();
+                    assert!(
+                        msg.contains("in use") || msg.contains("claimed this workspace"),
+                        "a loser must say why it lost, got: {msg}"
+                    );
+                }
             }
         }
     }
