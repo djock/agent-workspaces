@@ -75,6 +75,50 @@ fn export_and_backend() {
         .stdout(predicates::str::contains("file"));
 }
 
+/// `backend` reports configuration; it decrypts nothing, so it must never
+/// authenticate.
+///
+/// It used to, because `secrets()` opened the store before dispatching and
+/// `open` builds the `FileStore` password eagerly — so asking *which* backend
+/// was configured prompted for the file backend's master password, and with no
+/// terminal to prompt on it died with a raw `Device not configured (os error
+/// 6)` from rpassword's `/dev/tty`.
+#[test]
+fn backend_reports_the_file_backend_without_a_password() {
+    let env = Env::new();
+    env.cmd()
+        .env("WS_SECRETS_BACKEND", "file")
+        .env("WS_WORKSPACE", "sw")
+        .env_remove("WS_SECRETS_PASSWORD")
+        .args(["-secrets", "backend"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("file\n"));
+}
+
+/// A subcommand that genuinely needs the password, with no password and no
+/// terminal, must name the way out.
+///
+/// The actionable message already existed for the redaction hook; the CLI
+/// reached rpassword instead and surfaced ENXIO, from which
+/// `$WS_SECRETS_PASSWORD` is undiscoverable. Note this test only stays
+/// hang-free because the refusal happens *before* rpassword: `cargo test` from
+/// a terminal gives its children a controlling terminal, so a version that
+/// still called `prompt_password` would block here rather than fail.
+#[test]
+fn a_password_needing_subcommand_names_the_env_var_when_it_cannot_prompt() {
+    let env = Env::new();
+    env.cmd()
+        .env("WS_SECRETS_BACKEND", "file")
+        .env("WS_WORKSPACE", "sw")
+        .env_remove("WS_SECRETS_PASSWORD")
+        .args(["-secrets", "list"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("$WS_SECRETS_PASSWORD"))
+        .stderr(predicates::str::contains("Device not configured").not());
+}
+
 #[test]
 fn purge_refuses_without_tty() {
     let env = Env::new();

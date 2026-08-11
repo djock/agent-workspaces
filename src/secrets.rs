@@ -429,6 +429,50 @@ pub fn would_prompt_for_password() -> bool {
     }
 }
 
+/// Which backend `open` would select, without opening anything.
+///
+/// `backend_name` on a live store cannot answer this: building the store is
+/// exactly the step that demands the master password, so reporting the
+/// configured backend used to authenticate for a question that decrypts
+/// nothing. Resolving `auto` still probes the vault — that probe is what the
+/// answer *means* — but it never prompts.
+pub fn selected_backend_name() -> &'static str {
+    match selected_backend().as_str() {
+        "keyring" => "keyring",
+        "file" => "file",
+        _ if KeyringStore::available() => "keyring",
+        _ => "file",
+    }
+}
+
+/// Can `file_password` actually reach a human?
+///
+/// This mirrors what rpassword is about to do rather than guessing from stdin:
+/// on unix it reads `/dev/tty`, so `ws -secrets set K < value` piped from a
+/// terminal must still be allowed to prompt even though stdin is not a tty.
+/// With no controlling terminal that open fails with ENXIO — the error users
+/// were seeing raw — so asking first turns an errno into a sentence.
+pub fn can_prompt() -> bool {
+    #[cfg(unix)]
+    {
+        std::fs::OpenOptions::new().read(true).open("/dev/tty").is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        use std::io::IsTerminal;
+        std::io::stderr().is_terminal()
+    }
+}
+
+/// Why the CLI could not obtain the master password, and the way out.
+///
+/// The redaction hook (`internal.rs`) deliberately keeps its own wording: there
+/// the refusal is a policy — a hook must not block a turn on a prompt even when
+/// it inherited a terminal — while here it is an observation about this
+/// process. Both name `$WS_SECRETS_PASSWORD`, which is the part that matters.
+pub const NO_PASSWORD_HELP: &str =
+    "$WS_SECRETS_PASSWORD is unset and there is no terminal to prompt on";
+
 pub fn open(ws_name: &str) -> Result<Box<dyn SecretStore>> {
     match selected_backend().as_str() {
         "keyring" => Ok(Box::new(KeyringStore::new(ws_name))),

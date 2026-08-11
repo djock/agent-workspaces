@@ -22,7 +22,22 @@ pub fn secrets(cmd: SecretsCmd) -> Result<()> {
         println!("{}", crate::cli::SECRETS_USAGE);
         return Ok(());
     }
+    // Also before `open`: reporting the configured backend decrypts nothing, so
+    // it must not authenticate. It used to, because opening the store is what
+    // demands the password — `ws -secrets backend` on the file backend died on
+    // rpassword's `/dev/tty` in every non-interactive context.
+    if matches!(cmd, SecretsCmd::Backend) {
+        println!("{}", secrets::selected_backend_name());
+        return Ok(());
+    }
     let ws = secrets::workspace_name()?;
+    // Everything below needs the store, and on the file backend opening it
+    // prompts. Where there is no terminal to prompt on, say which env var
+    // supplies the password instead of letting the `/dev/tty` open surface as
+    // `Device not configured (os error 6)` — an errno nobody can act on.
+    if secrets::would_prompt_for_password() && !secrets::can_prompt() {
+        anyhow::bail!("no master password: {}", secrets::NO_PASSWORD_HELP);
+    }
     let store = secrets::open(&ws)?;
     match cmd {
         SecretsCmd::Set(name) => {
