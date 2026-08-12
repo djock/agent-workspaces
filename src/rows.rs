@@ -46,10 +46,33 @@ pub fn workspace_toml(path: &Path) -> PathBuf {
     path.join(".ws/workspace.toml")
 }
 
+/// Where `launch` records that a workspace was opened. The **mtime** is what
+/// counts; the ISO timestamp inside is there so a human reading the file gets
+/// an answer too.
+pub fn opened_stamp(ws_dir: &Path) -> PathBuf {
+    ws_dir.join("local/last-opened")
+}
+
+/// Record "opened now". Best-effort: a launch must not fail over the file that
+/// only decides list order, and a workspace on a read-only checkout still opens.
+pub fn stamp_opened(ws_dir: &Path) {
+    let path = opened_stamp(ws_dir);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, format!("{}\n", crate::time::now_iso()));
+}
+
 /// Newest mtime (epoch seconds) among the workspace documents worth calling
 /// "activity". `.ws/local/` is excluded on purpose: the bash audit log and the
 /// statusline's limits.json are written constantly and would make every
 /// workspace look equally fresh.
+///
+/// `local/last-opened` is the one exception, and it is why this answers "last
+/// used" rather than only "last written to". Opening a workspace is using it,
+/// and a session where the agent never appended to a notebook used to leave no
+/// trace at all — so the workspace you were in ten minutes ago could sort below
+/// one you last touched in June.
 fn last_activity(ws_dir: &Path) -> Option<i64> {
     let mut newest: Option<i64> = None;
     let mut consider = |p: PathBuf| {
@@ -65,6 +88,7 @@ fn last_activity(ws_dir: &Path) -> Option<i64> {
     };
     consider(ws_dir.join("README.md"));
     consider(ws_dir.join("timeline.jsonl"));
+    consider(opened_stamp(ws_dir));
     for sub in ["notebook", "handoffs"] {
         if let Ok(rd) = std::fs::read_dir(ws_dir.join(sub)) {
             for e in rd.flatten() {
@@ -130,6 +154,13 @@ pub fn list_all(opts: &ListOpts) -> Result<Listing> {
             state,
         });
     }
+    // Most recently used first — the registry is a BTreeMap, so without this
+    // both `-list` and the picker were ordered alphabetically, which puts the
+    // workspace you were in a minute ago wherever its name happens to fall.
+    // `None` (never touched, or a missing/unreadable `.ws/`) sorts last because
+    // `Option::cmp` ranks it below every `Some`, and the name breaks ties so the
+    // order is stable between runs.
+    out.sort_by(|a, b| b.last_activity.cmp(&a.last_activity).then_with(|| a.name.cmp(&b.name)));
     Ok(Listing { rows: out, total })
 }
 
@@ -251,6 +282,64 @@ mod tests {
         std::fs::write(&rp, "not toml {{{").unwrap();
 
         assert!(list_all(&ListOpts::default()).is_err());
+    }
+
+    /// Give a workspace one activity source, aged `secs_ago`, so ordering is
+    /// assertable without waiting on the wall clock.
+    fn backdate(root: &std::path::Path, secs_ago: u64) {
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago);
+        let path = root.join(".ws/README.md");
+        std::fs::write(&path, "# ws\n").unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(when).unwrap();
+    }
+
+    #[test]
+    fn rows_come_back_most_recently_used_first() {
+        let _g = lock_env();
+        let d = TempDir::new().unwrap();
+        iso(&d);
+        // Named so alphabetical order is the exact reverse of recency: if the
+        // sort silently went away, this test would still pass without this.
+        let a = make_ws(d.path(), "aaa-stale", "");
+        let z = make_ws(d.path(), "zzz-fresh", "");
+        backdate(&a, 60 * 60 * 24 * 30);
+        backdate(&z, 60);
+
+        let rows = list_all(&ListOpts::default()).unwrap().rows;
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["zzz-fresh", "aaa-stale"], "most recently used first");
+    }
+
+    #[test]
+    fn opening_a_workspace_lifts_it_to_the_top_without_writing_a_notebook() {
+        let _g = lock_env();
+        let d = TempDir::new().unwrap();
+        iso(&d);
+        let old = make_ws(d.path(), "opened-just-now", "");
+        let recent = make_ws(d.path(), "written-yesterday", "");
+        backdate(&old, 60 * 60 * 24 * 30);
+        backdate(&recent, 60 * 60 * 24);
+
+        // The launch stamp is the only thing that changes — no document is
+        // touched, which is exactly the session that used to leave no trace.
+        stamp_opened(&old.join(".ws"));
+
+        let rows = list_all(&ListOpts::default()).unwrap().rows;
+        assert_eq!(rows[0].name, "opened-just-now", "opening a workspace counts as using it");
+    }
+
+    #[test]
+    fn a_workspace_with_no_activity_at_all_sorts_last() {
+        let _g = lock_env();
+        let d = TempDir::new().unwrap();
+        iso(&d);
+        let touched = make_ws(d.path(), "aaa-touched", "");
+        backdate(&touched, 60 * 60 * 24 * 365);
+        // Registered, no `.ws/` on disk: nothing to take an mtime from.
+        crate::registry::register("zzz-ghost", &d.path().join("zzz-ghost")).unwrap();
+
+        let rows = list_all(&ListOpts::default()).unwrap().rows;
+        assert_eq!(rows.last().unwrap().name, "zzz-ghost", "unknown age sorts below any known age");
     }
 
     #[test]

@@ -222,7 +222,7 @@ Useful commands:
 ```text
 ws                             Pick a workspace from a list (see the keys below)
 ws -pick                       Same, explicitly
-ws -list                       List active workspaces
+ws -list                       List active workspaces, most recently used first
 ws <name> -claude              Open with Claude Code
 ws <name> -codex               Open with Codex
 ws <name> --fresh              Start a fresh agent session

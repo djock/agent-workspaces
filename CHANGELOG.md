@@ -6,6 +6,24 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-12
+
+### Changed
+
+- The picker and `ws -list` order workspaces by when they were last used, most
+  recent first, instead of alphabetically by name. The registry is a `BTreeMap`,
+  so the old order was an accident of the storage rather than a decision, and it
+  put the workspace you were in a minute ago wherever its name happened to fall.
+  Ties fall back to the name, so the order is stable between runs, and a
+  workspace whose age cannot be read (never touched, or a missing `.ws/`) sorts
+  last rather than first.
+- Opening a workspace now counts as using it: `launch` stamps
+  `.ws/local/last-opened`, which the activity column reads alongside `README.md`,
+  the timeline, notebooks and handoffs. Without it a session where the agent
+  wrote nothing left no trace at all, and the workspace you had open yesterday
+  ranked below one you last edited in June. The file is under `local/`, which
+  `.ws/.gitignore` already excludes, so this adds no per-launch git churn.
+
 ## [0.6.5] - 2026-08-11
 
 ### Added
@@ -544,7 +562,11 @@ Secret Service — so neither produced artifacts.
 - Provide an interactive terminal dashboard.
 - Add installation, update, uninstall, diagnostics, CI, and release packaging.
 
-[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/djock/agent-workspaces/compare/v0.6.5...v0.7.0
+[0.6.5]: https://github.com/djock/agent-workspaces/compare/v0.6.4...v0.6.5
+[0.6.4]: https://github.com/djock/agent-workspaces/compare/v0.6.3...v0.6.4
+[0.6.3]: https://github.com/djock/agent-workspaces/compare/v0.6.0...v0.6.3
 [0.6.0]: https://github.com/djock/agent-workspaces/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/djock/agent-workspaces/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/djock/agent-workspaces/compare/v0.3.0...v0.4.0

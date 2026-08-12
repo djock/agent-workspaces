@@ -1311,6 +1311,12 @@ pub fn launch(
         );
     }
 
+    // 4b. Stamp "opened now" so `-list` and the picker can put this workspace at
+    // the top next time. Written before the agent takes over rather than after
+    // it exits: `exec` never comes back, and a launch that ends in a crash still
+    // happened.
+    crate::rows::stamp_opened(&ws.ws_dir());
+
     // 5. Tab title + color. Workspaces created before colors existed have no
     // `color` key; give them one on first launch rather than leaving them the
     // only uncolored tabs. It is persisted, so the backfill happens once and the
