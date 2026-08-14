@@ -63,6 +63,143 @@ fn user_dirt(porcelain: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Why a feature worktree cannot be merged right now.
+///
+/// One value per refusal the merge actually performs, so the screen that
+/// *describes* readiness and the gate that *enforces* it cannot disagree — the
+/// screen would otherwise be a second implementation of the same rules, free to
+/// drift into promising a merge that then refuses, or reporting a blocker that
+/// would have gone straight through.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Blocker {
+    /// Uncommitted work in the feature worktree. Merging would strand it in a
+    /// directory the merge then deletes.
+    FeatureDirty(Vec<String>),
+    /// A merge already in progress in the base.
+    BaseMidMerge,
+    /// Uncommitted work in the base. A conflict here cannot be rolled back.
+    BaseDirty(Vec<String>),
+    /// Someone is working in one of the two workspaces.
+    Live { workspace: String, pid: u32 },
+}
+
+impl Blocker {
+    /// What the merge says when it refuses for this reason.
+    pub fn message(&self, base_display: &str, feature_display: &str) -> String {
+        match self {
+            Blocker::FeatureDirty(lines) => format!(
+                "{feature_display} has uncommitted changes — commit or discard them first:\n{}",
+                lines.join("\n")
+            ),
+            Blocker::BaseMidMerge => format!(
+                "{base_display} already has a merge in progress — finish or abort it first"
+            ),
+            Blocker::BaseDirty(lines) => format!(
+                "{base_display} has uncommitted changes — commit or discard them before merging:\n{}",
+                lines.join("\n")
+            ),
+            Blocker::Live { workspace, pid } => {
+                format!("{workspace} is in use by pid {pid} — close it before merging")
+            }
+        }
+    }
+
+    /// One line, for a listing.
+    pub fn summary(&self) -> String {
+        match self {
+            Blocker::FeatureDirty(l) => format!("{} uncommitted change(s)", l.len()),
+            Blocker::BaseMidMerge => "the base is mid-merge".to_string(),
+            Blocker::BaseDirty(l) => format!("the base has {} uncommitted change(s)", l.len()),
+            Blocker::Live { workspace, pid } => format!("{workspace} is live (pid {pid})"),
+        }
+    }
+}
+
+/// Whether a feature worktree can be merged, and what it would do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Readiness {
+    /// Commits on the feature branch that the base does not have.
+    pub ahead: usize,
+    /// The base already contains this branch: merging removes the worktree and
+    /// writes no merge commit.
+    pub already_merged: bool,
+    /// Empty means it will merge.
+    pub blockers: Vec<Blocker>,
+}
+
+impl Readiness {
+    pub fn ready(&self) -> bool {
+        self.blockers.is_empty()
+    }
+
+    /// What finishing will actually do, in one line.
+    pub fn plan(&self) -> String {
+        if !self.ready() {
+            return format!("blocked: {}", self.blockers[0].summary());
+        }
+        if self.already_merged {
+            "already merged — finishing just removes the worktree".to_string()
+        } else if self.ahead == 0 {
+            "nothing to merge — finishing just removes the worktree".to_string()
+        } else {
+            format!("merges {} commit(s) with a merge commit (--no-ff)", self.ahead)
+        }
+    }
+}
+
+/// Compute readiness for one feature worktree.
+///
+/// `feature_ws` and `base_ws` are the workspace names, used for the liveness
+/// check and for the messages; the paths are their roots.
+pub fn readiness(
+    base_path: &Path,
+    base_ws: &str,
+    feature_path: &Path,
+    feature_ws: &str,
+    branch: &str,
+) -> Result<Readiness> {
+    let mut blockers = Vec::new();
+
+    // Order matters: it is the order `merge` refuses in, so the first blocker
+    // reported is the first one a user would hit.
+    if let Some(pid) = crate::lock::live_pid_checked(&feature_path.join(".ws/local/lock"))? {
+        blockers.push(Blocker::Live { workspace: feature_ws.to_string(), pid });
+    }
+    if let Some(pid) = crate::lock::live_pid_checked(&base_path.join(".ws/local/lock"))? {
+        blockers.push(Blocker::Live { workspace: base_ws.to_string(), pid });
+    }
+    let feature_dirt = user_dirt(&crate::git::ok(feature_path, &["status", "--porcelain"])?)
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
+    if !feature_dirt.is_empty() {
+        blockers.push(Blocker::FeatureDirty(feature_dirt));
+    }
+    if mid_merge(base_path)? {
+        blockers.push(Blocker::BaseMidMerge);
+    }
+    let base_dirt = user_dirt(&crate::git::ok(base_path, &["status", "--porcelain"])?)
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
+    if !base_dirt.is_empty() {
+        blockers.push(Blocker::BaseDirty(base_dirt));
+    }
+
+    // `HEAD..branch` counts what merging would bring in. An unborn or unknown
+    // ref reads as zero rather than failing the whole listing: a worktree whose
+    // branch is gone is a broken worktree, which the caller sees as "nothing to
+    // merge" plus whatever else is wrong with it.
+    let ahead = crate::git::maybe(base_path, &["rev-list", "--count", &format!("HEAD..{branch}")])
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    let already_merged = crate::git::maybe(base_path, &["branch", "--merged", "HEAD"])
+        .map(|out| out.lines().any(|l| l.trim_start_matches('*').trim() == branch))
+        .unwrap_or(false);
+
+    Ok(Readiness { ahead, already_merged, blockers })
+}
+
 /// `git worktree add -b <branch> <path>` from `base`.
 pub fn add_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
     if path.exists() {
@@ -172,6 +309,46 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
     let path_s = path.to_string_lossy().to_string();
     crate::git::ok(base, &["worktree", "remove", &path_s])?;
     Ok(())
+}
+
+/// One feature worktree of a base, with its readiness.
+pub struct Feature {
+    pub name: String,
+    pub feature: String,
+    pub readiness: Readiness,
+}
+
+/// Every registered `<base>@*` workspace, with what merging each would do.
+///
+/// The match is anchored on the whole `base@` prefix: `myproj@wip` must not be
+/// found by a listing of `myproj@wip-2`'s base, which is the shape of collision
+/// a `starts_with` on the base name alone produces.
+pub fn features(base: &str) -> Result<Vec<Feature>> {
+    let base_path = crate::registry::lookup_checked(base)?
+        .ok_or_else(|| anyhow::anyhow!("no workspace named {base}"))?;
+    let prefix = format!("{base}@");
+    let mut out = Vec::new();
+    for (name, path) in crate::registry::all_checked()? {
+        let Some(feature) = name.strip_prefix(&prefix) else { continue };
+        let path = path.clone();
+        if feature.is_empty() {
+            continue;
+        }
+        // A registered worktree whose directory is gone is listed rather than
+        // skipped: it is exactly the state someone needs to be told about, and
+        // silently omitting it makes `-features` disagree with `-list`.
+        let readiness = match readiness(&base_path, base, &path, &name, feature) {
+            Ok(r) => r,
+            Err(e) => Readiness {
+                ahead: 0,
+                already_merged: false,
+                blockers: vec![Blocker::FeatureDirty(vec![format!("unreadable: {e:#}")])],
+            },
+        };
+        out.push(Feature { feature: feature.to_string(), name, readiness });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
 }
 
 /// Create `<base>@<feature>`: a git worktree of the base workspace's repo, with
@@ -322,20 +499,27 @@ pub fn merge(spec: &Spec) -> Result<()> {
     crate::contract::check_gate(&name, &path.join(".ws/workspace.toml"))?;
     crate::contract::check_gate(&spec.base, &base_path.join(".ws/workspace.toml"))?;
 
-    // live_pid_checked: this deletes a directory. An unreadable lock must stop
-    // us, not read as "nobody home". Takes the lock FILE, not the root.
-    if let Some(pid) = crate::lock::live_pid_checked(&path.join(".ws/local/lock"))? {
-        bail!("{name} is in use by pid {pid} — close it before merging");
-    }
-    // The BASE side needs checking too, and it did not used to be: a merge
-    // rewrites the base's working tree, so doing it under a live agent pulls
-    // files out from under whoever is editing them. Only the feature side was
-    // ever checked.
-    if let Some(pid) = crate::lock::live_pid_checked(&base_path.join(".ws/local/lock"))? {
-        bail!(
-            "{} is in use by pid {pid} — merging rewrites its working tree, so close it first",
-            spec.base
-        );
+    // Refuse through the same computation `ws <base> -features` displays, so
+    // the screen that says a merge is blocked and the merge that blocks cannot
+    // disagree — and report *every* blocker rather than the first, since fixing
+    // one only to be refused for the next is the slow way to learn there were
+    // three. `live_pid_checked` inside: this deletes a directory, so an
+    // unreadable lock must stop us rather than read as "nobody home".
+    let state = readiness(&base_path, &spec.base, &path, &name, &spec.feature)?;
+    if !state.ready() {
+        // The refusals name the *directories*, not the workspace names: what a
+        // user does next is clean or commit in one of them, and a path is what
+        // they can act on. (`Blocker::Live` carries its own workspace name,
+        // since what you act on there is the session, not the directory.)
+        let (base_display, feature_display) =
+            (base_path.display().to_string(), path.display().to_string());
+        let detail = state
+            .blockers
+            .iter()
+            .map(|b| b.message(&base_display, &feature_display))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        bail!("{name} cannot be merged yet:\n\n{detail}");
     }
 
     merge_worktree(&base_path, &path, &spec.feature)?;

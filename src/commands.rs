@@ -1778,6 +1778,47 @@ pub fn search(query: String, include_archived: bool) -> Result<()> {
 /// This is the `/btw` shape: the point is to record something and get straight
 /// back to work, so `add` never switches focus, never launches anything, and
 /// defaults to the workspace you are already in.
+/// `ws <base> -features` — the base's feature worktrees and what merging each
+/// would do.
+///
+/// Every line is computed by `worktree::readiness`, which is the same function
+/// the merge itself refuses through. A second implementation for display is how
+/// a screen ends up promising a merge that then refuses.
+pub fn features(base: String, porcelain: bool) -> Result<()> {
+    let list = crate::worktree::features(&base)?;
+    if list.is_empty() {
+        if !porcelain {
+            println!("{base} has no feature worktrees (create one with `ws {base}@<feature>`)");
+        }
+        return Ok(());
+    }
+    if porcelain {
+        // One tab-separated record per feature: name, ready, ahead, plan.
+        for f in &list {
+            println!(
+                "{}\t{}\t{}\t{}",
+                f.feature,
+                if f.readiness.ready() { "ready" } else { "blocked" },
+                f.readiness.ahead,
+                f.readiness.plan()
+            );
+        }
+        return Ok(());
+    }
+    let width = list.iter().map(|f| f.feature.len()).max().unwrap_or(0);
+    for f in &list {
+        let mark = if f.readiness.ready() { "✓" } else { "✗" };
+        println!("{mark} {:<width$}  {}", f.feature, f.readiness.plan(), width = width);
+        // Every blocker, not just the first: fixing one to be refused for the
+        // next is the slow way to find out there were three.
+        for b in f.readiness.blockers.iter().skip(1) {
+            println!("  {:<width$}  also: {}", "", b.summary(), width = width);
+        }
+    }
+    println!("\nMerge one with `ws {base}@<feature> --merge`.");
+    Ok(())
+}
+
 /// `ws -msg` — send to another workspace, or read what was sent to this one.
 pub fn msg(cmd: crate::cli::MsgCmd) -> Result<()> {
     use crate::cli::MsgCmd;

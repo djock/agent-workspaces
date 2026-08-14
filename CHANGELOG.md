@@ -8,6 +8,19 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`ws <base> -features` says which feature worktrees can merge, and why not.**
+  One line per `base@*` workspace: whether it merges, how many commits it would
+  bring in, and the first thing standing in the way, with `--porcelain` for a
+  script.
+
+  The readiness it shows is computed by the same function `--merge` refuses
+  through, so the screen cannot promise a merge that then refuses, nor report a
+  blocker that would have gone straight through. A description of a rule that
+  lives beside the rule is a second implementation of it, free to drift.
+
+  A refused merge now reports *every* blocker rather than the first: fixing one
+  only to be refused for the next is the slow way to find out there were three.
+
 - **Messages between workspaces: `ws -msg`.** Two agents working on related
   things — a service and its client, a refactor and the tests for it — had no way
   to tell each other anything. `ws -msg <workspace> "<body>"` delivers a message;

@@ -74,6 +74,12 @@ pub enum Cmd {
         spec: String,
         merge: bool,
     },
+    /// `ws <base> -features` — the base's feature worktrees and what merging
+    /// each would do.
+    Features {
+        base: String,
+        porcelain: bool,
+    },
 }
 
 /// Task capture. `add` defaults to the current workspace so `/ws:task` can call
@@ -186,6 +192,8 @@ pub fn help_text() -> &'static str {
          \x20 ws <base>@<feature>          create a git worktree workspace off <base>,\n\
          \x20                                or open it once it exists\n\
          \x20 ws <base>@<feature> --merge  merge it back (--no-ff) and remove it\n\
+         \x20 ws <base> -features          list its feature worktrees and whether\n\
+         \x20                                each can merge (--porcelain)\n\
          \n\
          Coordinate\n\
          \x20 ws -whoami                   print your actor slug\n\
@@ -564,8 +572,16 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             let mut fresh = false;
             let mut force = false;
             let mut handoff = false;
+            let mut features = false;
+            let mut porcelain = false;
             while let Some(a) = it.next() {
                 match a.as_str() {
+                    // Not a launch at all: `-features` asks about a workspace
+                    // rather than opening it. It lives in this arm because the
+                    // thing it asks about is named the same way a launch names
+                    // it — `ws <base> -features`, not `ws -features <base>`.
+                    "-features" => features = true,
+                    "--porcelain" => porcelain = true,
                     "--agent" => agent = it.next(),
                     "-claude" => agent = Some("claude".into()),
                     "-codex" => agent = Some("codex".into()),
@@ -578,6 +594,12 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
                     ),
                     other => bail!("unexpected argument: {other}"),
                 }
+            }
+            if features {
+                return Ok(Cmd::Features { base: name.to_string(), porcelain });
+            }
+            if porcelain {
+                bail!("--porcelain only applies to `ws <base> -features`");
             }
             Ok(Cmd::Launch { name: name.to_string(), agent, fresh, force, handoff })
         }

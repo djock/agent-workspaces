@@ -76,6 +76,7 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
         Cmd::Rotate { name } => commands::rotate(name)?,
         Cmd::Task(c) => commands::task(c)?,
         Cmd::Msg(c) => commands::msg(c)?,
+        Cmd::Features { base, porcelain } => commands::features(base, porcelain)?,
         Cmd::Hooks(c) => commands::hooks(c)?,
         Cmd::Secrets(c) => commands::secrets(c)?,
         Cmd::Search { query, include_archived } => commands::search(query, include_archived)?,

@@ -287,6 +287,26 @@ The confirmation says which of the two is about to happen.
 the point is to write a thought down without derailing the one you are having.
 Inside a session, `/ws:task` does the same thing without you leaving the agent.
 
+## Feature worktrees
+
+```sh
+ws api@retries          # create the worktree workspace, or open it
+ws api -features        # what each of api's worktrees would do if merged
+ws api@retries --merge  # merge it back (--no-ff) and remove the worktree
+```
+
+`-features` prints one line per worktree — ready or blocked, how many commits it
+would bring in, and what is in the way:
+
+```
+✓ retries   merges 3 commit(s) with a merge commit (--no-ff)
+✗ parser    blocked: 2 uncommitted change(s)
+```
+
+Readiness comes from the same computation `--merge` refuses through, so the
+screen cannot promise a merge that then refuses. `--porcelain` emits one
+tab-separated record per worktree instead.
+
 ## Messages between workspaces
 
 Two agents working on related things can tell each other something:
