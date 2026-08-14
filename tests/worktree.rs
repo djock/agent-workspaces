@@ -59,6 +59,30 @@ fn create_makes_a_worktree_and_registers_it() {
     env.cmd().arg("-list").assert().success().stdout(predicates::str::contains("api@feat"));
 }
 
+/// A feature worktree is the same project on a branch, so it must start on the
+/// agent that project is already on. Creation used to stamp the *config*
+/// default, which put every worktree of a Codex workspace on Claude.
+#[test]
+fn a_worktree_inherits_its_bases_agent() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+
+    let base_toml = base.join(".ws/workspace.toml");
+    let toml = std::fs::read_to_string(&base_toml)
+        .unwrap()
+        .replace("default_agent = \"claude\"", "default_agent = \"codex\"");
+    assert!(toml.contains("codex"), "fixture must actually be on codex");
+    std::fs::write(&base_toml, toml).unwrap();
+
+    env.cmd().arg("api@feat").assert().success();
+
+    let child = std::fs::read_to_string(env.root.join("api@feat/.ws/workspace.toml")).unwrap();
+    assert!(
+        child.contains("default_agent = \"codex\""),
+        "the worktree must inherit codex from its base: {child}"
+    );
+}
+
 /// I1. `ws 'api@$(x)'` used to run `git worktree add` — a real branch and
 /// checkout in the base repository — before the derived workspace name was
 /// ever validated, leaving an orphan branch+worktree ws itself could no

@@ -411,6 +411,108 @@ fn switching_agents_clears_guard_and_records_default() {
     assert!(root.join("AGENTS.md").is_file());
 }
 
+/// The whole point of recording the agent: `-codex` once, then plain `ws <name>`
+/// forever. This is the end-to-end version of the two tests below — it asserts
+/// on which binary actually ran, not on what a file says.
+#[test]
+fn a_bare_launch_returns_to_the_last_agent_used() {
+    let env = Env::new();
+    let claude = env.fake_claude();
+    let codex = env.fake_codex();
+    let shims = |c: &mut assert_cmd::Command| {
+        c.env("WS_CLAUDE_BIN", &claude).env("WS_CODEX_BIN", &codex).env("WS_NO_EXEC", "1");
+    };
+
+    let mut c = env.cmd();
+    shims(&mut c);
+    c.args(["stickyproj", "-codex"]).assert().success();
+
+    // No flag this time. Both shims are on offer; the recorded default decides.
+    let mut c = env.cmd();
+    shims(&mut c);
+    c.arg("stickyproj").assert().success();
+
+    assert!(
+        env.codex_argv_log().lines().filter(|l| !l.contains("--version")).count() >= 2,
+        "the bare launch must reopen codex, got: {}",
+        env.codex_argv_log()
+    );
+    assert!(
+        env.argv_log().lines().all(|l| l.contains("--version")),
+        "claude must never have been launched, got: {}",
+        env.argv_log()
+    );
+}
+
+/// A workspace whose `workspace.toml` has no `default_agent` — written before the
+/// key existed, hand-edited, or restored without it. `switching` is false there
+/// (nothing recorded to differ from), so the flag-chosen agent used to be run and
+/// then forgotten, and the next bare launch fell back to the global default.
+#[test]
+fn an_agent_chosen_by_flag_is_recorded_when_nothing_was() {
+    let env = Env::new();
+    let claude = env.fake_claude();
+    let codex = env.fake_codex();
+
+    env.cmd()
+        .env("WS_CLAUDE_BIN", &claude)
+        .env("WS_NO_EXEC", "1")
+        .arg("backfillproj")
+        .assert()
+        .success();
+
+    // Rewind to the pre-`default_agent` state.
+    let wt_path = env.root.join("backfillproj/.ws/workspace.toml");
+    let stripped = std::fs::read_to_string(&wt_path)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.starts_with("default_agent"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&wt_path, format!("{stripped}\n")).unwrap();
+
+    env.cmd()
+        .env("WS_CODEX_BIN", &codex)
+        .env("WS_NO_EXEC", "1")
+        .args(["backfillproj", "-codex"])
+        .assert()
+        .success();
+
+    let wt = std::fs::read_to_string(&wt_path).unwrap();
+    assert!(wt.contains("default_agent = \"codex\""), "the backfill must record codex: {wt}");
+    // The backfill is a read-modify-write of the identity file; nothing else in
+    // it may be lost.
+    for key in ["name", "created", "contract_version", "color", "tags"] {
+        assert!(wt.contains(key), "{key} must survive the backfill: {wt}");
+    }
+    // A backfill is not a switch: no `agent-switch` event, and no handoff seeding.
+    let timeline = std::fs::read_to_string(env.root.join("backfillproj/.ws/timeline.jsonl"))
+        .unwrap_or_default();
+    assert!(!timeline.contains("agent-switch"), "a backfill is not a switch: {timeline}");
+}
+
+/// The backfill reads the identity file back *after* `open_or_create`, so a
+/// workspace `contract::init` just wrote is already covered and must not be
+/// rewritten — and, more importantly, must not be mistaken for a switch.
+#[test]
+fn creating_a_workspace_with_a_flag_records_that_agent_without_a_switch() {
+    let env = Env::new();
+    let codex = env.fake_codex();
+
+    env.cmd()
+        .env("WS_CODEX_BIN", &codex)
+        .env("WS_NO_EXEC", "1")
+        .args(["newcodexproj", "-codex"])
+        .assert()
+        .success();
+
+    let root = env.root.join("newcodexproj");
+    let wt = std::fs::read_to_string(root.join(".ws/workspace.toml")).unwrap();
+    assert!(wt.contains("default_agent = \"codex\""));
+    let timeline = std::fs::read_to_string(root.join(".ws/timeline.jsonl")).unwrap_or_default();
+    assert!(!timeline.contains("agent-switch"), "creation is not a switch: {timeline}");
+}
+
 /// The collision menu needs a terminal to answer it. Without one, launching a
 /// held workspace must still fail with the old error rather than render a menu
 /// into a pipe and block forever on a keypress that cannot arrive.

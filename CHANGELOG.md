@@ -6,6 +6,38 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-14
+
+### Added
+
+- Durable project rules now have a shared home: `.ws/conventions.md`. The
+  managed block in `CLAUDE.local.md` and `AGENTS.md` tells both agents to read it
+  on start and to record a lasting rule there when you state one — so "this repo
+  has no test suite" is said once, not once per agent. The block also now points
+  both agents at `.ws/memory/` as readable markdown; it was described as Claude's
+  redirect target and nothing told Codex it could read it.
+
+  The file is created on demand rather than by `contract::init`. Seeding it at
+  creation would put an untracked `.ws/conventions.md` in every worktree of a
+  workspace that predates it, and an untracked file counts as dirt — so
+  `ws <base>@<feature> --merge` would refuse until it was committed.
+
+### Fixed
+
+- `ws <name> -codex` now records the agent even when the workspace had none
+  recorded. `default_agent` was only written on a *switch*, and a switch needs
+  something to differ from — so a `workspace.toml` written before the key
+  existed, hand-edited, or restored without it ran the agent you asked for and
+  then forgot it, and the next bare `ws <name>` fell back to the global default.
+  The backfill reads the identity file back after the workspace is opened, so
+  creating a workspace with a flag is still not treated as a switch and writes
+  no `agent-switch` event.
+- A `base@feature` worktree inherits the agent of the workspace it came from
+  instead of the global config default. A worktree is the same project on a
+  branch; a Codex workspace's worktrees were opening Claude. The value is only
+  written when it actually differs, since `.ws/workspace.toml` is tracked and an
+  unconditional write would leave every new worktree dirty.
+
 ## [0.7.0] - 2026-08-12
 
 ### Changed
@@ -562,7 +594,8 @@ Secret Service — so neither produced artifacts.
 - Provide an interactive terminal dashboard.
 - Add installation, update, uninstall, diagnostics, CI, and release packaging.
 
-[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/djock/agent-workspaces/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/djock/agent-workspaces/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/djock/agent-workspaces/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/djock/agent-workspaces/compare/v0.6.3...v0.6.4

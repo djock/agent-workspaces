@@ -210,7 +210,7 @@ pub fn create(spec: &Spec) -> Result<PathBuf> {
     // this function returns, or a bootstrap failure (a corrupt registry, an
     // unusual committed `.ws/` in the base, disk pressure, ...) leaves behind
     // exactly the kind of orphan the validation above exists to prevent.
-    if let Err(e) = finish_create(spec, &name, &path, &cfg) {
+    if let Err(e) = finish_create(spec, &name, &path, &base_path, &cfg) {
         rollback_created_worktree(&base_path, &path, &spec.feature, &name);
         return Err(e);
     }
@@ -220,11 +220,40 @@ pub fn create(spec: &Spec) -> Result<PathBuf> {
 /// Everything `create` does after `add_worktree`. Split out so `create` can
 /// wrap the whole sequence in one rollback call instead of repeating cleanup
 /// at every `?`.
-fn finish_create(spec: &Spec, name: &str, path: &Path, cfg: &crate::config::Config) -> Result<()> {
+fn finish_create(
+    spec: &Spec,
+    name: &str,
+    path: &Path,
+    base_path: &Path,
+    cfg: &crate::config::Config,
+) -> Result<()> {
     // Minimal .ws/ bootstrap. commit=false: the contract files land in the
     // worktree's working copy and the user commits them with their own work.
-    let agent = cfg.default_agent.clone();
+    //
+    // The agent is inherited from the base, not taken from the config: a feature
+    // worktree is the same project on a branch, so it must open on the agent that
+    // project is already on. Stamping `cfg.default_agent` put a Codex workspace's
+    // worktrees on Claude.
+    let agent = crate::meta::read(&base_path.join(".ws/workspace.toml"))
+        .default_agent
+        .unwrap_or_else(|| cfg.default_agent.clone());
     crate::contract::init(name, path, &agent, false)?;
+    // `contract::init` uses `write_if_absent`, and a base that committed its
+    // `.ws/` hands the worktree checkout a `workspace.toml` before this ever
+    // runs — so the agent argument above is inert in exactly the common case,
+    // and the checked-in value can be months out of date. Correct it here.
+    //
+    // Only when it actually differs. `.ws/workspace.toml` is tracked (see
+    // `contract::init`'s commit step), so an unconditional write would leave
+    // every freshly created worktree dirty and make `ws base@feature --merge`
+    // refuse until the user committed a line ws wrote for them. When the value
+    // does differ the write is worth that cost — it is the difference between
+    // the worktree opening Codex and opening Claude — and `.ws/` in a new
+    // worktree is meant to be committed with the user's first work anyway.
+    let child_toml = path.join(".ws/workspace.toml");
+    if crate::meta::read(&child_toml).default_agent.as_deref() != Some(agent.as_str()) {
+        crate::meta::set_default_agent(&child_toml, &agent)?;
+    }
     crate::atomic::atomic_write(&path.join(".ws/base"), format!("{}\n", spec.base).as_bytes())?;
     crate::registry::register(name, path)?;
     let actor = crate::actors::actor_slug_in(path);

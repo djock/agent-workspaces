@@ -11,7 +11,10 @@ Most importantly, the same workspace works with both Claude Code and Codex. If y
 - Creates and resumes named workspaces.
 - Launches either Claude Code or Codex in the same workspace.
 - Keeps durable notes and handoffs in the workspace.
-- Switches agents while preserving the project context.
+- Switches agents while preserving the project context — including durable
+  project rules in `.ws/conventions.md`, which both agents are told to read on
+  start, so "this repo has no test suite" is stated once rather than once per
+  agent.
 - Lists, searches, tags, archives, and removes workspaces.
 - Creates git worktree workspaces with `ws <base>@<feature>` and merges them back.
 - Records who did what: actor identity (`-whoami`) and a per-actor summary of the
@@ -304,6 +307,26 @@ Uninstalling removes the installed binary and integrations owned by `ws`. It doe
 - Workspaces: `~/.agent-workspaces/` by default
 - Configuration and registry: the platform configuration directory under `ws/`
 - Per-workspace metadata: `.ws/` inside each workspace
+
+### What the two agents share
+
+Everything in `.ws/` is one directory that both agents read, and the managed
+block `ws` splices into `CLAUDE.local.md` and `AGENTS.md` points both at the same
+files:
+
+| | Shared |
+|---|---|
+| `.ws/README.md` — objective | yes |
+| `.ws/conventions.md` — durable project rules | yes |
+| `.ws/notebook/` — per-actor findings | yes |
+| `.ws/handoffs/` — seeded into the incoming agent on a switch | yes |
+| `.ws/memory/` — Claude's memory tool writes it; both are told to read it | read by both, written by Claude |
+| Conversation history | **no** — session ids are per agent in `.ws/local/state.toml` |
+| Whatever you write *outside* the managed block | **no** — `CLAUDE.local.md` and `AGENTS.md` are separate files |
+| MCP servers | **no** — `ws` does not configure MCP for either agent |
+
+So a lasting rule belongs in `.ws/conventions.md`, not in one agent's memory or
+one agent's context file. MCP servers are set up per agent, outside `ws`.
 
 The workspace root can be changed with:
 

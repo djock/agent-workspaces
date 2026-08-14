@@ -90,6 +90,38 @@ mod tests {
         assert!(s.contains("proj"));
     }
 
+    /// The managed block is the *only* thing both agents are guaranteed to read,
+    /// so it is where cross-agent state has to be named. Losing either pointer
+    /// silently un-shares it: `.ws/conventions.md` is where a durable rule like
+    /// "this repo has no test suite" lives instead of in one agent's memory, and
+    /// `.ws/memory/` is written by Claude but has to be readable by whoever opens
+    /// the workspace next.
+    #[test]
+    fn the_managed_block_points_both_agents_at_the_shared_state() {
+        let d = TempDir::new().unwrap();
+        let f = d.path().join("AGENTS.md");
+        regenerate_with_handoff(&f, "proj", None).unwrap();
+        let s = std::fs::read_to_string(&f).unwrap();
+        for pointer in
+            [".ws/conventions.md", ".ws/memory/", ".ws/README.md", ".ws/notebook/", ".ws/handoffs/"]
+        {
+            assert!(s.contains(pointer), "the block must name {pointer}: {s}");
+        }
+    }
+
+    /// `render` substitutes `{{name}}`, and the block also documents the
+    /// redaction placeholder `{{ws:secret:NAME}}`. A sloppier substitution (or a
+    /// template edit that renames the placeholder) would eat one of them.
+    #[test]
+    fn substitution_hits_the_name_and_leaves_the_secret_placeholder_alone() {
+        let d = TempDir::new().unwrap();
+        let f = d.path().join("CLAUDE.local.md");
+        regenerate_with_handoff(&f, "proj", None).unwrap();
+        let s = std::fs::read_to_string(&f).unwrap();
+        assert!(!s.contains("{{name}}"), "the workspace name must be substituted: {s}");
+        assert!(s.contains("{{ws:secret:NAME}}"), "the secret placeholder must survive: {s}");
+    }
+
     #[test]
     fn preserves_user_content_and_replaces_block() {
         let d = TempDir::new().unwrap();

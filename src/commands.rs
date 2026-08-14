@@ -1309,6 +1309,20 @@ pub fn launch(
                 "handoff": hint.as_deref(),
             }),
         );
+    } else if ws.is_initialised() && crate::meta::read(&ws.workspace_toml()).default_agent.is_none()
+    {
+        // A workspace whose identity file never recorded an agent — written before
+        // `default_agent` existed, hand-edited, or restored without it — used the
+        // flag-chosen agent and then forgot it, so the next bare launch fell back
+        // to the global default. `switching` cannot cover this: with nothing
+        // recorded there is nothing to differ from.
+        //
+        // Read back from disk rather than reusing `recorded_default`: a workspace
+        // `open_or_create` just built already carries `default_agent` from
+        // `contract::init`, and re-reading makes creation a no-op here instead of a
+        // second write. Not fatal, for the same reason the color backfill below is
+        // not — the next launch retries.
+        let _ = crate::meta::set_default_agent(&ws.workspace_toml(), agent.id());
     }
 
     // 4b. Stamp "opened now" so `-list` and the picker can put this workspace at
