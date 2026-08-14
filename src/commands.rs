@@ -1397,6 +1397,17 @@ pub fn launch(
     // Cached for an hour and silent on every failure — see `update::notify`.
     crate::update::notify();
 
+    // 5c. Report a previous session that ended without closing cleanly, while
+    // the terminal is still ours. Deliberately a notice with commands rather
+    // than a restore: this runs unattended in scripted launches too, and a
+    // crash-recovery feature that writes over the working tree without being
+    // asked is worse than the crash. The pid recorded in each snapshot is what
+    // keeps a *live* session's in-flight state — a second terminal, or a linked
+    // worktree sharing this ref namespace — from being reported as a crash.
+    if let Some(notice) = crate::autosave::recovery_notice(&ws.root, None) {
+        print!("{notice}");
+    }
+
     // 6. Ask before resuming, when there is something to resume and someone to
     // ask. `y` resumes; the default (Enter) starts a fresh conversation. When
     // there is nobody to ask, resuming stays the unprompted behavior — a

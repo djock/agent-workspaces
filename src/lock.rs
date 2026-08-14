@@ -24,7 +24,22 @@ impl Drop for LockGuard {
     }
 }
 
-fn pid_alive(pid: u32) -> bool {
+/// Is this pid a running process this user could signal?
+///
+/// Shared with `autosave`, which uses it to tell a crashed session's snapshot
+/// from a live one's in-flight state.
+pub fn pid_alive(pid: u32) -> bool {
+    // Rule out the values that are not process ids before asking the kernel,
+    // because for these `kill` answers a different question and answers it
+    // "yes". Pid 0 is the caller's own process group, so `kill -0 0` succeeds
+    // for every caller — a lock file holding `pid = 0`, or a snapshot recording
+    // one, read as a live session that could never be reclaimed. Above
+    // `i32::MAX` there is no pid at all: `pid_t` is signed 32-bit, macOS refuses
+    // the value outright while Linux wraps `4294967295` onto `-1`, which means
+    // "every process the caller may signal" and succeeds.
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
     // POSIX: `kill -0 <pid>` succeeds iff the process exists and is signalable.
     Command::new("kill")
         .arg("-0")
@@ -253,6 +268,23 @@ mod tests {
         std::fs::write(&lf, format!("pid = {me}\nhost = \"x\"\ntty = \"?\"\nstarted = \"t\"\n"))
             .unwrap();
         assert_eq!(live_pid(&lf), Some(me));
+    }
+
+    /// Values that are not process ids, for which `kill -0` answers a different
+    /// question and answers it "yes": pid 0 is the caller's own process group,
+    /// and above `i32::MAX` there is no pid at all (Linux wraps `4294967295`
+    /// onto `-1`, meaning every process the caller may signal). A lock file
+    /// holding either read as a live holder that could never be reclaimed.
+    #[test]
+    fn a_value_that_is_not_a_pid_is_never_live() {
+        assert!(!pid_alive(0), "pid 0 is the caller's process group, not a holder");
+        assert!(!pid_alive(u32::MAX), "no pid is above i32::MAX");
+        assert!(pid_alive(std::process::id()), "this process is alive by definition");
+
+        let d = TempDir::new().unwrap();
+        let lf = d.path().join("lock");
+        std::fs::write(&lf, "pid = 0\nhost = \"x\"\ntty = \"?\"\nstarted = \"t\"\n").unwrap();
+        assert_eq!(live_pid(&lf), None, "a lock naming pid 0 must be reclaimable");
     }
 
     #[test]

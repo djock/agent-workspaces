@@ -1,6 +1,7 @@
 mod actors;
 mod agents;
 mod atomic;
+mod autosave;
 mod cli;
 mod collision;
 mod commands;

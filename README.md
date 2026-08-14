@@ -279,6 +279,35 @@ The confirmation says which of the two is about to happen.
 the point is to write a thought down without derailing the one you are having.
 Inside a session, `/ws:task` does the same thing without you leaving the agent.
 
+## Crash recovery
+
+Every turn a session ends, `ws` saves the working tree — tracked edits and
+untracked files alike — as a git commit beside your branch, at
+`refs/ws/session/<conversation>`. Nothing touches your index, HEAD, branches or
+stash: the staged/unstaged split you set up is exactly as you left it, and the
+snapshots never show up in `git log` or `git branch`.
+
+A session that ends normally deletes its own snapshot, so anything still there
+is a session that did not. The next launch says so:
+
+```
+A previous session ended without closing cleanly.
+  saved 2026-08-14T18:02:11+03:00 at refs/ws/session/0f9c-...
+    inspect:  git diff refs/ws/session/0f9c-...
+    restore:  git checkout refs/ws/session/0f9c-... -- .
+  discard:  git update-ref -d <ref>
+```
+
+Nothing is restored for you — the notice hands you the commands and gets out of
+the way. If HEAD has moved since the snapshot was taken, the whole-tree restore
+is not offered at all, only the per-file one: replaying an hour-old tree over
+work you have since committed or rebased is the one outcome worse than the crash.
+
+A snapshot whose recording process is still running belongs to a live session
+(another terminal, or a `base@feature` worktree sharing the same ref namespace)
+and is never reported as a crash. Snapshots left by dead sessions are swept after
+a fortnight. Only changed trees are written, so an idle turn costs nothing.
+
 ## Update and uninstall
 
 ```sh

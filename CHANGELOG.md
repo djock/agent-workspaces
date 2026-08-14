@@ -8,6 +8,27 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Crash recovery.** Every turn end saves the working tree — tracked edits and
+  untracked files alike — as a git commit beside your branch at
+  `refs/ws/session/<conversation>`, built through a private index so your own
+  index, HEAD, branches and stash are untouched and the snapshots stay out of
+  `git log`. A session that ends normally deletes its own snapshot, so whatever
+  is left is a session that did not, and the next launch says so and hands you
+  the commands to inspect, restore or discard it.
+
+  Nothing is restored automatically: a launch can be unattended, and a
+  crash-recovery feature that writes over the working tree without being asked is
+  worse than the crash. When HEAD has moved since the snapshot was taken the
+  whole-tree restore is not offered at all — only the per-file one — because
+  replaying an old tree over work since committed or rebased is the outcome worse
+  still.
+
+  One ref per conversation, not one per repository: a linked worktree shares its
+  parent's ref namespace, so two sessions on one checkout would otherwise read,
+  write and delete each other's snapshots. A snapshot whose recorded process is
+  still alive is a live session's state, never a crash. Unchanged trees write
+  nothing, and snapshots from dead sessions are swept after a fortnight.
+
 - **Every verb answers `-h`/`--help` with its own usage.** Asking a verb for help
   sent the flag into that verb's argument parser, which read it as data: `ws -tag
   --help` answered `unknown -tag subcommand: --help`, pointing the reader at a
@@ -40,6 +61,12 @@ The project follows [Semantic Versioning](https://semver.org/).
   now audited per event against the parsed document, an unparseable config is a
   failure that says the agent cannot read it, and a partial registration names
   the events that are missing.
+- **A value that is not a process id no longer reads as a live lock holder.**
+  `kill -0 0` succeeds for every caller — pid 0 is the caller's own process
+  group — and above `i32::MAX` there is no pid at all, with Linux wrapping
+  `4294967295` onto `-1`, meaning every process the caller may signal. A lock
+  file holding either was a workspace that could never be reclaimed without
+  `--force`.
 - **The shim check looks at every shim.** It probed `session-start.sh` alone and
   reported "present" for a hooks directory holding only that file, which is what
   a `setup` interrupted part-way leaves behind. None present is still the quiet

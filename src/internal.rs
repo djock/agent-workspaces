@@ -155,6 +155,13 @@ fn stop() {
     };
     let h = hookio::read_stdin();
 
+    // Snapshot the working tree before anything can block the turn, and whatever
+    // this hook decides. A turn end is the natural save point — the agent has
+    // just finished writing — and the cost is one commit only when something
+    // actually changed. Failures are ignored on purpose: losing a snapshot is
+    // recoverable next turn, failing the turn is not.
+    let _ = crate::autosave::snapshot(&ws.root, &conversation_id(&ws, &h));
+
     // The agent is only stopping because a previous stop was blocked. Blocking
     // again is how a Stop hook turns into an infinite loop, so every directive
     // below waits for a turn the user actually ended.
@@ -387,13 +394,38 @@ fn bash_audit() {
 }
 
 fn session_end() {
-    let _ = hookio::read_stdin();
+    let h = hookio::read_stdin();
     let ws = match current_ws() {
         Some(w) => w,
         None => return,
     };
     let _ =
         timeline::record(&ws.timeline(), "closed", &actors::actor_slug(), serde_json::json!({}));
+
+    // This session ended on purpose, so its snapshot is not a crash to recover
+    // from — and what is left behind is exactly what the next launch reports.
+    // The sweep takes any snapshot older than a fortnight whose owner is gone
+    // with it: without one, a machine keeps a ref per crashed conversation
+    // forever, each holding a whole tree of objects reachable.
+    let conversation = conversation_id(&ws, &h);
+    crate::autosave::discard(&ws.root, &conversation);
+    crate::autosave::gc(&ws.root, Some(&conversation), 14);
+}
+
+/// Which conversation a hook payload belongs to.
+///
+/// The payload's own `session_id` where the agent sends one, falling back to
+/// what the last `SessionStart` recorded for this agent — a payload that omits
+/// it must not make every session share one snapshot ref, which is the shared-ref
+/// failure the per-conversation design exists to avoid.
+fn conversation_id(ws: &Workspace, h: &hookio::HookInput) -> String {
+    if !h.session_id.trim().is_empty() {
+        return h.session_id.clone();
+    }
+    // `$WS_AGENT` is exported by both agents' launch, the same source
+    // `record_session_identity` reads.
+    let agent = std::env::var("WS_AGENT").unwrap_or_default();
+    contract::read_session_id(&ws.state_toml(), &agent).unwrap_or_else(|| "unknown".to_string())
 }
 
 /// The files a `PostToolUse` payload says were just written.
