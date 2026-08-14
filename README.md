@@ -38,6 +38,10 @@ Most importantly, the same workspace works with both Claude Code and Codex. If y
   WezTerm) and as a chip at the head of the status bar, so panes are
   distinguishable at a glance. Allocated at creation and changed with
   `ws -color <color>`.
+- Passes messages between workspaces with `ws -msg`, so two agents working on
+  related things can tell each other something.
+- Saves the working tree every turn, beside your branch, so a session that dies
+  does not take an hour of uncommitted work with it.
 - Shows available usage-limit information.
 
 ## Status and known limitations
@@ -97,8 +101,11 @@ own:
   confirms which workflow and commit built an artifact. What is missing is the
   minisign signature over `SHA256SUMS`: `MINISIGN_SECRET_KEY` is not set in the
   repository, so the workflow warns "this release will be UNSIGNED" and
-  continues. Every release through v0.6.3 is unsigned, and the updater bootstrap
-  is unverified.
+  continues. Every release so far is unsigned, and the updater bootstrap is
+  unverified. `install.sh` now *says* so on every install rather than skipping
+  the check in silence — a run whose only verification output was a checksum
+  pass read as verified — and refuses outright if a release ships a signature it
+  holds no key to check.
 - **A workspace whose name contains `@` cannot be launched by name**, because
   `@` means "worktree" in a bare argument.
 - **The Codex hook contract is not covered by CI.** It was verified by hand
@@ -108,9 +115,10 @@ own:
 `docs/2026-07-27-cs-vs-ws-independent-audit.md` is the older gap list against
 `cs`. It predates the refocus described in
 `docs/plans/2026-07-28-ws-refocus.md`, which deleted the features ws had copied
-rather than needed — the dashboard, the unattended queue drain, cross-workspace
-mail, tmux spawning, and the `cs` importer — so parts of it describe code that no
-longer exists.
+rather than needed — the dashboard, the unattended queue drain, tmux spawning,
+and the `cs` importer — so parts of it describe code that no longer exists.
+Cross-workspace mail was deleted there too and has since come back, in the
+maildir shape rather than the shared-append-file one that made it fragile.
 
 ## User-defined hooks
 
