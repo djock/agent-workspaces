@@ -86,6 +86,11 @@ pub fn open_or_create(name: &str, agent: &str, cfg: &Config) -> Result<(Workspac
         // to be created BY this binary, at CONTRACT_VERSION, so there is
         // nothing yet to be newer than.
         contract::check_gate(&ws.name, &ws.workspace_toml())?;
+        // Backfill the private modes on every open, not only at creation. Git
+        // records no directory modes, so a workspace that arrived by clone — or
+        // one created before ws set them — has a `.ws/` built under whatever
+        // umask that machine had.
+        contract::harden(&ws.root);
         return Ok((ws, false));
     }
     std::fs::create_dir_all(&ws.root)?;

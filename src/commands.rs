@@ -95,12 +95,16 @@ pub fn secrets(cmd: SecretsCmd) -> Result<()> {
             println!("purged all secrets for {ws}");
         }
         SecretsCmd::Export => {
+            // Collected first, printed second: `export_lines` refuses as a
+            // whole, and a refusal is only a refusal if nothing reached stdout
+            // before it. See its doc comment.
+            let mut pairs = Vec::new();
             for n in store.list()? {
                 if let Some(v) = store.get(&n)? {
-                    let escaped = v.replace('\'', "'\\''");
-                    println!("export {n}='{escaped}'");
+                    pairs.push((n, v));
                 }
             }
+            print!("{}", secrets::export_lines(&pairs)?);
         }
         SecretsCmd::Backend => println!("{}", store.backend_name()),
         SecretsCmd::Restore(file) => secrets_restore(&ws, store.as_ref(), &file)?,

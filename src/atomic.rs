@@ -16,6 +16,67 @@ pub fn atomic_write(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
     atomic_write_with_mode(path, contents, None)
 }
 
+/// Owner-only, for a directory `ws` creates and owns.
+pub const PRIVATE_DIR: u32 = 0o700;
+
+/// Owner-only, for a file `ws` creates and owns.
+pub const PRIVATE_FILE: u32 = 0o600;
+
+/// `create_dir_all`, then take the umask back out of the answer.
+///
+/// Every directory `ws` made was created with a bare `create_dir_all`, which
+/// takes the caller's umask — so under the common `umask 022` a workspace's
+/// `.ws/` tree (notebooks, handoffs, memory, machine-local state) and the
+/// secrets directory were world-readable. The mode is applied to each component
+/// this call is responsible for, not just the leaf, because
+/// `.ws/notebook` being `0700` is worth nothing if `.ws` itself is `0755`.
+pub fn create_private_dir_all(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+    harden_dir(path);
+    Ok(())
+}
+
+/// Make an existing directory owner-only, best effort.
+///
+/// Called on open as well as on create, and deliberately silent when it cannot:
+/// git records no directory modes, so a `.ws/` arriving by clone is created
+/// under whatever umask the cloning machine had and needs tightening on a
+/// machine that may not own it. A directory somebody else owns is not ours to
+/// fix and not a reason to refuse to launch.
+pub fn harden_dir(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(md) = std::fs::metadata(path) {
+            if md.is_dir() && md.permissions().mode() & 0o7777 != PRIVATE_DIR {
+                let mut perms = md.permissions();
+                perms.set_mode(PRIVATE_DIR);
+                let _ = std::fs::set_permissions(path, perms);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Make an existing file owner-only, best effort. Same contract as [`harden_dir`].
+pub fn harden_file(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(md) = std::fs::metadata(path) {
+            if md.is_file() && md.permissions().mode() & 0o7777 != PRIVATE_FILE {
+                let mut perms = md.permissions();
+                perms.set_mode(PRIVATE_FILE);
+                let _ = std::fs::set_permissions(path, perms);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// `atomic_write`, but with the temp file created at an explicit unix mode
 /// *before* any bytes are written to it.
 ///

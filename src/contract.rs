@@ -43,8 +43,12 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
     // register an arbitrary name — which `ws -spawn` then executed.
     crate::workspace::validate_name(name)?;
     let ws = root.join(".ws");
+    // Owner-only, and the parent first: `.ws/notebook` at `0700` is worth
+    // nothing underneath a `0755` `.ws`. See `harden` for what this protects and
+    // why the workspace *root* is deliberately not touched.
+    crate::atomic::create_private_dir_all(&ws)?;
     for sub in ["notebook", "memory", "handoffs", "plans", "local"] {
-        std::fs::create_dir_all(ws.join(sub))?;
+        crate::atomic::create_private_dir_all(&ws.join(sub))?;
     }
 
     let now = crate::now_iso();
@@ -205,6 +209,30 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
     Ok(())
 }
 
+/// Make a workspace's `.ws/` tree owner-only, best effort.
+///
+/// Run on create and on every open. The workspace **root** is deliberately left
+/// alone: `ws -adopt` turns a directory the user already had into a workspace,
+/// and that directory's mode is theirs to choose — a shared checkout or a served
+/// directory may be world-readable on purpose. Only the `.ws/` tree ws creates
+/// inside it is ws's to lock down.
+///
+/// Everything under `.ws/` is private by nature: per-actor notebooks, handoffs
+/// (a whole conversation's summary), durable memory, and `local/`, which holds
+/// machine-local state. The one exception is that this says nothing about what
+/// git does with those files — a workspace that commits `.ws/` and pushes it
+/// publishes the contents regardless of the mode on disk.
+pub fn harden(root: &Path) {
+    let ws = root.join(".ws");
+    if !ws.is_dir() {
+        return;
+    }
+    crate::atomic::harden_dir(&ws);
+    for sub in ["notebook", "memory", "handoffs", "plans", "local"] {
+        crate::atomic::harden_dir(&ws.join(sub));
+    }
+}
+
 fn write_if_absent(path: &Path, contents: &str) -> Result<()> {
     if !path.exists() {
         if let Some(dir) = path.parent() {
@@ -300,6 +328,76 @@ pub fn write_session_id(state_toml: &Path, agent: &str, id: &str) -> Result<()> 
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Everything under `.ws/` is private by nature — per-actor notebooks,
+    /// handoffs, durable memory, machine-local state — and all of it was created
+    /// with a bare `create_dir_all`, so under the common `umask 022` it was
+    /// world-readable.
+    #[test]
+    #[cfg(unix)]
+    fn the_ws_tree_is_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = TempDir::new().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", d.path().join("cfg"));
+        let root = d.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        init("proj", &root, "claude", false).unwrap();
+
+        for sub in ["", "notebook", "memory", "handoffs", "plans", "local"] {
+            let p = root.join(".ws").join(sub);
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{} must be owner-only, got {mode:o}", p.display());
+        }
+    }
+
+    /// Git records no directory modes, so a workspace that arrives by clone is
+    /// recreated under the cloning machine's umask however private it was on the
+    /// machine that pushed it. Creation-time hardening alone therefore protects
+    /// only the machine that happened to run `init`.
+    #[test]
+    #[cfg(unix)]
+    fn open_hardens_a_tree_that_arrived_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = TempDir::new().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", d.path().join("cfg"));
+        let root = d.path().join("cloned");
+        std::fs::create_dir_all(root.join(".ws/notebook")).unwrap();
+        std::fs::create_dir_all(root.join(".ws/local")).unwrap();
+        for p in [root.join(".ws"), root.join(".ws/notebook"), root.join(".ws/local")] {
+            let mut perms = std::fs::metadata(&p).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&p, perms).unwrap();
+        }
+
+        harden(&root);
+
+        for sub in ["", "notebook", "local"] {
+            let p = root.join(".ws").join(sub);
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{} must be tightened on open, got {mode:o}", p.display());
+        }
+    }
+
+    /// `ws -adopt` turns a directory the user already had into a workspace. A
+    /// shared checkout or a served directory may be world-readable on purpose,
+    /// and that choice is not ws's to overrule — only the `.ws/` tree ws creates
+    /// inside it is ws's to lock down.
+    #[test]
+    #[cfg(unix)]
+    fn hardening_never_touches_the_workspace_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = TempDir::new().unwrap();
+        let root = d.path().join("adopted");
+        std::fs::create_dir_all(root.join(".ws")).unwrap();
+        let mut perms = std::fs::metadata(&root).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&root, perms).unwrap();
+
+        harden(&root);
+
+        let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "the user's own directory mode must survive");
+    }
 
     #[test]
     fn init_creates_layout() {

@@ -10,13 +10,14 @@ ALLOW_UNSIGNED=0
 
 # The minisign public key releases are signed with.
 #
-# Empty means "no signing key has been published yet", and signature
-# verification is skipped — the honest behaviour while the key does not exist,
-# rather than pretending to verify. Fill this in and CI will start signing;
-# see docs/releasing.md. Because this key lives in the repository, trust is
-# established when you obtain the repository and is strong from then on: a
-# compromised release host can replace the assets but cannot produce a
-# signature that matches this key.
+# Empty means "no signing key has been published yet". Verification is then
+# impossible rather than merely skipped, and the install SAYS SO on every run —
+# see the authenticity block below. Silence was the old behaviour and it was the
+# wrong one: a gate that cannot check must not read like a gate that passed.
+# Fill this in and CI will start signing; see docs/releasing.md. Because this
+# key lives in the repository, trust is established when you obtain the
+# repository and is strong from then on: a compromised release host can replace
+# the assets but cannot produce a signature that matches this key.
 MINISIGN_PUBKEY="${WS_MINISIGN_PUBKEY:-}"
 
 usage() {
@@ -149,7 +150,29 @@ else
         # past, and it has to be typed. (A soft gate that silently skips
         # verification when the verifier is absent is worse than none, because it
         # reads as "verified" in the output.)
-        if [ -n "$MINISIGN_PUBKEY" ]; then
+        if [ -z "$MINISIGN_PUBKEY" ]; then
+            # No key is baked into this installer, so authenticity cannot be
+            # established at all. That is not a clean bill of health and is never
+            # passed over in silence: an install that prints nothing here reads
+            # as "verified", and the reader has no way to learn otherwise.
+            if [ -f SHA256SUMS.minisig ]; then
+                # Worse than unsigned: the release IS signed and this copy of
+                # install.sh holds no key to check it against. A signature nobody
+                # verifies is precisely what this gate exists to refuse, and a
+                # stripped key is what a tampered installer looks like.
+                echo "install.sh: $TAG ships SHA256SUMS.minisig, but this installer carries no public key to check it with." >&2
+                echo "Get install.sh from the repository (it embeds the key), rather than trusting this copy." >&2
+                if [ "$ALLOW_UNSIGNED" -eq 1 ]; then
+                    echo "install.sh: WARNING: continuing unverified because --allow-unsigned was given." >&2
+                else
+                    echo "Re-run with --allow-unsigned to install it anyway." >&2
+                    exit 1
+                fi
+            else
+                echo "install.sh: WARNING: release authenticity was NOT checked — no signing key is published for $REPOSITORY yet." >&2
+                echo "The checksum verified below proves the download arrived intact, not that it came from the ws authors." >&2
+            fi
+        else
             if [ ! -f SHA256SUMS.minisig ]; then
                 if [ "$ALLOW_UNSIGNED" -eq 1 ]; then
                     echo "install.sh: WARNING: release $TAG has no signature; continuing because --allow-unsigned was given." >&2

@@ -83,7 +83,10 @@ fn export_and_backend() {
         .args(["-secrets", "export"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("export TOKEN='abc'"));
+        // Namespaced: an unprefixed export makes a secret name a shell variable
+        // name, so `path` or `ld_preload` assigns the real one on eval.
+        .stdout(predicates::str::contains("export WS_SECRET_TOKEN='abc'"))
+        .stdout(predicates::str::contains("export TOKEN=").not());
     sc(&env)
         .args(["-secrets", "backend"])
         .assert()

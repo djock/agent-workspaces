@@ -80,7 +80,7 @@ usage: ws -secrets <subcommand>
   list            print the stored names (never the values)
   rm <name>       remove one secret
   purge           remove every secret for this workspace (needs a TTY)
-  export          print `export NAME='value'` lines for eval
+  export          print `export WS_SECRET_NAME='value'` lines for eval
   backend         print which store is in use (keyring or file)
   restore <file>  put stored values back into a redacted file, in place
   help            print this message";

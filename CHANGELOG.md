@@ -6,6 +6,51 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Breaking
+
+- **`ws -secrets export` namespaces every variable.** A secret named `api_key`
+  now exports as `WS_SECRET_API_KEY`, not `API_KEY`. Update anything that evals
+  the output and reads the bare name.
+
+  This closes a code-execution hole rather than tidying the format. A secret
+  name became a shell variable name directly, so a name like `path`, `editor`,
+  `ps1` or `ld_preload` landed on the real `PATH`, `EDITOR`, `PS1` or
+  `LD_PRELOAD` when the documented `eval "$(ws -secrets export)"` ran. Refusing
+  dangerous names was tried first and does not hold: they are ordinary words,
+  and enumerating them leaks. The namespace removes the collision entirely.
+
+### Security
+
+- Two names that would export as the same variable (`api_key` and `api-key`,
+  since `-` is legal in a secret name and illegal in a shell identifier) are
+  refused rather than both emitted — `eval` takes the last assignment, so
+  emitting both lets one silently shadow the other.
+- The name rule is applied again at export, so a store written by an older `ws`,
+  by hand, or by a restore cannot emit a name that today's `set` would refuse.
+  Export is where a name becomes executable text.
+- **A refused export emits nothing at all.** It previously printed assignments
+  as it went, and `eval "$(...)"` applies whatever reached stdout regardless of
+  the exit status behind it — so a refusal could still have applied the values
+  it was refusing. The whole output is now built before a byte is printed.
+
+- **The installer stops skipping the signature check in silence.** The whole
+  authenticity block was wrapped in `[ -n "$MINISIGN_PUBKEY" ]`, and no key is
+  baked in yet — so on a stock install the check was not performed, nothing said
+  so, and the only verification output was the checksum pass below it. A run
+  whose output reads "checksum OK" and nothing else reads as verified. It now
+  says on every unsigned install that authenticity was *not* checked, and that
+  the checksum proves the download arrived intact rather than that it came from
+  the ws authors.
+
+  A release that *does* ship `SHA256SUMS.minisig` while the installer carries no
+  key now refuses outright rather than warning: a signature nobody verifies is
+  exactly what this gate exists to catch, and a stripped key is what a tampered
+  installer looks like. `--allow-unsigned` still gets past it, typed.
+
+  `tests/install_sh.rs` drives the real script end to end against a fabricated
+  release with `gh` stubbed on PATH — the gates had no tests at all, which is
+  how a block that never ran stayed invisible.
+
 ## [0.8.0] - 2026-08-14
 
 ### Added

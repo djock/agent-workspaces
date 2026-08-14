@@ -44,6 +44,64 @@ fn validate_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The prefix every exported variable carries.
+///
+/// It exists to stop a secret name from *being* a shell variable name. `ws
+/// -secrets export` is meant to be eval'd, so without a namespace a secret
+/// called `path`, `editor` or `ld_preload` assigns the real `PATH`, `EDITOR` or
+/// `LD_PRELOAD` in the caller's shell — code execution, from a name. Refusing a
+/// list of dangerous names was the obvious first fix and does not hold: they are
+/// ordinary words, the list leaks, and secrets can arrive from anyone who can
+/// write a store. Prefixing removes the collision instead of policing it.
+pub const EXPORT_PREFIX: &str = "WS_SECRET_";
+
+/// The shell variable a secret is exported as: `api-key` → `WS_SECRET_API_KEY`.
+///
+/// `-` is legal in a secret name and illegal in a shell identifier, so it folds
+/// to `_`. That fold is what makes two names collide, which [`export_lines`]
+/// refuses rather than resolves.
+pub fn export_var_name(name: &str) -> String {
+    format!("{EXPORT_PREFIX}{}", name.to_ascii_uppercase().replace('-', "_"))
+}
+
+/// Render the whole `ws -secrets export` output, or refuse and render nothing.
+///
+/// All-or-nothing is the point. The documented use is `eval "$(ws -secrets
+/// export)"`, and eval applies whatever reached stdout regardless of the exit
+/// status behind it — so a refusal that has already printed three assignments
+/// has already applied them. Building the whole text before printing a byte is
+/// what makes a refusal actually refuse.
+///
+/// Two names that fold onto one variable are an error rather than a
+/// last-one-wins: eval takes the last assignment, so emitting both lets
+/// `api-key` silently shadow `api_key`, and a store can hold names ws did not
+/// choose.
+pub fn export_lines(pairs: &[(String, String)]) -> Result<String> {
+    let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+    for (name, _) in pairs {
+        // A store written by an older ws — or by hand — can hold a name today's
+        // `set` would refuse, so the rule is applied again on the way out. It is
+        // the export that turns a name into executable text.
+        validate_name(name)?;
+        let var = export_var_name(name);
+        if let Some(first) = seen.insert(var.clone(), name) {
+            bail!(
+                "{first:?} and {name:?} would both export as ${var}; \
+                 rename one with `ws -secrets set`, then remove the other"
+            );
+        }
+    }
+    let mut out = String::new();
+    for (name, value) in pairs {
+        // Single quotes make the value inert to the shell; the only byte that
+        // can end the quoting is a single quote, so that is the only one that
+        // needs escaping.
+        let escaped = value.replace('\'', "'\\''");
+        out.push_str(&format!("export {}='{}'\n", export_var_name(name), escaped));
+    }
+    Ok(out)
+}
+
 // ---------- FileStore (AES-256-GCM + Argon2id) ----------
 
 pub struct FileStore {
@@ -103,7 +161,8 @@ impl FileStore {
         // the rename and the chmod, and could return Err from a chmod that
         // failed *after* the write succeeded — telling the user the operation
         // failed while a 0644 credential file sat on disk.
-        crate::atomic::atomic_write_with_mode(&self.path, &out, Some(0o600))?;
+        ensure_secrets_dir(&self.path);
+        crate::atomic::atomic_write_with_mode(&self.path, &out, Some(crate::atomic::PRIVATE_FILE))?;
         Ok(())
     }
 }
@@ -194,7 +253,24 @@ fn write_index_at(index: &Path, names: &[String]) -> Result<()> {
     v.sort();
     v.dedup();
     let body = v.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n");
-    crate::atomic::atomic_write(index, body)
+    // Owner-only, like the encrypted store beside it. This file holds no values,
+    // but the names alone say what a workspace has credentials *for*, and it was
+    // being written at the process umask (`0644` in practice) next to a `0600`
+    // store — the weaker of the two setting the real floor.
+    ensure_secrets_dir(index);
+    crate::atomic::atomic_write_with_mode(index, body, Some(crate::atomic::PRIVATE_FILE))
+}
+
+/// Make the directory holding a secrets file owner-only.
+///
+/// `atomic_write` creates missing parents at the umask, so the directory holding
+/// every workspace's encrypted store was `0755`. The files inside are `0600`, so
+/// this is defence in depth rather than the only guard — but a directory anyone
+/// can list is how you learn which workspaces have secrets and how many.
+fn ensure_secrets_dir(file: &Path) {
+    if let Some(dir) = file.parent() {
+        let _ = crate::atomic::create_private_dir_all(dir);
+    }
 }
 
 /// The keyring index's entire read-modify-write, holding the interprocess
@@ -471,6 +547,11 @@ pub const NO_PASSWORD_HELP: &str =
     "$WS_SECRETS_PASSWORD is unset and there is no terminal to prompt on";
 
 pub fn open(ws_name: &str) -> Result<Box<dyn SecretStore>> {
+    // Backfill the private modes on open, not only when writing. A store or
+    // index written by a `ws` that predates this — or restored from a backup
+    // that did not preserve modes — otherwise keeps its `0644` until the next
+    // write happens to rewrite it, which for a stable credential is never.
+    backfill_modes(ws_name);
     match selected_backend().as_str() {
         "keyring" => Ok(Box::new(KeyringStore::new(ws_name))),
         "file" => Ok(Box::new(FileStore {
@@ -489,6 +570,17 @@ pub fn open(ws_name: &str) -> Result<Box<dyn SecretStore>> {
             }
         }
     }
+}
+
+/// Tighten a workspace's on-disk secrets files, best effort.
+fn backfill_modes(ws_name: &str) {
+    let dir = secrets_dir();
+    if !dir.is_dir() {
+        return;
+    }
+    crate::atomic::harden_dir(&dir);
+    crate::atomic::harden_file(&dir.join(format!("{ws_name}.enc")));
+    crate::atomic::harden_file(&dir.join(format!("{ws_name}.keyring-index")));
 }
 
 pub fn workspace_name() -> Result<String> {
@@ -544,6 +636,59 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     fn lock() -> std::sync::MutexGuard<'static, ()> {
         TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn pairs(items: &[(&str, &str)]) -> Vec<(String, String)> {
+        items.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn export_namespaces_every_variable() {
+        let out = export_lines(&pairs(&[("api-key", "abc"), ("db_url", "postgres://x")])).unwrap();
+        assert_eq!(out, "export WS_SECRET_API_KEY='abc'\nexport WS_SECRET_DB_URL='postgres://x'\n");
+    }
+
+    /// The defect this namespace exists for: an unprefixed export of a secret
+    /// named `path` assigns the real `PATH` when the documented
+    /// `eval "$(ws -secrets export)"` runs.
+    #[test]
+    fn a_secret_named_like_a_shell_variable_cannot_reach_it() {
+        for dangerous in ["path", "PATH", "ld_preload", "editor", "PS1"] {
+            let out = export_lines(&pairs(&[(dangerous, "pwned")])).unwrap();
+            let assigned = out.trim_start_matches("export ").split('=').next().unwrap().to_string();
+            assert!(
+                assigned.starts_with(EXPORT_PREFIX),
+                "{dangerous} must not assign a bare shell name, got {assigned}"
+            );
+            assert_ne!(assigned, dangerous.to_ascii_uppercase());
+        }
+    }
+
+    #[test]
+    fn two_names_folding_onto_one_variable_are_refused() {
+        let err = export_lines(&pairs(&[("api_key", "real"), ("api-key", "attacker")]))
+            .expect_err("a collision must not be resolved by last-one-wins");
+        let msg = err.to_string();
+        assert!(msg.contains("WS_SECRET_API_KEY"), "the error names the variable: {msg}");
+    }
+
+    /// `eval` applies whatever reached stdout whatever the exit status, so a
+    /// refusal that has already printed an assignment has already applied it.
+    #[test]
+    fn a_refused_export_emits_nothing_at_all() {
+        let err = export_lines(&pairs(&[("good", "v"), ("api_key", "a"), ("api-key", "b")]))
+            .expect_err("the collision must still be caught when a valid name precedes it");
+        assert!(!err.to_string().contains("export good"));
+
+        // And the same for a name today's `set` would refuse, which an older
+        // store can still hold.
+        assert!(export_lines(&pairs(&[("ok", "v"), ("a;rm -rf /", "v")])).is_err());
+    }
+
+    #[test]
+    fn a_value_cannot_break_out_of_its_quoting() {
+        let out = export_lines(&pairs(&[("n", "it's; rm -rf /")])).unwrap();
+        assert_eq!(out, "export WS_SECRET_N='it'\\''s; rm -rf /'\n");
     }
 
     #[test]
@@ -610,6 +755,24 @@ mod tests {
         s.set("SECOND", "two").unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the credential file must stay owner-only after a second write");
+    }
+
+    /// The index holds names rather than values, but the names say what a
+    /// workspace has credentials for — and it was written at the umask beside a
+    /// `0600` store, which makes the weaker of the two the real floor.
+    #[test]
+    #[cfg(unix)]
+    fn the_keyring_index_and_its_directory_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = TempDir::new().unwrap();
+        let dir = d.path().join("secrets");
+        let index = dir.join("w.keyring-index");
+        write_index_at(&index, &["API_KEY".to_string()]).unwrap();
+
+        let file = std::fs::metadata(&index).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file, 0o600, "the index names must not be world-readable");
+        let parent = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(parent, 0o700, "a directory anyone can list says which workspaces have secrets");
     }
 
     #[test]
