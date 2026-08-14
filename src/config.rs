@@ -35,6 +35,14 @@ pub struct Config {
     /// Whether `ws <name>` asks before resuming a previous conversation.
     /// The prompt defaults to No, so pressing Enter resumes.
     pub resume_prompt: bool,
+    /// Whether a launch points `$EDITOR` at ws's prompt-rewriting shim, which
+    /// is what makes Claude Code's `ctrl+g` rewrite the composer.
+    ///
+    /// Off by default, deliberately: taking over `$EDITOR` for a whole session
+    /// is intrusive enough to be asked for rather than assumed, and the shim
+    /// only earns it if you want the rewrite. Your real editor is recorded at
+    /// launch and still runs for every file that is not a composer buffer.
+    pub rewrite: bool,
 }
 
 impl Default for Config {
@@ -51,6 +59,7 @@ impl Default for Config {
             task_prompt: true,
             notebook_prompt: true,
             resume_prompt: true,
+            rewrite: false,
         }
     }
 }
@@ -131,6 +140,7 @@ pub fn list(cfg: &Config) -> Vec<(String, String)> {
         ("task_prompt".into(), cfg.task_prompt.to_string()),
         ("notebook_prompt".into(), cfg.notebook_prompt.to_string()),
         ("resume_prompt".into(), cfg.resume_prompt.to_string()),
+        ("rewrite".into(), cfg.rewrite.to_string()),
     ]
 }
 
@@ -186,6 +196,7 @@ fn set_locked(path: &std::path::Path, key: &str, value: &str) -> Result<()> {
         "task_prompt" => cfg.task_prompt = parse_bool(value)?,
         "notebook_prompt" => cfg.notebook_prompt = parse_bool(value)?,
         "resume_prompt" => cfg.resume_prompt = parse_bool(value)?,
+        "rewrite" => cfg.rewrite = parse_bool(value)?,
         // C3: `sessions_root` is the base of `remove_one`'s "is this a
         // workspace ws created?" test. `remove_one` no longer trusts it, but
         // an empty or relative root is a misconfiguration in its own right —

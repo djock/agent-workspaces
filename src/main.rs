@@ -26,6 +26,7 @@ mod prompts;
 mod queue;
 mod readme;
 mod registry;
+mod rewrite;
 mod rows;
 mod search;
 mod secrets;

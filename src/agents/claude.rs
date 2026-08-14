@@ -112,6 +112,23 @@ impl Agent for ClaudeAgent {
                 cmd.arg("--session-id").arg(&id);
             }
         }
+        // `ctrl+g` (`chat:externalEditor`) writes the composer buffer to a temp
+        // file and runs `$EDITOR` on it, replacing the composer with what comes
+        // back — the only route by which anything can rewrite prompt text, since
+        // a hook can append context but never replace it. Pointing `$EDITOR` at
+        // ws's shim turns that round-trip into a rewrite.
+        //
+        // Opt-in (`ws config set rewrite true`): taking over `$EDITOR` for a
+        // whole session is intrusive enough to be asked for. The user's own
+        // editor is recorded so the shim can hand it every file that is not a
+        // composer buffer — `/memory` must keep working.
+        if crate::config::load().rewrite {
+            if let Ok(exe) = std::env::current_exe() {
+                let real = std::env::var("EDITOR").unwrap_or_default();
+                cmd.env("WS_REAL_EDITOR", real)
+                    .env("EDITOR", format!("{} internal rewrite", exe.display()));
+            }
+        }
         cmd.current_dir(&ws.root)
             .env("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", ws.memory_dir())
             .env("WS_WORKSPACE", &ws.name)

@@ -8,6 +8,34 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Prompt rewriting on `ctrl+g`, opt-in with `ws config set rewrite true`.**
+  Type a rough prompt, press `ctrl+g`, get a precise one in the composer to
+  review and send yourself.
+
+  This looked impossible: no hook output can replace prompt text, a blocking hook
+  kills the turn before the model is called, and additional context only ever
+  appends. The route is Claude Code's own `chat:externalEditor` — it writes the
+  composer buffer to a temp file, runs `$EDITOR` on it, and replaces the composer
+  with what comes back. ws points `$EDITOR` at a shim.
+
+  The shim runs for *every* `$EDITOR` invocation in the session, so it must not
+  break the editor: anything that is not a composer buffer goes to the editor you
+  configured, captured at launch. Told apart by containment in the OS temp
+  directory, a property ws can check, rather than by a filename pattern, which
+  would be a guess about a private implementation detail. Empty buffers, `/`,
+  `!` and `#` commands, and buffers holding a paste or image placeholder pass
+  through untouched — the buffer holds placeholders, not the pasted bodies, so
+  rewriting one destroys the attachment.
+
+  `WS_REWRITE_CMD` (stdin to stdout) replaces the rewriter; otherwise `claude -p`
+  runs it, hermetically — neutral working directory, session context variables
+  stripped — since a nested agent that inherits the project's `CLAUDE.md` answers
+  about the project rather than about the sentence. Every failure path leaves the
+  text exactly as typed.
+
+  Off by default: taking over `$EDITOR` for a whole session is intrusive enough
+  to be asked for rather than assumed.
+
 - **`ws <base> -features` says which feature worktrees can merge, and why not.**
   One line per `base@*` workspace: whether it merges, how many commits it would
   bring in, and the first thing standing in the way, with `--porcelain` for a

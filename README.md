@@ -307,6 +307,34 @@ Readiness comes from the same computation `--merge` refuses through, so the
 screen cannot promise a merge that then refuses. `--porcelain` emits one
 tab-separated record per worktree instead.
 
+## Prompt rewriting (opt-in)
+
+```sh
+ws config set rewrite true
+```
+
+With this on, a Claude launch points `$EDITOR` at a ws shim, so pressing
+`ctrl+g` in the composer replaces your rough prompt with a sharpened one. You
+review and send it yourself — nothing is submitted on your behalf.
+
+`ctrl+g` is Claude Code's own `chat:externalEditor`: it writes the composer
+buffer to a temp file, runs `$EDITOR`, and takes back whatever the file holds.
+That round-trip is the only route by which anything can replace prompt text — a
+hook can add context but never rewrite it.
+
+The shim runs for every `$EDITOR` invocation in the session, so anything that is
+not a composer buffer (a file `/memory` opened, say) is handed to the editor you
+actually configured, recorded at launch. A buffer that is empty, starts with
+`/`, `!` or `#`, or holds a paste/image placeholder is passed through untouched —
+rewriting a placeholder would destroy the attachment it stands for.
+
+Set `WS_REWRITE_CMD` to any command that reads the prompt on stdin and writes the
+replacement on stdout to use your own rewriter. Otherwise `claude -p` does it,
+run in a neutral directory with the session's context variables stripped so it
+answers about your sentence rather than about your project. Every failure path —
+no rewriter, non-zero exit, empty output, a 30-second timeout — leaves your text
+exactly as typed.
+
 ## Messages between workspaces
 
 Two agents working on related things can tell each other something:

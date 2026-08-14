@@ -30,6 +30,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "bash-audit" => bash_audit(),
         "session-end" => session_end(),
         "secret-redact" => secret_redact(),
+        // The $EDITOR shim behind ctrl+g. Takes the file Claude Code wrote the
+        // composer buffer to; see `rewrite`.
+        "rewrite" => {
+            return crate::rewrite::run(args.get(1).map(String::as_str).unwrap_or(""));
+        }
         // real handlers are added in later tasks:
         _ => {} // unknown → silent no-op (never break the agent)
     }
