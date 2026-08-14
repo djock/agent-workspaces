@@ -360,7 +360,13 @@ pub fn render_row(r: &WorkspaceRow, selected: bool, now: i64) -> String {
     let live = if r.live_pid.is_some() { '*' } else { ' ' };
     let state = match &r.state {
         RowState::Ok if r.archived => "[archived]".to_string(),
-        RowState::Ok => r.status.clone().unwrap_or_default(),
+        // What the agent says it is doing beats the status text the user set
+        // last week: three live workspaces used to render as three identical
+        // rows, and this column is the only thing that tells them apart.
+        RowState::Ok => match &r.agent_state {
+            Some(s) => s.label(),
+            None => r.status.clone().unwrap_or_default(),
+        },
         RowState::Missing => "(missing)".to_string(),
         RowState::Corrupt(_) => "(corrupt)".to_string(),
     };
@@ -464,7 +470,10 @@ pub fn render_info(
         }
     }
     if let Some(pid) = r.live_pid {
-        status.push(format!("running · pid {pid}"));
+        match &r.agent_state {
+            Some(s) => status.push(format!("running · pid {pid} · {}", s.label())),
+            None => status.push(format!("running · pid {pid}")),
+        }
     }
     fact("status", status.join(" · "));
     fact("activity", r.last_activity.map(|t| crate::rows::ago(t, now)).unwrap_or_default());
@@ -781,12 +790,55 @@ mod tests {
             state: RowState::Ok,
             agent: "claude".into(),
             live_pid: None,
+            agent_state: None,
             archived: false,
             tags: Vec::new(),
             status: None,
             last_activity: None,
             limits: None,
         }
+    }
+
+    /// Three live workspaces used to render as three identical rows, with the
+    /// objective text the only thing telling them apart.
+    #[test]
+    fn a_live_row_says_what_the_agent_is_doing() {
+        let r = WorkspaceRow {
+            live_pid: Some(4242),
+            agent_state: Some(crate::agentstate::AgentState {
+                pid: 4242,
+                status: "busy".into(),
+                waiting_for: None,
+            }),
+            ..row("api")
+        };
+        assert!(render_row(&r, false, 0).contains("busy"), "{}", render_row(&r, false, 0));
+    }
+
+    /// The agent's own answer beats the status text the user set last week: one
+    /// describes now, the other described a Tuesday.
+    #[test]
+    fn the_agents_state_takes_precedence_over_a_stale_status_line() {
+        let r = WorkspaceRow {
+            status: Some("mid-refactor".into()),
+            agent_state: Some(crate::agentstate::AgentState {
+                pid: 1,
+                status: "waiting".into(),
+                waiting_for: Some("input needed".into()),
+            }),
+            ..row("api")
+        };
+        let line = render_row(&r, false, 0);
+        assert!(line.contains("waiting (input needed)"), "{line}");
+        assert!(!line.contains("mid-refactor"), "{line}");
+    }
+
+    /// Nothing running, an agent that publishes nothing, and a record ws would
+    /// not trust are all the same to the display: it has nothing to add.
+    #[test]
+    fn a_row_with_no_agent_state_still_shows_the_status_the_user_set() {
+        let r = WorkspaceRow { status: Some("mid-refactor".into()), ..row("api") };
+        assert!(render_row(&r, false, 0).contains("mid-refactor"));
     }
 
     fn archived(name: &str) -> WorkspaceRow {

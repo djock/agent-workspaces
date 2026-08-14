@@ -28,6 +28,11 @@ pub struct WorkspaceRow {
     pub agent: String,
     /// `Some(pid)` when a live process holds the workspace lock.
     pub live_pid: Option<u32>,
+    /// What the agent running here says it is doing, when one is running and
+    /// publishes it. `None` covers three different things — nothing running,
+    /// an agent that publishes no record, and a record ws would not trust —
+    /// which the display treats identically because it has nothing to add.
+    pub agent_state: Option<crate::agentstate::AgentState>,
     pub archived: bool,
     pub tags: Vec<String>,
     pub status: Option<String>,
@@ -117,6 +122,9 @@ pub struct Listing {
 /// As `list_workspaces`, keeping the pre-filter count.
 pub fn list_all(opts: &ListOpts) -> Result<Listing> {
     let cfg = crate::config::load();
+    // Read once for the whole listing, not once per row: this is two passes
+    // however many agents are running, and the picker repaints on every key.
+    let states = crate::agentstate::by_directory();
     let mut out = Vec::new();
     let mut total = 0usize;
     for (name, path) in crate::registry::all_checked()? {
@@ -144,6 +152,7 @@ pub fn list_all(opts: &ListOpts) -> Result<Listing> {
         out.push(WorkspaceRow {
             agent: meta.default_agent.clone().unwrap_or_else(|| cfg.default_agent.clone()),
             live_pid: crate::lock::live_pid(&ws_dir.join("local/lock")),
+            agent_state: crate::agentstate::for_directory(&states, &path),
             archived: meta.archived,
             tags: meta.tags.clone(),
             status: meta.status.clone(),

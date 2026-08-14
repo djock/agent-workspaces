@@ -8,6 +8,19 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The picker says what each live agent is doing.** Claude Code publishes a
+  record per running session under `~/.claude/sessions/`; the row now reads
+  `busy` or `waiting (input needed)` instead of the status text you set last
+  week. Three live workspaces used to render as three identical rows, with the
+  objective the only thing telling them apart.
+
+  A record outlives a crash, so neither half of the check is optional: the pid
+  must still be alive *and* the process must still report the start time the
+  record holds, or a pid the kernel has since handed to something else keeps a
+  dead session looking busy. Costs a flat two passes however many sessions are
+  running — one directory read, one `ps` — because the picker repaints on every
+  keystroke. A host that publishes no records simply shows no state.
+
 - **Prompt rewriting on `ctrl+g`, opt-in with `ws config set rewrite true`.**
   Type a rough prompt, press `ctrl+g`, get a precise one in the composer to
   review and send yourself.

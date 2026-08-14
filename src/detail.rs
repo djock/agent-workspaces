@@ -92,6 +92,7 @@ mod tests {
             state: RowState::Ok,
             agent: "claude".into(),
             live_pid: None,
+            agent_state: None,
             archived: false,
             tags: vec![],
             status: None,

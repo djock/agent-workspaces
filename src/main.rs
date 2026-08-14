@@ -1,5 +1,6 @@
 mod actors;
 mod agents;
+mod agentstate;
 mod atomic;
 mod autosave;
 mod cli;
