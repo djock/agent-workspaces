@@ -198,6 +198,26 @@ The project follows [Semantic Versioning](https://semver.org/).
   release with `gh` stubbed on PATH — the gates had no tests at all, which is
   how a block that never ran stayed invisible.
 
+- **The redaction rule stops redacting documentation.** Values that are
+  instructions to the reader — `your_discord_bot_token`, `<paste-key-here>`,
+  `${POSTGRES_PASSWORD}`, `changeme-…` — are no longer treated as credentials.
+  Redacting one moved a placeholder into the secret store and left an
+  `.env.example` that no longer showed the reader what to put there.
+
+  This was not found by reading the matcher. The rule now lives in
+  `src/redact_rule.rs`, included by both the binary and
+  `tests/redact_population.rs`, which measures it against a real tree
+  (`WS_MEASURE_ROOT=~/Projects cargo test --test redact_population -- --ignored
+  --nocapture`) and prints names, value *shapes* and paths — never values. Over
+  738 files and 1,289 assignments it fired on 15 names, of which 3 were
+  `.env.example` placeholders; after the fix, 12 firings, every one a real
+  credential, with the placeholders in the miss list where they belong. A guard
+  test fails if the rule is ever defined in `src/internal.rs` again, which would
+  leave the harness measuring a matcher the binary does not run.
+
+  `docs/releasing.md` now makes the measurement part of shipping a change to
+  that file, and requires CI to be green on the release commit *before* tagging.
+
 ## [0.8.0] - 2026-08-14
 
 ### Added

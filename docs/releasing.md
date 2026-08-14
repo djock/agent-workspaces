@@ -151,14 +151,46 @@ $EDITOR Cargo.toml CHANGELOG.md
 cargo test --all-targets --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 
-# 2. Tag and push.
-git tag v0.3.0 && git push origin main && git push origin v0.3.0
+# 2. If src/redact_rule.rs changed, measure it (see below) before going further.
 
-# 3. The workflow builds both targets, assembles SHA256SUMS, signs it, attests
+# 3. Push the release commit and WAIT for CI on it to go green.
+git push origin main
+gh run watch "$(gh run list --branch main --limit 1 --json databaseId --jq '.[0].databaseId')"
+
+# 4. Only then tag. A tag is one-way: it names a commit forever, and deleting a
+#    pushed one leaves anyone who already fetched it on a version that no longer
+#    exists.
+git tag v0.3.0 && git push origin v0.3.0
+
+# 5. The workflow builds both targets, assembles SHA256SUMS, signs it, attests
 #    provenance, and creates a DRAFT release. Review the assets, then publish:
 gh release view v0.3.0
 gh release edit v0.3.0 --draft=false
 ```
+
+**Wait for CI before tagging, not after.** `cargo test` locally is not the same
+check: CI builds the cross-compiled target and runs on a clean checkout, and it
+is where a `--locked` failure after a version bump shows up. `cs` tagged two
+releases on commits whose CI then went red, and both had to be re-cut — the tag
+could not be moved, only orphaned.
+
+### The redaction rule ships a claim about a population
+
+`src/redact_rule.rs` decides what counts as a credential in a file the agent
+wrote. A diff-scoped review sees the matcher once and judges whether it *looks*
+right; that is how `cs`'s corpus redactor survived twenty-nine releases before
+anyone ran it over the transcripts it was protecting and found it had fired
+twice, both false positives, catching nothing.
+
+So a change there is not done until it has been measured against a real tree:
+
+```sh
+WS_MEASURE_ROOT=~/Projects cargo test --test redact_population -- --ignored --nocapture
+```
+
+Read all three lists. Firings must be credentials; the "already redacted" list
+must not be shrinking; the miss list must be configuration and documentation,
+nothing else. The harness prints names, value *shapes* and paths — never values.
 
 Releases are created as drafts deliberately: an unsigned or half-uploaded release
 that is already public cannot be un-published, only deleted.
