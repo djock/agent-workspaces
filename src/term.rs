@@ -45,6 +45,28 @@ pub fn alloc_color() -> &'static str {
     PALETTE.choose(&mut rand::thread_rng()).copied().unwrap_or("blue")
 }
 
+/// Strip the bytes that would make text *do* something on its way to a terminal.
+///
+/// `ws` renders text other people wrote. `.ws/` is git-synced by design, so a
+/// workspace's status line, tags, name, notebook and search hits can all arrive
+/// from a teammate — or from a clone of a repository nobody on this machine
+/// audited. An `ESC` in any of them is a control sequence the moment it is
+/// printed: it can repaint the screen, move the cursor over other rows, set the
+/// window title, or (on terminals with the relevant feature enabled) put text
+/// into the user's input buffer.
+///
+/// Removed: the C0 range and `DEL`, plus the C1 range, where `0x9B` is an
+/// alternate CSI on terminals decoding 8-bit controls. `\t`, `\r` and `\n` go
+/// too: every caller here renders a *one-line* field, and a newline in one is
+/// how a status line becomes two rows.
+///
+/// This is a render-time guard, not a validation rule — the bytes stay on disk
+/// exactly as written, because the file belongs to whoever wrote it and a
+/// silently rewritten notebook would be the worse failure.
+pub fn display_safe(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control() && !matches!(c, '\u{80}'..='\u{9f}')).collect()
+}
+
 /// OSC 2: set window/tab title.
 pub fn title_seq(title: &str) -> String {
     format!("\x1b]2;{title}\x07")
@@ -133,5 +155,29 @@ mod tests {
     #[test]
     fn magenta_still_resolves_as_purple() {
         assert_eq!(rgb("magenta"), rgb("purple"));
+    }
+
+    #[test]
+    fn display_safe_removes_what_a_terminal_would_execute() {
+        // A status line that repaints the screen and retitles the window.
+        assert_eq!(display_safe("busy\x1b[2J\x1b]0;pwned\x07"), "busy[2J]0;pwned");
+        // 0x9B is CSI on a terminal decoding 8-bit controls, so stripping ESC
+        // alone is not enough.
+        assert_eq!(display_safe("a\u{9b}31mred"), "a31mred");
+        assert_eq!(display_safe("bell\x07 del\x7f nul\0"), "bell del nul");
+    }
+
+    /// One-line fields are one line: a newline in a status is how a row becomes
+    /// two rows and a table stops lining up.
+    #[test]
+    fn display_safe_keeps_a_one_line_field_on_one_line() {
+        assert_eq!(display_safe("one\ntwo\r\tthree"), "onetwothree");
+    }
+
+    #[test]
+    fn display_safe_leaves_ordinary_text_alone() {
+        for s in ["mid-refactor", "café ☕ — 100%", "日本語", "a;b|c$(d)`e`"] {
+            assert_eq!(display_safe(s), s, "sanitizing must not mangle real text");
+        }
     }
 }

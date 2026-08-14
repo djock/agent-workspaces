@@ -28,12 +28,23 @@ fn table(ws_toml: &Path) -> Option<toml::Table> {
 fn tags_from_table(t: &toml::Table) -> Vec<String> {
     t.get("tags")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        // Sanitized like every other rendered field — tags are printed in the
+        // list, the picker and the detail pane. `add_tags`/`remove_tags` compare
+        // and write through this same function, so a tag carrying a control byte
+        // is matched by the text the user can actually see and type.
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(crate::term::display_safe)).collect())
         .unwrap_or_default()
 }
 
 fn from_table(t: &toml::Table) -> Meta {
-    let s = |k: &str| t.get(k).and_then(|v| v.as_str()).map(String::from);
+    // Sanitized at the one place `workspace.toml` becomes a `Meta`, rather than
+    // at each of the surfaces that print one. `.ws/workspace.toml` is tracked
+    // and git-synced, so `status`, `tags` and `name` are text a teammate — or a
+    // cloned repository — supplies, and every reader of a `Meta` (the list, the
+    // picker, the detail pane, the status line, the tab title) puts it on a
+    // terminal. Covering the funnel is what makes that true for the next reader
+    // as well as today's. See `term::display_safe`.
+    let s = |k: &str| t.get(k).and_then(|v| v.as_str()).map(crate::term::display_safe);
     Meta {
         name: s("name").unwrap_or_default(),
         created: s("created").unwrap_or_default(),
@@ -241,6 +252,25 @@ mod tests {
         assert_eq!(missing.name, "");
         assert!(!missing.archived);
         assert!(missing.tags.is_empty());
+    }
+
+    /// `workspace.toml` is tracked and git-synced, so its rendered fields are
+    /// text a teammate or a cloned repository supplies. TOML admits an escaped
+    /// `` happily, and every surface that shows a `Meta` puts it on a
+    /// terminal.
+    #[test]
+    fn rendered_fields_cannot_carry_a_control_sequence() {
+        let (_d, p) = wt("name = \"proj\\u001b[2J\"\nstatus = \"busy\\u001b]0;pwned\\u0007\"\n\
+             tags = [\"ok\", \"ev\\u001bil\"]\n");
+        let m = read(&p);
+        for field in [&m.name, m.status.as_ref().unwrap(), &m.tags[1]] {
+            assert!(
+                !field.contains('\u{1b}'),
+                "an escape byte reached a rendered field: {field:?}"
+            );
+        }
+        assert_eq!(m.status.as_deref(), Some("busy]0;pwned"));
+        assert_eq!(m.tags, vec!["ok".to_string(), "evil".to_string()]);
     }
 
     #[test]

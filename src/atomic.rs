@@ -77,6 +77,56 @@ pub fn harden_file(path: &Path) {
     let _ = path;
 }
 
+/// Append one line to a JSON-lines file, repairing a torn tail first.
+///
+/// Every `.jsonl` writer here used a bare append. A process killed mid-write
+/// leaves a final line with no newline, and the next append then splices two
+/// records onto one line — so one interrupted write costs *two* records: the
+/// torn one, which was never complete, and the intact one written after it,
+/// which a per-line reader drops along with it. `.ws/timeline.jsonl` is what
+/// `ws -who` and `ws -conversations` read, and `.ws/local/tasks.jsonl` is a
+/// queue, where losing a record loses work the user asked for.
+///
+/// The repair is a newline, written before the record rather than after it.
+/// Terminating each line as it is written would leave the same window one byte
+/// later; what makes this safe is that the repair and the record go out in one
+/// `write_all` to an `O_APPEND` descriptor, so a concurrent writer cannot land
+/// between them.
+pub fn append_line(path: &Path, line: &str) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("failed to create {}", dir.display()))?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(true)
+        .open(path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+
+    let mut needs_newline = false;
+    let len = f.seek(SeekFrom::End(0))?;
+    if len > 0 {
+        f.seek(SeekFrom::Start(len - 1))?;
+        let mut last = [0u8; 1];
+        if f.read_exact(&mut last).is_ok() {
+            needs_newline = last[0] != b'\n';
+        }
+    }
+
+    let mut out = String::with_capacity(line.len() + 2);
+    if needs_newline {
+        out.push('\n');
+    }
+    out.push_str(line);
+    if !line.ends_with('\n') {
+        out.push('\n');
+    }
+    f.write_all(out.as_bytes()).with_context(|| format!("cannot append to {}", path.display()))?;
+    Ok(())
+}
+
 /// `atomic_write`, but with the temp file created at an explicit unix mode
 /// *before* any bytes are written to it.
 ///
@@ -194,6 +244,35 @@ fn write_tmp(tmp: &Path, contents: &[u8], mode: Option<u32>) -> std::io::Result<
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// The defect: an interrupted write leaves a final line with no newline, a
+    /// bare append splices the next record onto it, and a per-line reader drops
+    /// the spliced line whole — so one bad write costs two records.
+    #[test]
+    fn appending_after_a_torn_write_does_not_splice_two_records() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("timeline.jsonl");
+        std::fs::write(&p, "{\"kind\":\"first\"}\n{\"kind\":\"torn\"").unwrap();
+
+        append_line(&p, "{\"kind\":\"next\"}").unwrap();
+
+        let body = std::fs::read_to_string(&p).unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 3, "the repair adds a line, it does not merge one: {body:?}");
+        assert_eq!(lines[2], "{\"kind\":\"next\"}", "the new record must stand alone");
+        // The torn record stays torn — it was never complete — but the damage
+        // stops there.
+        assert_eq!(lines[1], "{\"kind\":\"torn\"");
+    }
+
+    #[test]
+    fn appending_to_a_well_formed_file_adds_exactly_one_line() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("timeline.jsonl");
+        append_line(&p, "{\"a\":1}").unwrap();
+        append_line(&p, "{\"a\":2}").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{\"a\":1}\n{\"a\":2}\n");
+    }
 
     #[test]
     fn writes_and_replaces_atomically() {

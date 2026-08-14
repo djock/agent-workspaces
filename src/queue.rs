@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,9 +62,10 @@ enum Record {
 /// `add` joins the whole record into one JSON line and appends it with a single
 /// `O_APPEND` write (`append`, below); POSIX only guarantees that write atomic
 /// up to a platform-specific limit in practice, and a multi-KiB line risks being
-/// torn by a concurrent append from another `ws` process. `tasks` treats any
-/// line it cannot parse as a hard error (`corrupt queue record`), so one torn
-/// line does not lose one task — it bricks the whole queue for every reader.
+/// torn by a concurrent append from another `ws` process. A torn line now costs
+/// only itself — `tasks` drops a record that ends mid-document and `append_line`
+/// terminates it before writing the next one — but it is still a lost task, and
+/// staying under the atomic-write limit is what keeps it from happening at all.
 ///
 /// The cap is on the serialized line, not on the caller's text, because that is
 /// what the invariant is actually about. Checking `text.len()` under-counted
@@ -78,7 +78,7 @@ fn append(tasks_path: &Path, rec: &Record) -> Result<()> {
     if let Some(dir) = tasks_path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
-    let mut line = serde_json::to_string(rec)?;
+    let line = serde_json::to_string(rec)?;
     if line.len() + 1 > MAX_TASK_LINE_BYTES {
         anyhow::bail!(
             "this task serializes to {} bytes, over the {MAX_TASK_LINE_BYTES}-byte line cap: \
@@ -89,15 +89,11 @@ fn append(tasks_path: &Path, rec: &Record) -> Result<()> {
             line.len() + 1
         );
     }
-    line.push('\n');
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(tasks_path)
-        .with_context(|| format!("cannot open {}", tasks_path.display()))?;
-    f.write_all(line.as_bytes())
-        .with_context(|| format!("cannot append to {}", tasks_path.display()))?;
-    Ok(())
+    // `append_line` terminates a tail an interrupted write left unterminated
+    // before adding to it. Without that repair this record is spliced onto the
+    // torn one and lost with it — and for a queue, a lost record is work the
+    // user asked for that nobody will ever do.
+    crate::atomic::append_line(tasks_path, &line)
 }
 
 pub fn add(tasks_path: &Path, text: &str, actor: &str) -> Result<String> {
@@ -132,13 +128,39 @@ pub fn tasks(tasks_path: &Path) -> Result<Vec<Task>> {
         if line.trim().is_empty() {
             continue;
         }
-        let rec: Record = serde_json::from_str(line).with_context(|| {
-            format!("corrupt queue record at {}:{}", tasks_path.display(), i + 1)
-        })?;
-        match rec {
-            Record::Add { ts, id, text, .. } => {
-                out.push(Task { id, text, state: TaskState::Pending, added: ts, note: None })
+        // A line that ends mid-document is a write that was interrupted, not a
+        // corrupt queue: it was never a complete record and nothing can recover
+        // it, so it is dropped and the rest of the file still reads. Anything
+        // else that fails to parse stays a hard error — that is damage to a
+        // record which was once whole, and skipping it would lose a task in
+        // silence.
+        //
+        // The discriminator is serde's own error category rather than "is this
+        // the last line": `append_line` repairs a torn tail by terminating it,
+        // so by the time anyone reads the file the truncated record usually has
+        // a newline after it and is no longer last.
+        let rec: Record = match serde_json::from_str(line) {
+            Ok(r) => r,
+            Err(e) if e.classify() == serde_json::error::Category::Eof => continue,
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("corrupt queue record at {}:{}", tasks_path.display(), i + 1)
+                })
             }
+        };
+        match rec {
+            // Sanitized on the way out of the file rather than on the way in:
+            // `ws -task add` can be run against another workspace, and the queue
+            // is tracked, so the text rendered by `-task list` and the picker is
+            // not necessarily text this machine's user typed. The stored record
+            // keeps whatever was written — see `term::display_safe`.
+            Record::Add { ts, id, text, .. } => out.push(Task {
+                id,
+                text: crate::term::display_safe(&text),
+                state: TaskState::Pending,
+                added: ts,
+                note: None,
+            }),
             Record::Drop { id, .. } => {
                 out.retain(|t| t.id != id);
             }
@@ -172,6 +194,46 @@ mod tests {
 
     fn q(td: &TempDir) -> std::path::PathBuf {
         td.path().join("queue/tasks.jsonl")
+    }
+
+    /// A queue is the worst place to lose a record: it holds work the user asked
+    /// for. An interrupted write used to take the next task down with it, and
+    /// the reader treated the splice as a corrupt queue — bricking it for every
+    /// reader rather than losing one entry.
+    #[test]
+    fn a_torn_write_costs_only_itself() {
+        let td = TempDir::new().unwrap();
+        let p = q(&td);
+        add(&p, "first task", "alice").unwrap();
+        // Simulate a process killed mid-append: a final line, unterminated.
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+            f.write_all(b"{\"kind\":\"add\",\"id\":\"x\",\"ts\":\"2026-01-01T00:00:00Z\",\"te")
+                .unwrap();
+        }
+
+        add(&p, "second task", "alice").unwrap();
+
+        let tasks = tasks(&p).expect("a torn tail must not brick the queue");
+        let texts: Vec<&str> = tasks.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["first task", "second task"],
+            "the task written after the torn line must survive"
+        );
+    }
+
+    /// The other half of that rule: a *terminated* line that will not parse is
+    /// damage to a record that was once whole, and skipping it would lose a task
+    /// silently.
+    #[test]
+    fn a_corrupt_complete_record_is_still_a_hard_error() {
+        let td = TempDir::new().unwrap();
+        let p = q(&td);
+        add(&p, "first task", "alice").unwrap();
+        crate::atomic::append_line(&p, "{not json at all}").unwrap();
+        assert!(tasks(&p).is_err(), "a complete but corrupt record must not be skipped in silence");
     }
 
     #[test]

@@ -18,15 +18,12 @@ pub fn record(timeline_path: &Path, kind: &str, actor: &str, extra: Value) -> Re
             }
         }
     }
-    if let Some(dir) = timeline_path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut line = serde_json::to_string(&event)?;
-    line.push('\n');
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(timeline_path)?;
-    f.write_all(line.as_bytes())?;
-    Ok(())
+    // Through `append_line`, which repairs a tail left unterminated by an
+    // interrupted write before adding to it. A bare append splices this record
+    // onto that one, and the reader below drops the whole spliced line — so the
+    // interrupted write would cost this record too. `ws -conversations` renders
+    // lineage from these events, and a dropped `rotated` breaks the chain.
+    crate::atomic::append_line(timeline_path, &serde_json::to_string(&event)?)
 }
 
 /// What one actor did in a workspace.
@@ -62,8 +59,12 @@ pub fn by_actor(timeline_path: &Path) -> Result<Vec<ActorSummary>> {
             continue;
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        let actor = v.get("actor").and_then(|a| a.as_str()).unwrap_or("unknown").to_string();
-        let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("?").to_string();
+        // `ws -who` prints both of these, and the timeline is a tracked file
+        // every actor appends to — an actor slug is derived from a git identity,
+        // which is whatever the other machine's `user.name` says.
+        let actor =
+            crate::term::display_safe(v.get("actor").and_then(|a| a.as_str()).unwrap_or("unknown"));
+        let kind = crate::term::display_safe(v.get("kind").and_then(|k| k.as_str()).unwrap_or("?"));
         let ts = v.get("ts").and_then(|t| t.as_str()).unwrap_or("").to_string();
 
         match acc.get_mut(&actor) {

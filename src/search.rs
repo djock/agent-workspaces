@@ -87,7 +87,11 @@ pub fn search_dir(root: &Path, query: &str) -> Result<Vec<(PathBuf, u64, String)
             &matcher,
             &path,
             UTF8(|lnum, line| {
-                file_hits.push((path.clone(), lnum, line.trim_end().to_string()));
+                // A hit is a line out of a document ws did not write, printed
+                // straight to the terminal. `.ws/` is git-synced, and search
+                // reaches every workspace at once, so one hostile notebook line
+                // would otherwise reach the screen of anyone who searched.
+                file_hits.push((path.clone(), lnum, crate::term::display_safe(line.trim_end())));
                 Ok(true)
             }),
         );
@@ -162,6 +166,23 @@ mod tests {
         let nb = hits.iter().find(|(p, _, _)| p.ends_with("notebook.me.md")).unwrap();
         assert_eq!(nb.1, 2, "line numbers are 1-based");
         assert!(nb.2.contains("429"));
+    }
+
+    /// A hit is a line from a document ws did not write, printed straight to the
+    /// terminal — and `ws -search` reaches every registered workspace at once, so
+    /// one hostile notebook line is enough to reach anyone who searches.
+    #[test]
+    fn a_matched_line_cannot_carry_a_control_sequence_to_the_terminal() {
+        let d = fixture();
+        std::fs::write(
+            d.path().join(".ws/notebook/notebook.them.md"),
+            "kraken \x1b[2J\x1b]0;pwned\x07 notes\n",
+        )
+        .unwrap();
+        let hits = search_dir(d.path(), "kraken").unwrap();
+        let hit = hits.iter().find(|(p, _, _)| p.ends_with("notebook.them.md")).unwrap();
+        assert!(!hit.2.contains('\u{1b}'), "an escape byte survived into a hit: {:?}", hit.2);
+        assert!(hit.2.contains("kraken"), "the match itself must survive: {:?}", hit.2);
     }
 
     #[test]
