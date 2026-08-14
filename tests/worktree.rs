@@ -342,3 +342,24 @@ fn a_bases_features_never_include_another_bases() {
         .success()
         .stdout(predicates::str::contains("feat"));
 }
+
+/// A registered worktree whose directory is gone is the state a listing exists
+/// to surface. It was reported through the same variant as uncommitted work,
+/// whose summary counts lines — so a missing directory read as
+/// `blocked: 1 uncommitted change(s)`, which is a listing saying something
+/// false about a workspace nobody can open.
+#[test]
+fn a_feature_whose_directory_is_gone_says_so() {
+    let env = Env::new();
+    base_workspace(&env, "api");
+    env.cmd().arg("api@ghost").assert().success();
+    std::fs::remove_dir_all(env.root.join("api@ghost")).unwrap();
+
+    let out = env.cmd().args(["api", "-features"]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.contains("unreadable"), "the blocker must name what is wrong: {text}");
+    assert!(
+        !text.contains("uncommitted change"),
+        "a directory that does not exist has no uncommitted changes: {text}"
+    );
+}

@@ -31,8 +31,33 @@ pub const PRIVATE_FILE: u32 = 0o600;
 /// this call is responsible for, not just the leaf, because
 /// `.ws/notebook` being `0700` is worth nothing if `.ws` itself is `0755`.
 pub fn create_private_dir_all(path: &Path) -> Result<()> {
+    // Which components this call is responsible for is decided *before*
+    // creating anything: afterwards every one of them exists and there is no
+    // way to tell ours from a directory that was already there. Hardening only
+    // the leaf — the first version, which the sentence above already claimed
+    // otherwise — left `.ws/local/mail` at `0700` under a `0755` `local/`
+    // wherever a caller created the whole chain at once.
+    let mut missing = Vec::new();
+    let mut cursor = Some(path);
+    while let Some(c) = cursor {
+        if c.exists() {
+            break;
+        }
+        missing.push(c.to_path_buf());
+        cursor = c.parent().filter(|p| !p.as_os_str().is_empty());
+    }
+
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create {}", path.display()))?;
+
+    // Leaf first, so the tightest directory is private before its parent
+    // becomes traversable.
+    for dir in &missing {
+        harden_dir(dir);
+    }
+    // The leaf itself is hardened whether or not this call created it: a `.ws/`
+    // that arrived by clone exists already, and tightening it is the whole point
+    // of calling this on open as well as on create.
     harden_dir(path);
     Ok(())
 }
@@ -92,6 +117,12 @@ pub fn harden_file(path: &Path) {
 /// later; what makes this safe is that the repair and the record go out in one
 /// `write_all` to an `O_APPEND` descriptor, so a concurrent writer cannot land
 /// between them.
+///
+/// The *decision* to repair is a separate read and is not part of that atom: two
+/// processes appending at the same moment can both see the unterminated tail and
+/// both prepend a newline. That costs a blank line, which every reader here
+/// already skips — the failure this guards against is a spliced record, and a
+/// blank line is not one.
 pub fn append_line(path: &Path, line: &str) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
     if let Some(dir) = path.parent() {
@@ -272,6 +303,45 @@ mod tests {
         append_line(&p, "{\"a\":1}").unwrap();
         append_line(&p, "{\"a\":2}").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "{\"a\":1}\n{\"a\":2}\n");
+    }
+
+    /// `.ws/notebook` at `0700` under a `0755` `.ws` protects nothing, and a
+    /// caller that creates the whole chain in one call is the ordinary case —
+    /// `.ws/local/mail/new` is created that way. Hardening only the leaf was the
+    /// first version, and the doc comment claimed otherwise the whole time.
+    #[test]
+    #[cfg(unix)]
+    fn every_directory_this_call_creates_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = TempDir::new().unwrap();
+        let leaf = d.path().join("outer/middle/inner");
+        create_private_dir_all(&leaf).unwrap();
+
+        for p in [&leaf, &d.path().join("outer/middle"), &d.path().join("outer")] {
+            let mode = std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{} is {mode:o}", p.display());
+        }
+    }
+
+    /// The other half of the rule: a directory that was already there is not
+    /// this call's to re-permission, except the leaf, which is exactly what
+    /// `create_private_dir_all` is called on open to tighten.
+    #[test]
+    #[cfg(unix)]
+    fn an_existing_parent_is_left_as_it_was() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = TempDir::new().unwrap();
+        let parent = d.path().join("theirs");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        create_private_dir_all(&parent.join("ours")).unwrap();
+
+        assert_eq!(std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(
+            std::fs::metadata(parent.join("ours")).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
     }
 
     #[test]

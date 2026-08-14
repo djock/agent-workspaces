@@ -112,7 +112,14 @@ pub fn deliver(to_root: &Path, msg: &Message) -> Result<()> {
     let name = format!("{}.json", msg.id);
     let tmp = tmp_dir(to_root).join(&name);
     let body = serde_json::to_string(msg)?;
-    std::fs::write(&tmp, &body).with_context(|| format!("cannot write {}", tmp.display()))?;
+    // Owner-only, like everything else ws writes. The mailbox directories are
+    // already `0700`, so this is defence in depth — the same argument that put
+    // the keyring index at `0600` next to a `0600` store: when the two disagree,
+    // the weaker one is the real floor, and directory modes are the half that
+    // does not survive a copy, a restore, or a `chmod -R` somebody meant for
+    // something else.
+    crate::atomic::atomic_write_with_mode(&tmp, &body, Some(crate::atomic::PRIVATE_FILE))
+        .with_context(|| format!("cannot write {}", tmp.display()))?;
     std::fs::rename(&tmp, new_dir(to_root).join(&name))
         .with_context(|| format!("cannot deliver to {}", new_dir(to_root).display()))?;
     Ok(())
@@ -142,19 +149,37 @@ pub fn unread(root: &Path) -> Vec<Message> {
     read_dir_messages(&new_dir(root))
 }
 
-/// How many, without parsing any of them.
+/// How many messages `unread` would return.
 ///
-/// The status line and the prompt hook ask this on every render and every turn,
-/// where the bodies are not wanted — and a count that means the same thing as
-/// the list is what keeps the badge and the digest from disagreeing.
+/// Counted *through* `unread`, not by counting files. Counting files was
+/// cheaper and wrong: `read_dir_messages` deliberately skips a message it
+/// cannot parse, so one unparseable file made the status line say "1 unread"
+/// with nothing behind it — and since `mark_read` moved only what it could
+/// parse, the file stayed in `new/` and the badge stayed lit forever. A mailbox
+/// holds a handful of small files and `new/` is drained on every read, so the
+/// parse is not worth a second definition of "unread".
 pub fn unread_count(root: &Path) -> usize {
-    std::fs::read_dir(new_dir(root))
-        .map(|es| {
-            es.filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-                .count()
+    unread(root).len()
+}
+
+/// Files in `new/` that no reader can turn into a message.
+///
+/// They are not silently deleted and not left to accumulate either: `mark_read`
+/// moves them to `cur/` with everything else, which takes them out of the
+/// unread set while leaving them on disk to be looked at.
+fn unreadable(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .filter(|p| {
+            std::fs::read_to_string(p)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<Message>(&raw).ok())
+                .is_none()
         })
-        .unwrap_or(0)
+        .collect()
 }
 
 /// Everything this workspace has received, read or not, oldest first.
@@ -169,14 +194,26 @@ pub fn history(root: &Path) -> Vec<Message> {
 ///
 /// Moving rather than deleting: the exchange is still readable with `-msg log`,
 /// and a reply needs its parent's thread id. Returns what was moved.
-pub fn mark_read(root: &Path) -> Vec<Message> {
+///
+/// A file that will not parse is moved too, and counted in the second return
+/// value. Leaving it behind is what kept `new/` from ever emptying — every
+/// read re-scanned a file no reader could use, and (when the count still came
+/// from counting files) the badge never went out.
+pub fn mark_read(root: &Path) -> (Vec<Message>, usize) {
     let msgs = unread(root);
     let _ = crate::atomic::create_private_dir_all(&cur_dir(root));
     for m in &msgs {
         let name = format!("{}.json", m.id);
         let _ = std::fs::rename(new_dir(root).join(&name), cur_dir(root).join(&name));
     }
-    msgs
+    let mut set_aside = 0;
+    for p in unreadable(&new_dir(root)) {
+        let Some(name) = p.file_name() else { continue };
+        if std::fs::rename(&p, cur_dir(root).join(name)).is_ok() {
+            set_aside += 1;
+        }
+    }
+    (msgs, set_aside)
 }
 
 /// Compose a message. `thread` is the parent's thread for a reply, `None` to
@@ -251,6 +288,21 @@ mod tests {
         root
     }
 
+    /// A message is text one workspace wrote for another to read, and it sits in
+    /// a directory whose mode is the half that does not survive a copy or a
+    /// restore. The file carries its own.
+    #[test]
+    #[cfg(unix)]
+    fn a_delivered_message_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = TempDir::new().unwrap();
+        let root = ws(&d, "target");
+        let m = send(&root, "private");
+
+        let p = new_dir(&root).join(format!("{}.json", m.id));
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
     fn send(to: &Path, body: &str) -> Message {
         let m = compose("sender", "alice", "target", Kind::Text, body, None);
         deliver(to, &m).unwrap();
@@ -266,7 +318,7 @@ mod tests {
         assert_eq!(unread_count(&root), 1);
         assert_eq!(unread(&root)[0].body, "the parser is ready");
 
-        let read = mark_read(&root);
+        let (read, _) = mark_read(&root);
         assert_eq!(read.len(), 1);
         assert_eq!(unread_count(&root), 0, "reading clears it");
         assert_eq!(history(&root).len(), 1, "but the exchange is still there");
@@ -274,6 +326,12 @@ mod tests {
 
     /// The count and the list are one definition. Two definitions is how a
     /// status line says "2 unread" while the digest shows none.
+    ///
+    /// The well-formed half of this passed while the count was a file count —
+    /// which is the whole lesson: an invariant asserted only over the inputs
+    /// someone thought of is not the invariant. The unparseable case below is
+    /// the one that mattered, and `read_dir_messages` skipping such a file is
+    /// deliberate two functions up, so it was never hypothetical.
     #[test]
     fn the_count_and_the_list_always_agree() {
         let d = TempDir::new().unwrap();
@@ -284,6 +342,33 @@ mod tests {
         assert_eq!(unread_count(&root), unread(&root).len());
         mark_read(&root);
         assert_eq!(unread_count(&root), unread(&root).len());
+    }
+
+    /// A message no reader can parse used to be counted but never listed, and
+    /// `mark_read` left it where it was — so the badge said "1 unread" forever
+    /// while `ws -msg` said there was none.
+    #[test]
+    fn a_message_that_will_not_parse_is_not_counted_and_does_not_stay_unread() {
+        let d = TempDir::new().unwrap();
+        let root = ws(&d, "target");
+        send(&root, "a real message");
+        std::fs::write(new_dir(&root).join("broken.json"), "{\"id\":\"broken\",\"ts\":").unwrap();
+
+        assert_eq!(unread_count(&root), 1, "the badge counts what a reader can show");
+        assert_eq!(unread_count(&root), unread(&root).len());
+
+        let (msgs, set_aside) = mark_read(&root);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(set_aside, 1, "the unreadable one is reported, not swallowed");
+        assert_eq!(unread_count(&root), 0);
+        assert!(
+            std::fs::read_dir(new_dir(&root)).unwrap().next().is_none(),
+            "nothing may be left behind in new/ to be re-scanned forever"
+        );
+        assert!(
+            cur_dir(&root).join("broken.json").exists(),
+            "moved aside, not deleted — it is still evidence"
+        );
     }
 
     /// The property the maildir exists for. A shared append-only file loses

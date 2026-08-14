@@ -130,6 +130,46 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A feature worktree whose directory is gone says so.** `ws <base> -features`
+  reported it as `blocked: 1 uncommitted change(s)` — the error had been folded
+  into the uncommitted-work blocker, whose summary counts lines. A listing that
+  exists to show which worktrees are in trouble was stating something false
+  about the one nobody can open. `Blocker::Unreadable` now names it, and the
+  everyday case is spelled out rather than passed through from git: *the
+  directory is gone (`<path>`)*.
+
+- **One unparseable message no longer sticks the mail badge on forever.** The
+  unread count came from counting files while the list came from parsing them,
+  so a truncated message made the status line say "1 unread" with nothing behind
+  it — and `mark_read` moved only what it could parse, so the file stayed in
+  `new/` and the badge never went out. The count is now `unread().len()` (one
+  definition, not two), `mark_read` moves unreadable files to `cur/` as well,
+  and `ws -msg` says how many were set aside rather than swallowing them. The
+  test asserting this invariant existed and passed the whole time — over
+  well-formed messages only.
+
+- **The autosave snapshot stops re-hashing the whole repository every turn.**
+  The private index was named per-pid and deleted after each snapshot, so
+  `git add -A` started from an empty stat cache every time: measured at 0.91s
+  per turn on a 12k-file tree against 0.04s for a warm `git status`, and flat
+  across runs. Hooks are killed at ten seconds, so on a large enough repository
+  that was not slowness but a snapshot that never happened. The index is now
+  named for the conversation and kept — 0.16s per turn on the same tree — and
+  removed with the ref by `discard` and `gc`.
+
+- **A reused pid no longer hides a crashed session's snapshot.** `orphans`
+  asked only whether the recorded pid was alive; pids are reused within hours,
+  and a snapshot ref outlives its session by design, so a crashed session whose
+  pid had been handed to something else looked live — its recovery notice was
+  never shown and `gc` never reclaimed the ref. Snapshots now carry a
+  `ws-start:` trailer and are checked against `ps` the way `agentstate` already
+  checked session records, through the same function.
+
+- **`$EDITOR` is quoted.** With `rewrite` enabled, ws exported
+  `<path-to-ws> internal rewrite` unquoted; a ws living under a path with a
+  space would have broken ctrl+g and, since the shim never runs and so never
+  delegates, the user's ordinary editor for the whole session.
+
 - **`ws -doctor` stops reporting healthy on the states it exists to catch.** Hook
   registration was decided by searching the whole config file for the hooks
   directory, which passed in three ways it should not have: one mention anywhere
@@ -167,6 +207,17 @@ The project follows [Semantic Versioning](https://semver.org/).
   and enumerating them leaks. The namespace removes the collision entirely.
 
 ### Security
+
+- **`create_private_dir_all` now hardens every directory it creates**, which is
+  what its own documentation had claimed while it hardened only the leaf. A
+  caller that creates a whole chain in one call — `.ws/local/mail/new` is one —
+  left the intermediate directories at the process umask, and `0700` under a
+  `0755` parent is worth nothing. Directories that already existed are still
+  left alone; they are not this call's to re-permission.
+- **Delivered messages are written `0600`.** They sat at the umask inside `0700`
+  directories — the same "the weaker of the two is the real floor" argument that
+  put the keyring index at `0600` beside a `0600` store, and directory modes are
+  the half that does not survive a copy or a restore.
 
 - Two names that would export as the same variable (`api_key` and `api-key`,
   since `-` is legal in a secret name and illegal in a shell identifier) are

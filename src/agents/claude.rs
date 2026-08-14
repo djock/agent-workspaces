@@ -122,11 +122,20 @@ impl Agent for ClaudeAgent {
         // whole session is intrusive enough to be asked for. The user's own
         // editor is recorded so the shim can hand it every file that is not a
         // composer buffer — `/memory` must keep working.
+        //
+        // The path is quoted: `$EDITOR` is a command *line*, split on
+        // whitespace by whoever runs it, so an unquoted ws living under a path
+        // with a space (`~/Library/Application Support/…`, a user directory with
+        // a space in the name) would break ctrl+g *and* — because the shim never
+        // runs, so it never delegates — the user's ordinary editor for the whole
+        // session.
         if crate::config::load().rewrite {
             if let Ok(exe) = std::env::current_exe() {
                 let real = std::env::var("EDITOR").unwrap_or_default();
-                cmd.env("WS_REAL_EDITOR", real)
-                    .env("EDITOR", format!("{} internal rewrite", exe.display()));
+                cmd.env("WS_REAL_EDITOR", real).env(
+                    "EDITOR",
+                    format!("{} internal rewrite", crate::hooksetup::shell_quote_path(&exe)),
+                );
             }
         }
         cmd.current_dir(&ws.root)
@@ -275,5 +284,34 @@ mod tests {
         let b = ClaudeAgent.binary();
         std::env::remove_var("WS_CLAUDE_BIN");
         assert_eq!(b, "/fake/claude");
+    }
+
+    /// `$EDITOR` is a command *line*, split on whitespace by whoever runs it. An
+    /// unquoted ws path containing a space breaks ctrl+g and, because the shim
+    /// never runs and so never delegates, the user's ordinary editor with it.
+    #[test]
+    fn the_editor_ws_exports_survives_a_path_with_a_space() {
+        let d = TempDir::new().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", d.path().join(".config"));
+        crate::config::set("rewrite", "true").unwrap();
+
+        let ws = ws_at(&d.path().join("proj"));
+        let ctx = LaunchCtx { fresh: true, sessions_root: "/root".into() };
+        let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
+        let editor = env_of(&cmd, "EDITOR").expect("rewrite is on, so $EDITOR is ws's shim");
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        assert!(editor.starts_with('\''), "the path must be quoted: {editor}");
+        assert!(editor.ends_with("' internal rewrite"), "{editor}");
+
+        // And the quoting is real quoting: a shell must recover the exact path.
+        let spaced = std::path::Path::new("/Applications/My Tools/ws");
+        let quoted = crate::hooksetup::shell_quote_path(spaced);
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf %s {quoted}"))
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), spaced.to_string_lossy());
     }
 }

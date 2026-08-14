@@ -81,6 +81,15 @@ pub enum Blocker {
     BaseDirty(Vec<String>),
     /// Someone is working in one of the two workspaces.
     Live { workspace: String, pid: u32 },
+    /// Readiness could not be computed at all — most often a registered
+    /// worktree whose directory is gone.
+    ///
+    /// Its own variant because it was folded into `FeatureDirty` at first, and
+    /// `summary` counts that variant's lines: a missing directory rendered as
+    /// "1 uncommitted change(s)", which is a listing stating something false
+    /// about a workspace nobody can open. A blocker nobody can act on still has
+    /// to say which one it is.
+    Unreadable(String),
 }
 
 impl Blocker {
@@ -101,6 +110,10 @@ impl Blocker {
             Blocker::Live { workspace, pid } => {
                 format!("{workspace} is in use by pid {pid} — close it before merging")
             }
+            Blocker::Unreadable(why) => format!(
+                "{feature_display} cannot be read ({why}) — if the directory is gone, \
+                 remove the workspace with `ws -rm`"
+            ),
         }
     }
 
@@ -111,6 +124,7 @@ impl Blocker {
             Blocker::BaseMidMerge => "the base is mid-merge".to_string(),
             Blocker::BaseDirty(l) => format!("the base has {} uncommitted change(s)", l.len()),
             Blocker::Live { workspace, pid } => format!("{workspace} is live (pid {pid})"),
+            Blocker::Unreadable(why) => format!("unreadable: {why}"),
         }
     }
 }
@@ -337,13 +351,28 @@ pub fn features(base: &str) -> Result<Vec<Feature>> {
         // A registered worktree whose directory is gone is listed rather than
         // skipped: it is exactly the state someone needs to be told about, and
         // silently omitting it makes `-features` disagree with `-list`.
-        let readiness = match readiness(&base_path, base, &path, &name, feature) {
-            Ok(r) => r,
-            Err(e) => Readiness {
+        // The common case is named outright rather than reported as whatever
+        // git said when it could not chdir: "the directory is gone" tells the
+        // reader what to do, `No such file or directory (os error 2)` makes them
+        // work it out.
+        let readiness = if !path.is_dir() {
+            Readiness {
                 ahead: 0,
                 already_merged: false,
-                blockers: vec![Blocker::FeatureDirty(vec![format!("unreadable: {e:#}")])],
-            },
+                blockers: vec![Blocker::Unreadable(format!(
+                    "the directory is gone ({})",
+                    path.display()
+                ))],
+            }
+        } else {
+            match readiness(&base_path, base, &path, &name, feature) {
+                Ok(r) => r,
+                Err(e) => Readiness {
+                    ahead: 0,
+                    already_merged: false,
+                    blockers: vec![Blocker::Unreadable(format!("{e:#}"))],
+                },
+            }
         };
         out.push(Feature { feature: feature.to_string(), name, readiness });
     }

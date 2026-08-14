@@ -1870,7 +1870,16 @@ pub fn msg(cmd: crate::cli::MsgCmd) -> Result<()> {
         }
         MsgCmd::Read => {
             let ws = resolve_named(None)?;
-            let msgs = crate::mail::mark_read(&ws.root);
+            let (msgs, set_aside) = crate::mail::mark_read(&ws.root);
+            // Said out loud rather than swallowed: a message that arrived and
+            // cannot be read is exactly the thing the sender will assume landed.
+            if set_aside > 0 {
+                eprintln!(
+                    "ws: {set_aside} message(s) could not be read and were moved aside — \
+                     see {}",
+                    ws.root.join(".ws/local/mail/cur").display()
+                );
+            }
             if msgs.is_empty() {
                 println!("no unread mail");
                 return Ok(());

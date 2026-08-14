@@ -119,7 +119,7 @@ pub fn by_directory() -> HashMap<PathBuf, AgentState> {
 /// The format is whatever `ps -o lstart=` prints, which is exactly what the
 /// agent recorded — comparing the two as text needs no date parsing and cannot
 /// disagree with itself about time zones.
-fn process_starts(pids: &[u32]) -> HashMap<u32, String> {
+pub fn process_starts(pids: &[u32]) -> HashMap<u32, String> {
     let mut out = HashMap::new();
     if pids.is_empty() {
         return out;
@@ -137,6 +137,14 @@ fn process_starts(pids: &[u32]) -> HashMap<u32, String> {
         }
     }
     out
+}
+
+/// One process's start time, or `None` if it is not running.
+///
+/// The other half of "is this still the same process", shared with
+/// `autosave`: a pid that is alive proves only that *something* holds it.
+pub fn start_time(pid: u32) -> Option<String> {
+    process_starts(&[pid]).remove(&pid)
 }
 
 /// The state of the agent running in `root`, if one is.

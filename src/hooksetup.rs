@@ -120,6 +120,15 @@ fn shell_command(path: &Path) -> String {
     shell_quote(&path.to_string_lossy())
 }
 
+/// A path safe to drop into a command line, for callers outside this module.
+///
+/// One definition of "quote a path for a shell": the `$EDITOR` ws exports for
+/// the rewrite shim is the same kind of string as a hook command, and it was
+/// built unquoted.
+pub fn shell_quote_path(path: &Path) -> String {
+    shell_command(path)
+}
+
 /// Shim filename for a user hook.
 pub fn user_script_name(slug: &str) -> String {
     format!("user-{slug}.sh")

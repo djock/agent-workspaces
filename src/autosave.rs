@@ -70,6 +70,15 @@ fn is_repo(root: &Path) -> bool {
 const BASE_TRAILER: &str = "ws-base:";
 /// The trailer naming the process that took it.
 const PID_TRAILER: &str = "ws-pid:";
+/// The trailer holding that process's start time, as `ps` prints it.
+///
+/// A pid alone does not identify a process: the kernel reuses pids within hours
+/// on a busy machine, and a snapshot ref outlives the session that wrote it by
+/// design. Without this, a crashed session whose pid has since been handed to
+/// something else looks *live* — so its recovery notice is never shown and `gc`
+/// never reclaims it. `agentstate` learned this for session records and wrote it
+/// down; this is the same rule for the same reason, and now the same code.
+const START_TRAILER: &str = "ws-start:";
 
 /// Take a snapshot of the working tree for `conversation`.
 ///
@@ -99,11 +108,15 @@ pub fn snapshot(root: &Path, conversation: &str) -> Result<Option<String>> {
     // it fails — and every `base@feature` workspace is a linked worktree, which
     // would have made this whole feature a silent no-op in exactly the
     // workspaces most likely to hold unmerged work.
-    let git_dir = crate::git::maybe(root, &["rev-parse", "--absolute-git-dir"])
-        .context("cannot locate the git directory")?;
-    let index = Path::new(&git_dir).join(format!("ws-autosave-index.{}", std::process::id()));
-    let _cleanup = IndexFile(index.clone());
-
+    //
+    // Kept between turns, and named for the conversation rather than the
+    // process. A fresh index has no stat cache, so `add -A` re-hashes every file
+    // in the repository: measured at 0.9s per turn on a 12k-file tree against
+    // 0.04s for a warm `git status`, flat across runs because the old code
+    // deleted the index each time. Hooks are killed at 10 seconds, so on a large
+    // enough repository that cost is not slow, it is a snapshot that never
+    // happens. `discard` and `gc` remove the file with the ref it belongs to.
+    let index = index_path(root, conversation).context("cannot locate the git directory")?;
     let idx = index.to_string_lossy().to_string();
     // `add -A` respects .gitignore, so build artifacts and `.ws/local/` stay out
     // — the snapshot holds what the user would lose, not what they can rebuild.
@@ -126,9 +139,11 @@ pub fn snapshot(root: &Path, conversation: &str) -> Result<Option<String>> {
          Working tree of a live ws session, saved outside the branch.\n\
          Restore one file with: git checkout {refname} -- <path>\n\n\
          {BASE_TRAILER} {}\n\
-         {PID_TRAILER} {}\n",
+         {PID_TRAILER} {}\n\
+         {START_TRAILER} {}\n",
         base.clone().unwrap_or_else(|| "none".into()),
         std::process::id(),
+        crate::agentstate::start_time(std::process::id()).unwrap_or_else(|| "none".into()),
     );
 
     let mut args: Vec<String> = vec!["commit-tree".into(), tree, "-m".into(), message];
@@ -151,11 +166,21 @@ pub fn snapshot(root: &Path, conversation: &str) -> Result<Option<String>> {
     Ok(Some(commit))
 }
 
-/// A private index file, removed when this value drops.
-struct IndexFile(std::path::PathBuf);
-impl Drop for IndexFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+/// Where a conversation's private index lives, inside the git directory.
+///
+/// Asked of git rather than assumed to be `<root>/.git`: in a linked worktree
+/// that path is a *file* holding a gitdir pointer, so writing an index beside it
+/// fails — and every `base@feature` workspace is a linked worktree.
+fn index_path(root: &Path, conversation: &str) -> Option<std::path::PathBuf> {
+    let git_dir = crate::git::maybe(root, &["rev-parse", "--absolute-git-dir"])?;
+    Some(Path::new(&git_dir).join(format!("ws-autosave-index.{}", slug(conversation))))
+}
+
+/// Remove the index belonging to a snapshot ref, given the ref name.
+fn remove_index_for_ref(root: &Path, refname: &str) {
+    let Some(slug) = refname.strip_prefix("refs/ws/session/") else { return };
+    if let Some(p) = index_path(root, slug) {
+        let _ = std::fs::remove_file(p);
     }
 }
 
@@ -180,6 +205,9 @@ pub struct Snapshot {
     /// The commit HEAD was on when the snapshot was taken.
     pub base: Option<String>,
     pub pid: Option<u32>,
+    /// The start time of the process named by `pid`, as `ps` printed it when the
+    /// snapshot was written. Compared as text against `ps` today.
+    pub start: Option<String>,
     /// Human-readable, for the notice.
     pub when: String,
     /// The same instant as seconds since the epoch, for `gc`. Taken from git
@@ -218,6 +246,7 @@ pub fn all(root: &Path) -> Vec<Snapshot> {
             Some(Snapshot {
                 base: trailer(BASE_TRAILER),
                 pid: trailer(PID_TRAILER).and_then(|p| p.parse().ok()),
+                start: trailer(START_TRAILER),
                 refname,
                 commit,
                 when,
@@ -229,18 +258,40 @@ pub fn all(root: &Path) -> Vec<Snapshot> {
 
 /// Snapshots left behind by a session that is no longer running.
 ///
-/// A snapshot whose recorded pid is still alive belongs to a *live* session —
-/// a second terminal, or a linked worktree sharing this ref namespace — and is
-/// never reported as a crash. `conversation` is this session's own id where one
-/// is known, excluded so a running session never reports itself; at launch time
-/// the agent has not assigned one yet, and `None` leaves the pid check to do the
-/// whole job, which is what it is for.
+/// A snapshot whose recorded process is still running belongs to a *live*
+/// session — a second terminal, or a linked worktree sharing this ref namespace
+/// — and is never reported as a crash. `conversation` is this session's own id
+/// where one is known, excluded so a running session never reports itself; at
+/// launch time the agent has not assigned one yet, and `None` leaves the
+/// liveness check to do the whole job, which is what it is for.
+///
+/// "Still running" means both halves: the pid is alive *and* the process still
+/// reports the start time the snapshot recorded. A pid alone was the first
+/// version and it fails in the direction that costs work — a reused pid makes a
+/// crashed session look live, so its notice is never shown and `gc` never
+/// reclaims the ref. A snapshot with no recorded start time (written by an older
+/// ws) falls back to liveness alone rather than being called dead.
 pub fn orphans(root: &Path, conversation: Option<&str>) -> Vec<Snapshot> {
     let mine = conversation.map(ref_name);
-    all(root)
+    let candidates: Vec<Snapshot> =
+        all(root).into_iter().filter(|s| Some(&s.refname) != mine.as_ref()).collect();
+
+    // One `ps` for every pid at once, like `agentstate::by_directory`: asking per
+    // snapshot would scale a launch-time check with the number of crashed
+    // sessions.
+    let pids: Vec<u32> = candidates.iter().filter_map(|s| s.pid).collect();
+    let starts = crate::agentstate::process_starts(&pids);
+
+    candidates
         .into_iter()
-        .filter(|s| Some(&s.refname) != mine.as_ref())
-        .filter(|s| !s.pid.map(crate::lock::pid_alive).unwrap_or(false))
+        .filter(|s| {
+            let Some(pid) = s.pid else { return true };
+            let Some(actual) = starts.get(&pid) else { return true };
+            match &s.start {
+                Some(recorded) => recorded != actual,
+                None => false,
+            }
+        })
         .collect()
 }
 
@@ -290,6 +341,9 @@ pub fn recovery_notice(root: &Path, conversation: Option<&str>) -> Option<String
 pub fn discard(root: &Path, conversation: &str) {
     let refname = ref_name(conversation);
     let _ = crate::git::maybe(root, &["update-ref", "-d", &refname]);
+    // The index is kept between turns for the stat cache, so it outlives the
+    // snapshot unless it is removed with it.
+    remove_index_for_ref(root, &refname);
 }
 
 /// Delete snapshots older than `max_age_days` that no live process owns.
@@ -310,6 +364,7 @@ pub fn gc(root: &Path, conversation: Option<&str>, max_age_days: i64) {
         }
         if (now - s.when_unix) > max_age_days * 86_400 {
             let _ = crate::git::maybe(root, &["update-ref", "-d", &s.refname]);
+            remove_index_for_ref(root, &s.refname);
         }
     }
 }
@@ -409,6 +464,58 @@ mod tests {
         // Written by *this* process, which is alive by definition.
         snapshot(d.path(), "conv-live").unwrap().unwrap();
         assert!(orphans(d.path(), Some("conv-other")).is_empty());
+    }
+
+    /// The other side of that: a pid the kernel has since handed to something
+    /// else. Liveness alone answered "still running" and the crashed session's
+    /// work was never offered back — and `gc` never reclaimed the ref either,
+    /// because it asks the same question. The recorded start time is what tells
+    /// the two processes apart.
+    #[test]
+    fn a_snapshot_whose_pid_belongs_to_another_process_is_still_a_crash() {
+        let d = repo();
+        std::fs::write(d.path().join("a.txt"), "unsaved work\n").unwrap();
+        snapshot(d.path(), "conv-reused").unwrap().unwrap();
+
+        // This pid *is* alive — it is ours — but the recorded start time is not.
+        let tree = crate::git::ok(
+            d.path(),
+            &["rev-parse", &format!("{}^{{tree}}", ref_name("conv-reused"))],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let msg = format!(
+            "ws autosave\n\n{PID_TRAILER} {}\n{START_TRAILER} Mon Jan  1 00:00:00 2001\n",
+            std::process::id()
+        );
+        let c = crate::git::ok(d.path(), &["commit-tree", &tree, "-m", &msg]).unwrap();
+        crate::git::ok(d.path(), &["update-ref", &ref_name("conv-reused"), c.trim()]).unwrap();
+
+        let found = orphans(d.path(), Some("conv-new"));
+        assert_eq!(found.len(), 1, "a reused pid must not keep a dead session alive: {found:?}");
+    }
+
+    /// The index is the stat cache. Deleting it after every snapshot made
+    /// `add -A` re-hash the whole repository on every turn — 0.9s per turn on a
+    /// 12k-file tree, against 0.04s for a warm `git status`, and hooks are killed
+    /// at ten seconds.
+    #[test]
+    fn the_index_survives_between_turns_and_goes_with_the_ref() {
+        let d = repo();
+        std::fs::write(d.path().join("a.txt"), "one\n").unwrap();
+        snapshot(d.path(), "conv-idx").unwrap().unwrap();
+
+        let index = index_path(d.path(), "conv-idx").unwrap();
+        assert!(index.exists(), "the stat cache must outlive the turn that built it");
+
+        std::fs::write(d.path().join("a.txt"), "two\n").unwrap();
+        snapshot(d.path(), "conv-idx").unwrap().unwrap();
+        assert_eq!(show(d.path(), &ref_name("conv-idx"), "a.txt").unwrap(), "two");
+
+        // A clean exit takes both, so nothing accumulates in the git directory.
+        discard(d.path(), "conv-idx");
+        assert!(!index.exists(), "the index must go with the ref it belongs to");
     }
 
     #[test]
