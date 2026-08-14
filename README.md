@@ -279,6 +279,32 @@ The confirmation says which of the two is about to happen.
 the point is to write a thought down without derailing the one you are having.
 Inside a session, `/ws:task` does the same thing without you leaving the agent.
 
+## Messages between workspaces
+
+Two agents working on related things can tell each other something:
+
+```sh
+ws -msg beta "the parser is ready — the 429 retry lives in client.rs now"
+ws -msg beta - < handoff.md          # a body that size does not belong in argv
+ws -msg beta "regenerate the fixtures" --kind task
+ws -msg                              # read yours; reading clears them
+ws -msg log                          # the whole exchange, read or not
+```
+
+The receiving workspace's agent is told on its next prompt, and keeps being told
+until someone reads them — a message that arrives mid-turn is otherwise announced
+at a moment nobody is looking and never again. The status line shows `✉ N` beside
+the workspace name while anything is unread.
+
+`--kind task` also queues the body where the work is: reading a message consumes
+it, and work that survives being read is what a queue is for. Every message
+carries a thread id, so `--reply <thread>` keeps an exchange together.
+
+Each message is its own file, staged and renamed into place, so two senders
+delivering at once cannot interleave. Mail lives in `.ws/local/mail/`, which is
+gitignored: a message is addressed to a running agent on this machine, not to
+whoever clones the repository next month.
+
 ## Crash recovery
 
 Every turn a session ends, `ws` saves the working tree — tracked edits and

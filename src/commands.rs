@@ -1778,6 +1778,98 @@ pub fn search(query: String, include_archived: bool) -> Result<()> {
 /// This is the `/btw` shape: the point is to record something and get straight
 /// back to work, so `add` never switches focus, never launches anything, and
 /// defaults to the workspace you are already in.
+/// `ws -msg` — send to another workspace, or read what was sent to this one.
+pub fn msg(cmd: crate::cli::MsgCmd) -> Result<()> {
+    use crate::cli::MsgCmd;
+    match cmd {
+        MsgCmd::Send { to, body, kind, reply_to } => {
+            let kind = crate::mail::Kind::parse(&kind)?;
+            let target = resolve_named(Some(to.clone()))?;
+            // The recipient must be a workspace, not just a directory that
+            // exists: delivering into a path that was never initialised would
+            // create a mailbox nobody will ever read.
+            if !target.is_initialised() {
+                anyhow::bail!(
+                    "{to} is registered but not initialised — open it once with `ws {to}`"
+                );
+            }
+            contract::check_gate(&target.name, &target.workspace_toml())?;
+
+            let sender = current_or_named(None).ok();
+            let from = sender.as_ref().map(|(n, _)| n.clone()).unwrap_or_default();
+            if from == target.name {
+                anyhow::bail!("{to} is this workspace — mail is for reaching another one");
+            }
+            let actor = sender
+                .as_ref()
+                .map(|(_, root)| crate::actors::actor_slug_in(root))
+                .unwrap_or_else(crate::actors::actor_slug);
+
+            let body = read_body(body)?;
+            if body.trim().is_empty() {
+                anyhow::bail!("refusing to send an empty message");
+            }
+            let m = crate::mail::compose(&from, &actor, &target.name, kind, &body, reply_to);
+            crate::mail::deliver(&target.root, &m)?;
+
+            // A task-kind message is queued where the work is, as well as
+            // delivered: the recipient's agent surfaces its queue on its own
+            // schedule, so the message says what arrived and the queue is what
+            // makes it survive being read.
+            if kind == crate::mail::Kind::Task {
+                let queued = crate::queue::add(&target.queue_tasks(), &body, &actor);
+                if let Err(e) = queued {
+                    // Delivered but not queued: say so rather than failing, or
+                    // a retry would deliver the same message twice.
+                    eprintln!("ws: delivered, but could not queue it as a task: {e:#}");
+                }
+            }
+            println!("sent to {} (thread {})", target.name, m.thread);
+            Ok(())
+        }
+        MsgCmd::Read => {
+            let ws = resolve_named(None)?;
+            let msgs = crate::mail::mark_read(&ws.root);
+            if msgs.is_empty() {
+                println!("no unread mail");
+                return Ok(());
+            }
+            for m in &msgs {
+                println!("{}\n  thread {}\n", crate::mail::render(m), m.thread);
+            }
+            Ok(())
+        }
+        MsgCmd::Log => {
+            let ws = resolve_named(None)?;
+            let all = crate::mail::history(&ws.root);
+            if all.is_empty() {
+                println!("no mail");
+                return Ok(());
+            }
+            for m in &all {
+                println!("{}\n  thread {}\n", crate::mail::render(m), m.thread);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// A message body from argv, or from stdin when it is `-` or absent.
+///
+/// stdin is what makes a multi-KB handoff practical: a body that size does not
+/// belong in argv, where every `ps` on the machine can read it and the platform
+/// caps its length.
+fn read_body(arg: Option<String>) -> Result<String> {
+    match arg {
+        Some(b) if b != "-" => Ok(b),
+        _ => {
+            let mut s = String::new();
+            std::io::stdin().read_to_string(&mut s).context("cannot read the body from stdin")?;
+            Ok(s.trim_end_matches('\n').to_string())
+        }
+    }
+}
+
 pub fn task(cmd: crate::cli::TaskCmd) -> Result<()> {
     use crate::cli::TaskCmd;
     match cmd {

@@ -68,6 +68,7 @@ pub enum Cmd {
         name: Option<String>,
     },
     Task(TaskCmd),
+    Msg(MsgCmd),
     Hooks(HooksCmd),
     Worktree {
         spec: String,
@@ -82,6 +83,18 @@ pub enum TaskCmd {
     Add { name: Option<String>, text: String },
     List { name: Option<String> },
     Rm { name: Option<String>, index: usize },
+}
+
+/// Messages between workspaces.
+///
+/// `Read` is the bare `ws -msg`: asking for your mail is the common case, and
+/// making it the default means a session can be told "check your mail" without
+/// anyone remembering a subcommand.
+#[derive(Debug, PartialEq)]
+pub enum MsgCmd {
+    Send { to: String, body: Option<String>, kind: String, reply_to: Option<String> },
+    Read,
+    Log,
 }
 
 #[derive(Debug, PartialEq)]
@@ -181,6 +194,10 @@ pub fn help_text() -> &'static str {
          \x20 ws -rotate [<name>]          write a handoff skeleton for the next session\n\
          \x20 ws -task add [<name>] <text> capture a task without interrupting the agent\n\
          \x20 ws -task list|rm [<name>]    show or drop captured tasks\n\
+         \x20 ws -msg <name> \"<body>\"      send a message to another workspace\n\
+         \x20                                (--kind task queues it there; `-` reads\n\
+         \x20                                the body from stdin; --reply <thread>)\n\
+         \x20 ws -msg | ws -msg log        read your unread mail, or the whole history\n\
          \n\
          Inspect\n\
          \x20 ws -limits                   usage limits captured from the status line\n\
@@ -437,6 +454,7 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         "-secrets" => parse_secrets(it.collect()),
         "-tag" => parse_tag(it.collect()),
         "-task" => parse_task(it.collect()),
+        "-msg" => parse_msg(it.collect()),
         "-rotate" => {
             let name = it.next();
             if it.next().is_some() {
@@ -643,6 +661,40 @@ fn take_workspace(args: Vec<String>) -> Result<(Option<String>, Vec<String>)> {
 /// the target, anything else starts the text. That keeps `/ws:task` usable
 /// without the agent having to know or pass its own workspace name, which is the
 /// whole point of the command.
+/// `ws -msg [<workspace> [<body>]] [--kind text|task] [--reply <thread>]`
+///
+/// A bare `ws -msg` reads; a target makes it a send. `-` as the body reads it
+/// from stdin, which is what makes a multi-KB handoff practical: a body that
+/// size does not belong in argv, where it is visible to every `ps` on the
+/// machine and capped by the platform.
+fn parse_msg(args: Vec<String>) -> Result<Cmd> {
+    let mut positional: Vec<String> = Vec::new();
+    let mut kind = "text".to_string();
+    let mut reply_to = None;
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--kind" => kind = it.next().ok_or_else(|| anyhow::anyhow!("--kind needs a value"))?,
+            "--reply" => {
+                reply_to =
+                    Some(it.next().ok_or_else(|| anyhow::anyhow!("--reply needs a thread id"))?)
+            }
+            other if other.starts_with("--") => bail!("unexpected argument: {other}"),
+            _ => positional.push(a),
+        }
+    }
+    match positional.len() {
+        0 => Ok(Cmd::Msg(MsgCmd::Read)),
+        _ if positional[0] == "log" && positional.len() == 1 => Ok(Cmd::Msg(MsgCmd::Log)),
+        1 => Ok(Cmd::Msg(MsgCmd::Send { to: positional.remove(0), body: None, kind, reply_to })),
+        2 => {
+            let body = positional.pop();
+            Ok(Cmd::Msg(MsgCmd::Send { to: positional.remove(0), body, kind, reply_to }))
+        }
+        _ => bail!("usage: ws -msg <workspace> \"<body>\" [--kind text|task] [--reply <thread>]"),
+    }
+}
+
 fn parse_task(args: Vec<String>) -> Result<Cmd> {
     let mut it = args.into_iter();
     let sub = it.next().ok_or_else(|| anyhow::anyhow!("usage: ws -task add|list|rm ..."))?;
@@ -928,7 +980,6 @@ mod tests {
     fn removed_dash_commands_are_rejected() {
         for argv in [
             vec!["-tui"],
-            vec!["-msg", "proj", "hello"],
             vec!["-spawn", "proj"],
             vec!["-queue", "add", "proj", "x"],
             vec!["-queue", "drain", "proj"],

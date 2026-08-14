@@ -19,6 +19,7 @@ mod internal;
 mod io_read;
 mod limits;
 mod lock;
+mod mail;
 mod meta;
 mod picker;
 mod prompts;
@@ -74,6 +75,7 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
         Cmd::Conversations { name } => conversations::run(name)?,
         Cmd::Rotate { name } => commands::rotate(name)?,
         Cmd::Task(c) => commands::task(c)?,
+        Cmd::Msg(c) => commands::msg(c)?,
         Cmd::Hooks(c) => commands::hooks(c)?,
         Cmd::Secrets(c) => commands::secrets(c)?,
         Cmd::Search { query, include_archived } => commands::search(query, include_archived)?,
@@ -355,7 +357,10 @@ mod tests {
     #[test]
     fn help_does_not_mention_removed_surface() {
         let help = crate::cli::help_text();
-        for token in ["-tui", "migrate-cs", "-msg", "-spawn", "-queue", "drain", "--dry-run"] {
+        // `-msg` is deliberately absent from this list: cross-workspace mail
+        // was removed in the 0.3.0 refocus and brought back, in the maildir
+        // shape rather than the append-to-a-shared-file one that made it fragile.
+        for token in ["-tui", "migrate-cs", "-spawn", "-queue", "drain", "--dry-run"] {
             assert!(!help.contains(token), "`ws --help` still mentions removed {token:?}");
         }
     }

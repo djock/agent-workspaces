@@ -87,6 +87,10 @@ fn git_branch(cwd: &str) -> Option<String> {
 pub struct Chip {
     pub name: String,
     pub color: Option<String>,
+    /// Unread cross-workspace messages, counted the same way `ws -msg` and the
+    /// prompt digest count them — one definition, so the badge cannot say two
+    /// while the digest shows none.
+    pub unread: usize,
 }
 
 /// How the bar is drawn.
@@ -232,6 +236,9 @@ pub fn render(input: &StatuslineInput, chip: Option<&Chip>, style: Style) -> Str
         let mut parts: Vec<String> = Vec::new();
         if let Some(c) = chip {
             parts.push(c.name.clone());
+            if c.unread > 0 {
+                parts.push(format!("mail {}", c.unread));
+            }
         }
         if !input.model.display_name.is_empty() {
             parts.push(match input.effort.level.as_str() {
@@ -254,6 +261,11 @@ pub fn render(input: &StatuslineInput, chip: Option<&Chip>, style: Style) -> Str
         // workspace name is the point, its color is the decoration.
         let bg = c.color.as_deref().and_then(crate::term::rgb).unwrap_or(surface(dark));
         segs.push(Seg::new(&c.name, bg));
+        // Amber, beside the workspace it belongs to, and only when there is
+        // something to read: a badge that is always present is one nobody sees.
+        if c.unread > 0 {
+            segs.push(Seg::new(format!("\u{2709} {}", c.unread), AMBER));
+        }
     }
     if !input.model.display_name.is_empty() {
         // No parentheses here: the block boundary already separates the effort
@@ -287,7 +299,11 @@ pub fn run() {
     let _ = limits::write(&limits::global_path(), &snap);
     let chip = crate::internal::current_ws().map(|ws| {
         let _ = limits::write(&ws.local_dir().join("limits.json"), &snap);
-        Chip { name: ws.name.clone(), color: crate::meta::read(&ws.workspace_toml()).color }
+        Chip {
+            unread: crate::mail::unread_count(&ws.root),
+            name: ws.name.clone(),
+            color: crate::meta::read(&ws.workspace_toml()).color,
+        }
     });
 
     // Theme detection without `ThemeEnv::detect()`: that shells out to
@@ -325,7 +341,31 @@ mod tests {
     const BAR: Style = Style { plain: false, dark: true };
 
     fn chip(color: Option<&str>) -> Chip {
-        Chip { name: "ws-ui".into(), color: color.map(str::to_string) }
+        Chip { name: "ws-ui".into(), color: color.map(str::to_string), unread: 0 }
+    }
+
+    fn chip_with_mail(unread: usize) -> Chip {
+        Chip { name: "ws-ui".into(), color: None, unread }
+    }
+
+    /// A badge that is always there is one nobody sees, so it appears only when
+    /// there is something to read.
+    #[test]
+    fn the_mail_badge_shows_only_when_there_is_mail() {
+        let i = input("Opus", 10.0, 10.0, 10.0);
+        let none = text_of(&render(&i, Some(&chip_with_mail(0)), BAR));
+        assert!(!none.contains('\u{2709}'), "no badge with no mail: {none:?}");
+
+        let some = text_of(&render(&i, Some(&chip_with_mail(3)), BAR));
+        assert!(some.contains("\u{2709} 3"), "the count is the point: {some:?}");
+    }
+
+    #[test]
+    fn the_mail_badge_survives_no_color() {
+        let i = input("Opus", 10.0, 10.0, 10.0);
+        let plain = render(&i, Some(&chip_with_mail(2)), PLAIN);
+        assert!(plain.contains("mail 2"), "{plain:?}");
+        assert!(!plain.contains('\u{1b}'), "NO_COLOR is absolute: {plain:?}");
     }
 
     /// Strip every SGR escape, leaving the text the bar actually shows. Lets the

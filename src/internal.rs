@@ -132,6 +132,15 @@ fn user_prompt() {
             Continuing spends more of the current budget — that's fine, but it's your call.";
         println!("{}", hookio::additional_context("UserPromptSubmit", notice));
     }
+
+    // Unread mail rides every prompt until it is read, rather than being
+    // announced once and then going quiet while it is still unread — the
+    // surface-once shape means a message that arrives mid-turn is mentioned at a
+    // moment nobody is looking and never again. Keyed on the mailbox itself, so
+    // the awareness stops exactly when `ws -msg` moves the mail to `cur/`.
+    if let Some(digest) = crate::mail::digest(&ws.root) {
+        println!("{}", hookio::additional_context("UserPromptSubmit", &digest));
+    }
 }
 
 /// How recently a notebook must have been written for the reminder to consider

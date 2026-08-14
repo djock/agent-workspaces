@@ -8,6 +8,32 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Messages between workspaces: `ws -msg`.** Two agents working on related
+  things — a service and its client, a refactor and the tests for it — had no way
+  to tell each other anything. `ws -msg <workspace> "<body>"` delivers a message;
+  the receiving agent is told on its next prompt and keeps being told until
+  someone reads it, since a message arriving mid-turn is otherwise announced at a
+  moment nobody is looking and never again. `ws -msg` reads and clears, `ws -msg
+  log` shows the whole exchange, and the status line carries `✉ N` while anything
+  is unread.
+
+  `-` reads the body from stdin, which is what makes a multi-KB handoff practical:
+  a body that size does not belong in argv, where every `ps` on the machine can
+  read it. `--kind task` also queues the body in the recipient, because reading a
+  message consumes it and work that survives being read is what a queue is for.
+  Every message carries a thread id and `--reply <thread>` answers in it.
+
+  Each message is its own file, staged in `tmp/` and renamed into `new/`. That
+  shape is the whole design: cs shipped the append-to-a-shared-file version first
+  and measured four concurrent senders leaving 112 of 200 lines intact, with the
+  torn lines silently dropped. A rename cannot interleave. Unread is `new/*.json`
+  — one definition, so the badge, the digest and the reader cannot disagree.
+
+  Mail lives in `.ws/local/mail/`, which is gitignored: it is addressed to a
+  running agent on this machine, not to whoever clones the repository next month.
+  This reverses part of the 0.3.0 refocus, which removed an earlier `-msg` along
+  with `-tui`, `-spawn` and `-queue`.
+
 - **Crash recovery.** Every turn end saves the working tree — tracked edits and
   untracked files alike — as a git commit beside your branch at
   `refs/ws/session/<conversation>`, built through a private index so your own
