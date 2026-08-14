@@ -552,6 +552,80 @@ pub fn unregister_codex_statusline() -> Result<usize> {
 /// and every `ws setup` appended another copy of it; and a built-in that was
 /// renamed or removed left its stale registration behind forever, pointing at a
 /// script that no longer exists.
+/// What a config file actually registers for ws, per event.
+///
+/// `ws -doctor` decided this with `settings.contains(hooks_dir)`, a substring
+/// test over the whole file. Three things were wrong with it, all in the
+/// direction of reporting health:
+///
+/// * One mention anywhere passed for all five hooks. A config registering only
+///   `SessionStart` — the ordinary result of a half-finished `setup`, or of an
+///   older ws — reported every hook registered while four never fired.
+/// * A path in an unrelated key counted. `permissions`, a comment field, or a
+///   stale entry under an event ws no longer uses all satisfy a `contains`.
+/// * A file that is not valid JSON still matched, so a `settings.json` the agent
+///   itself cannot parse — and therefore runs *no* hooks from — was reported as
+///   correctly registered. That is the state the check exists to catch.
+///
+/// A parse failure is returned as `Err` rather than folded into "nothing is
+/// registered", because those are different problems with different fixes.
+#[derive(Debug)]
+pub struct Registration {
+    pub registered: Vec<&'static str>,
+    /// Events ws wants for this agent and did not find, with the script that
+    /// should have been there.
+    pub missing: Vec<(&'static str, &'static str)>,
+}
+
+pub fn audit_registration(
+    config_text: &str,
+    agent: &dyn crate::agents::Agent,
+) -> Result<Registration> {
+    let root: Value =
+        serde_json::from_str(config_text).map_err(|e| anyhow::anyhow!("not valid JSON ({e})"))?;
+    let dir = hooks_dir();
+    let mut out = Registration { registered: Vec::new(), missing: Vec::new() };
+
+    for spec in HOOKS {
+        // An event the agent cannot fire is not a missing registration: `ws
+        // setup` deliberately never writes one, so reporting it would send the
+        // user to re-run a command that will not change anything.
+        if !agent.supports_event(spec.event) {
+            continue;
+        }
+        let found = root
+            .get("hooks")
+            .and_then(|h| h.get(spec.event))
+            .and_then(|e| e.as_array())
+            .map(|groups| {
+                groups.iter().any(|g| {
+                    g.get("hooks")
+                        .and_then(|h| h.as_array())
+                        .map(|hs| {
+                            hs.iter().any(|h| {
+                                h.get("command")
+                                    .and_then(|c| c.as_str())
+                                    // The exact script, not merely something
+                                    // under the hooks directory: a leftover
+                                    // registration pointing at a different shim
+                                    // is not this hook being registered.
+                                    .map(|c| command_is_in(c, &dir) && c.contains(spec.script))
+                                    .unwrap_or(false)
+                            })
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if found {
+            out.registered.push(spec.event);
+        } else {
+            out.missing.push((spec.event, spec.script));
+        }
+    }
+    Ok(out)
+}
+
 fn group_is_ws(group: &Value, hooks_dir: &Path) -> bool {
     group
         .get("hooks")
@@ -777,6 +851,65 @@ mod tests {
         assert_ne!(claude, codex, "file-write matchers must differ or Codex is broken again");
         assert!(!claude.contains("apply_patch"), "Claude has no apply_patch tool: {claude}");
         assert!(codex.contains("apply_patch"), "Codex edits arrive as apply_patch: {codex}");
+    }
+
+    /// What a real registration looks like, so the audit is tested against the
+    /// document `install_hooks_for` actually writes rather than a hand-built one
+    /// that could drift from it.
+    fn registered_settings() -> String {
+        let ws_bin = std::path::Path::new("/opt/ws/ws");
+        install_hooks_for(&claude_settings_path(), ws_bin, &ClaudeAgent).unwrap();
+        std::fs::read_to_string(claude_settings_path()).unwrap()
+    }
+
+    #[test]
+    fn audit_finds_every_hook_in_a_real_registration() {
+        let _g = lock();
+        let _d = iso();
+        let reg = audit_registration(&registered_settings(), &ClaudeAgent).unwrap();
+        assert!(reg.missing.is_empty(), "a fresh setup must audit clean: {:?}", reg.missing);
+        assert_eq!(reg.registered.len(), HOOKS.len());
+    }
+
+    /// The substring check this replaces: one mention of the hooks directory
+    /// anywhere in the file passed for every hook.
+    #[test]
+    fn audit_reports_the_hooks_a_partial_registration_is_missing() {
+        let _g = lock();
+        let _d = iso();
+        let mut root: Value = serde_json::from_str(&registered_settings()).unwrap();
+        root["hooks"].as_object_mut().unwrap().remove("Stop");
+        let reg = audit_registration(&root.to_string(), &ClaudeAgent).unwrap();
+
+        assert_eq!(reg.missing.len(), 1, "exactly the removed one: {:?}", reg.missing);
+        assert_eq!(reg.missing[0].0, "Stop");
+        assert_eq!(reg.registered.len(), HOOKS.len() - 1);
+    }
+
+    /// A hooks-directory path in an unrelated key — a permission rule, a comment,
+    /// a stale entry — is not a registration, though `contains` cannot tell.
+    #[test]
+    fn a_hooks_path_outside_the_hooks_object_is_not_a_registration() {
+        let _g = lock();
+        let _d = iso();
+        let settings = json!({
+            "permissions": { "allow": [format!("Bash({}/*)", hooks_dir().display())] }
+        });
+        let reg = audit_registration(&settings.to_string(), &ClaudeAgent).unwrap();
+        assert!(reg.registered.is_empty(), "nothing here registers a hook: {:?}", reg.registered);
+        assert_eq!(reg.missing.len(), HOOKS.len());
+    }
+
+    /// A config the agent cannot parse runs no hooks at all. That is a different
+    /// answer from "nothing is registered" and has a different fix, so it comes
+    /// back as an error rather than an empty audit.
+    #[test]
+    fn audit_refuses_a_config_that_is_not_json() {
+        let _g = lock();
+        let _d = iso();
+        let broken = format!("{{,\"hooks\":{{}}, \"dir\":\"{}\"}}", hooks_dir().display());
+        let err = audit_registration(&broken, &ClaudeAgent).unwrap_err();
+        assert!(err.to_string().contains("not valid JSON"), "{err}");
     }
 
     #[test]

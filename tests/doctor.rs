@@ -18,6 +18,58 @@ fn doctor_reports_agents_and_hook_state() {
         .stdout(predicates::str::contains("hooks"));
 }
 
+/// The config file the agent reads, after `ws setup` has written it.
+fn claude_settings(env: &Env) -> std::path::PathBuf {
+    env.home.path().join(".claude/settings.json")
+}
+
+/// A `settings.json` the agent cannot parse runs *no* hooks — the exact state
+/// doctor exists to catch. The substring check this replaces still found the
+/// hooks directory in the broken text and reported everything registered.
+#[test]
+fn doctor_fails_on_a_config_the_agent_cannot_parse() {
+    let env = Env::new();
+    let claude = env.fake_claude();
+    env.cmd().env("WS_CLAUDE_BIN", &claude).arg("setup").assert().success();
+
+    let settings = claude_settings(&env);
+    let good = std::fs::read_to_string(&settings).unwrap();
+    // Damage it while keeping every path it mentions — a trailing comma is the
+    // canonical hand-edit, and leaves the hooks directory plainly in the text.
+    std::fs::write(&settings, good.replacen('{', "{,", 1)).unwrap();
+
+    env.cmd()
+        .env("WS_CLAUDE_BIN", &claude)
+        .arg("-doctor")
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("not valid JSON"))
+        .stdout(predicates::str::contains("no hooks fire"));
+}
+
+/// A partial registration is what an interrupted `setup` or an older ws leaves.
+/// One mention of the hooks directory used to pass for all five hooks.
+#[test]
+fn doctor_names_the_hooks_that_are_not_registered() {
+    let env = Env::new();
+    let claude = env.fake_claude();
+    env.cmd().env("WS_CLAUDE_BIN", &claude).arg("setup").assert().success();
+
+    let settings = claude_settings(&env);
+    let mut root: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    root["hooks"].as_object_mut().unwrap().remove("Stop");
+    std::fs::write(&settings, serde_json::to_string_pretty(&root).unwrap()).unwrap();
+
+    env.cmd()
+        .env("WS_CLAUDE_BIN", &claude)
+        .arg("-doctor")
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("Stop"))
+        .stdout(predicates::str::contains("not registered"));
+}
+
 /// Set up a git repo at `dir`, adopt it as a workspace, and optionally have the
 /// repo ignore `.ws/`.
 fn workspace_repo(env: &Env, name: &str, ignore_ws: bool) -> std::path::PathBuf {

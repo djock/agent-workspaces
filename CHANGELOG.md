@@ -6,6 +6,46 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Every verb answers `-h`/`--help` with its own usage.** Asking a verb for help
+  sent the flag into that verb's argument parser, which read it as data: `ws -tag
+  --help` answered `unknown -tag subcommand: --help`, pointing the reader at a
+  subcommand problem when they had asked for documentation. The text is derived
+  from `ws -h`'s own lines rather than written a second time, so the two surfaces
+  cannot drift apart, and a test reads the dispatch and fails if a verb stops
+  answering or has no line to answer with. `ws -secrets` is exempt and still
+  forwards to its own eleven-subcommand reference.
+
+  Only the first token after the verb counts, so `ws -task add "fix --help
+  handling"` still queues the task.
+
+### Changed
+
+- **An unknown command offers the whole vocabulary, derived from the dispatch.**
+  The suggestion list named five verbs of eighteen and had no way to learn about
+  a nineteenth. It now prints every documented verb, leads with anything sharing
+  a prefix with what was typed, and is checked against the parser by a test.
+
+### Fixed
+
+- **`ws -doctor` stops reporting healthy on the states it exists to catch.** Hook
+  registration was decided by searching the whole config file for the hooks
+  directory, which passed in three ways it should not have: one mention anywhere
+  counted for all five hooks, so a half-registered config (an interrupted
+  `setup`, or an older ws) reported everything fine while four hooks never fired;
+  a path in an unrelated key — a permission rule, a stale entry — satisfied it;
+  and a `settings.json` that is not valid JSON still matched, though the agent
+  cannot parse it either and therefore runs *no* hooks at all. Registration is
+  now audited per event against the parsed document, an unparseable config is a
+  failure that says the agent cannot read it, and a partial registration names
+  the events that are missing.
+- **The shim check looks at every shim.** It probed `session-start.sh` alone and
+  reported "present" for a hooks directory holding only that file, which is what
+  a `setup` interrupted part-way leaves behind. None present is still the quiet
+  "run `ws setup`"; *some* present is a failure, because a registration pointing
+  at a script that is not there fails at hook time, where nobody is reading.
+
 ### Breaking
 
 - **`ws -secrets export` namespaces every variable.** A secret named `api_key`

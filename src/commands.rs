@@ -275,16 +275,44 @@ pub fn doctor() -> Result<()> {
             // Folding "unreadable" into "not registered" printed the same line
             // for both — in the one command whose entire job is telling you what
             // is actually wrong.
+            // Absent, unreadable, unparseable, partly registered and fully
+            // registered are five different answers. The substring test this
+            // replaces gave the same one for the last four — see
+            // `hooksetup::audit_registration`.
             match crate::io_read::read_or_absent(&cfg_path) {
-                Ok(Some(s))
-                    if s.contains(&crate::hooksetup::hooks_dir().to_string_lossy().to_string()) =>
-                {
-                    println!("  ✓ ws hooks registered in {}", cfg_path.display());
-                }
-                Ok(Some(_)) => println!(
-                    "  … ws hooks not registered in {} — run `ws setup`",
-                    cfg_path.display()
-                ),
+                Ok(Some(s)) => match crate::hooksetup::audit_registration(&s, agent.as_ref()) {
+                    Ok(reg) if reg.missing.is_empty() => {
+                        println!(
+                            "  ✓ ws hooks registered in {} ({} events)",
+                            cfg_path.display(),
+                            reg.registered.len()
+                        );
+                    }
+                    Ok(reg) => {
+                        // Naming the events matters: a partial registration is
+                        // the ordinary result of an interrupted `setup` or an
+                        // older ws, and "not registered" sent people to re-run a
+                        // command they had already run.
+                        let missing: Vec<&str> = reg.missing.iter().map(|(e, _)| *e).collect();
+                        println!(
+                            "  ✗ {} of {} ws hooks are not registered in {} ({}) — run `ws setup`",
+                            reg.missing.len(),
+                            reg.missing.len() + reg.registered.len(),
+                            cfg_path.display(),
+                            missing.join(", ")
+                        );
+                        hard_fail = true;
+                    }
+                    Err(e) => {
+                        // The agent parses this file with the same strictness,
+                        // so it is running none of its hooks either.
+                        println!(
+                            "  ✗ {} is {e:#} — {id} cannot read it, so no hooks fire at all",
+                            cfg_path.display()
+                        );
+                        hard_fail = true;
+                    }
+                },
                 Ok(None) => {
                     println!("  … {} does not exist yet — run `ws setup`", cfg_path.display())
                 }
@@ -300,12 +328,28 @@ pub fn doctor() -> Result<()> {
             println!("… {id}: not installed");
         }
     }
-    // shims present?
-    let shim = crate::hooksetup::hooks_dir().join("session-start.sh");
-    if shim.exists() {
-        println!("✓ ws hook scripts present");
-    } else {
+    // Every shim, not just the first one. Probing `session-start.sh` alone
+    // reported "present" for a hooks directory holding only that file, which is
+    // what a `setup` interrupted part-way through leaves behind — and a
+    // registration pointing at a script that is not there fails at hook time,
+    // where nobody is reading.
+    let dir = crate::hooksetup::hooks_dir();
+    let missing: Vec<&str> = crate::hooksetup::HOOKS
+        .iter()
+        .map(|s| s.script)
+        .filter(|s| !dir.join(s).exists())
+        .collect();
+    if missing.is_empty() {
+        println!("✓ ws hook scripts present ({})", crate::hooksetup::HOOKS.len());
+    } else if missing.len() == crate::hooksetup::HOOKS.len() {
+        // None of them: `ws setup` has not run here. Not damage — the same
+        // "nothing installed yet" state the config check reports softly.
         println!("… ws hook scripts missing — run `ws setup`");
+    } else {
+        // Some of them: an install that got part-way. A registration pointing at
+        // a script that is not there fails at hook time, where nobody is reading.
+        println!("✗ ws hook scripts missing: {} — run `ws setup`", missing.join(", "));
+        hard_fail = true;
     }
 
     // User-defined hooks: an invalid hooks.toml means `ws setup` will refuse, and

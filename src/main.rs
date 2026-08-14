@@ -51,6 +51,7 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
     match cli::parse(args)? {
         Cmd::Version => println!("ws {}", env!("CARGO_PKG_VERSION")),
         Cmd::Help => print_help(),
+        Cmd::VerbHelp(verb) => println!("{}", cli::verb_usage(&verb)),
         Cmd::Config(c) => commands::config(c)?,
         Cmd::List { tag, archived } => commands::list(tag, archived)?,
         Cmd::Tag(c) => commands::tag(c)?,
@@ -122,74 +123,12 @@ pub fn now_iso() -> String {
 /// `help_covers_every_command` in the tests below now fails if a command exists
 /// that this text does not mention, so the two cannot drift apart again.
 fn print_help() {
-    println!("{}", help_text());
-}
-
-fn help_text() -> &'static str {
-    "ws — agent workspace manager\n\
-         \n\
-         Launch\n\
-         \x20 ws <name>                    create or resume a workspace (refuses one\n\
-         \x20                                made by a newer ws, as does every\n\
-         \x20                                command that modifies a workspace)\n\
-         \x20 ws <name> -claude | -codex   choose the agent for this launch\n\
-         \x20 ws <name> --agent <id>       same, by id\n\
-         \x20 ws <name> --fresh            start a new agent session, not a resume\n\
-         \x20 ws <name> --handoff          point the agent at the latest handoff\n\
-         \x20 ws <name> --force            take over a workspace another process holds\n\
-         \x20                                (without --force you are offered the\n\
-         \x20                                choice: open a feature, force, new, cancel)\n\
-         \n\
-         Browse\n\
-         \x20 ws                           pick a workspace from a list (arrow keys,\n\
-         \x20                                Enter launches; lists plainly when not a tty)\n\
-         \x20 ws -pick                     same, explicitly\n\
-         \x20 ws -list | -ls               list workspaces (--tag <t>, --archived)\n\
-         \x20 ws -search <query>           search all workspaces (--include-archived)\n\
-         \n\
-         Manage\n\
-         \x20 ws -adopt [<name>]           adopt the current directory\n\
-         \x20 ws -rm <name>...             remove workspace(s) (--force)\n\
-         \x20 ws -archive | -unarchive <name>...\n\
-         \x20 ws -tag add|rm|list [--workspace <n>] <tag>...\n\
-         \x20 ws -status \"<text>\" | --clear\n\
-         \x20 ws -color <color> | --clear  set the tab and status-line color\n\
-         \n\
-         Worktrees\n\
-         \x20 ws <base>@<feature>          create a git worktree workspace off <base>,\n\
-         \x20                                or open it once it exists\n\
-         \x20 ws <base>@<feature> --merge  merge it back (--no-ff) and remove it\n\
-         \n\
-         Coordinate\n\
-         \x20 ws -whoami                   print your actor slug\n\
-         \x20 ws -who [<name>]             who did what in a workspace, from the timeline\n\
-         \x20 ws -conversations [<name>]   conversation lineage: rotations and agent switches\n\
-         \x20 ws -rotate [<name>]          write a handoff skeleton for the next session\n\
-         \x20 ws -task add [<name>] <text> capture a task without interrupting the agent\n\
-         \x20 ws -task list|rm [<name>]    show or drop captured tasks\n\
-         \n\
-         Inspect\n\
-         \x20 ws -limits                   usage limits captured from the status line\n\
-         \x20 ws -doctor                   check agents, hooks and shims\n\
-         \n\
-         Secrets\n\
-         \x20 ws -secrets set|get|rm <name>\n\
-         \x20 ws -secrets list|purge|export|backend\n\
-         \x20 ws -secrets restore <file>   put stored values back into a redacted file\n\
-         \x20 ws -secrets help             the subcommands, in full\n\
-         \n\
-         Setup\n\
-         \x20 ws setup                     install hooks, prompts and status lines\n\
-         \x20 ws config list|get|set       read or change configuration\n\
-         \x20 ws hooks list                show the hooks registered for each agent\n\
-         \x20 ws hooks check               validate hooks.toml without writing anything\n\
-         \x20 ws -update                   install the latest release (--check, --force)\n\
-         \x20 ws -uninstall                remove ws integrations and binary (--force)\n\
-         \x20 ws --version"
+    println!("{}", cli::help_text());
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::cli::{self, Cmd};
     /// Every command token the parser accepts, read out of `cli.rs` itself.
     ///
     /// The list this replaces was written by hand, which meant it could only
@@ -243,6 +182,43 @@ mod tests {
         out
     }
 
+    /// Just the top-level verbs — the arms of `match first.as_str()` itself.
+    ///
+    /// `parser_tokens` deliberately reads every quoted arm it can see, which
+    /// also picks up the nested matches inside a verb (`ws hooks list`, the
+    /// `--check`/`--force` loops). Those are subcommands and flags: they are
+    /// reached *through* a verb and have no top-level spelling, so `ws list
+    /// --help` is not a thing anyone can ask for. Told apart by indentation,
+    /// since the outer arms sit at eight spaces and everything nested is deeper.
+    fn top_level_verbs() -> Vec<String> {
+        let src = include_str!("cli.rs");
+        let f = src.find("pub fn parse(").expect("cli.rs no longer has parse()");
+        let start = "match first.as_str() {";
+        let i = src[f..].find(start).map(|i| f + i).expect("parse() no longer has its dispatch");
+        let mut out = Vec::new();
+        for line in src[i + start.len()..].lines() {
+            if line.starts_with("    }") {
+                break;
+            }
+            if !line.starts_with("        \"") {
+                continue;
+            }
+            let Some((pat, _)) = line.split_once("=>") else { continue };
+            for lit in pat.split('|') {
+                if let Some(t) = lit
+                    .trim()
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                    .filter(|t| !t.is_empty())
+                {
+                    out.push(t.to_string());
+                }
+            }
+        }
+        assert!(out.len() > 15, "only found {} verbs — extraction broke", out.len());
+        out
+    }
+
     /// The help text is the only user-facing documentation of the command
     /// surface, and it silently fell a third of that surface behind while the
     /// README called it complete. Anything a user can type must appear in it; a
@@ -250,7 +226,7 @@ mod tests {
     /// notices two releases later.
     #[test]
     fn help_covers_every_command() {
-        let help = super::help_text();
+        let help = crate::cli::help_text();
         // Conventional aliases carried for muscle memory. Spelling every one of
         // them out would pad the help with rows that teach nothing, so they are
         // exempt *by name* — an exemption has to be added deliberately, which is
@@ -269,7 +245,7 @@ mod tests {
     /// already covers, so the exposure is much smaller.
     #[test]
     fn help_covers_every_launch_flag() {
-        let help = super::help_text();
+        let help = crate::cli::help_text();
         for token in [
             "-claude",
             "-codex",
@@ -288,12 +264,96 @@ mod tests {
         }
     }
 
+    /// Every verb answers `-h`/`--help` with its own usage, derived from the
+    /// same help text, and none of them treats the flag as data.
+    ///
+    /// Read from the dispatch rather than a list, so a verb added tomorrow is
+    /// covered the moment it is written. That is the property the hand-written
+    /// version of `parser_tokens`'s ancestor lacked: it could confirm the verbs
+    /// somebody remembered and could not notice a new one.
+    #[test]
+    fn every_verb_answers_help_with_its_own_usage() {
+        let aliases = ["-V", "-h", "--help", "--resume", "-resume", "internal", "statusline"];
+        for token in top_level_verbs() {
+            if aliases.contains(&token.as_str()) {
+                continue;
+            }
+            // `-secrets` delegates to its own eleven-subcommand reference.
+            if token == "-secrets" {
+                let parsed = crate::cli::parse(vec!["-secrets".into(), "--help".into()]).unwrap();
+                assert!(
+                    matches!(parsed, Cmd::Secrets(cli::SecretsCmd::Help)),
+                    "-secrets --help must reach the secrets reference, not the derived usage"
+                );
+                continue;
+            }
+
+            let parsed = crate::cli::parse(vec![token.clone(), "--help".into()])
+                .unwrap_or_else(|e| panic!("`ws {token} --help` is an error: {e}"));
+            let Cmd::VerbHelp(verb) = parsed else {
+                panic!("`ws {token} --help` did not ask for help, it parsed as {parsed:?}");
+            };
+            let usage = crate::cli::verb_usage(&verb);
+            assert!(
+                usage.lines().count() < crate::cli::help_text().lines().count(),
+                "`ws {token} --help` fell back to the whole help text — no line documents it"
+            );
+            assert!(
+                usage.contains(&token),
+                "`ws {token} --help` answered with usage that never mentions it:\n{usage}"
+            );
+        }
+    }
+
+    /// The suggestion list an unknown command prints is the dispatch's own
+    /// vocabulary, not a copy of it.
+    ///
+    /// The list this replaces named five verbs of eighteen and could never learn
+    /// about a nineteenth. Deriving it is only half the fix — this is the half
+    /// that fails if the derivation ever stops seeing a verb the parser accepts.
+    #[test]
+    fn the_unknown_command_error_offers_every_verb() {
+        let aliases = ["-V", "-h", "--help", "--resume", "-resume", "internal", "statusline"];
+        let offered = crate::cli::known_verbs();
+        for verb in top_level_verbs() {
+            if aliases.contains(&verb.as_str()) {
+                continue;
+            }
+            assert!(
+                offered.contains(&verb.as_str()),
+                "`ws {verb}` is accepted but never offered after a typo: {offered:?}"
+            );
+        }
+    }
+
+    /// A launch *flag* is not a command to suggest. `ws <name> -claude | -codex`
+    /// alternates between two flags of one verb, and reading every `|` in the
+    /// help put `-codex` and `--clear` in the list of commands to try.
+    #[test]
+    fn flags_are_not_offered_as_commands() {
+        let offered = crate::cli::known_verbs();
+        for flag in ["-claude", "-codex", "--clear", "--fresh", "--force", "--merge"] {
+            assert!(!offered.contains(&flag), "{flag} is a flag, not a command: {offered:?}");
+        }
+    }
+
+    /// An argument that merely contains `--help` is data. Scanning the whole
+    /// argument list rather than the first token would make this queue nothing
+    /// and print the help instead.
+    #[test]
+    fn help_inside_an_argument_is_not_a_request_for_help() {
+        let parsed =
+            crate::cli::parse(vec!["-task".into(), "add".into(), "fix --help handling".into()])
+                .unwrap();
+        assert!(matches!(parsed, Cmd::Task(_)), "parsed as {parsed:?}");
+    }
+
     /// The surface this refocus removed must not creep back into the help text:
     /// a line here is what sends a user looking for a command that no longer
     /// exists.
     #[test]
     fn help_does_not_mention_removed_surface() {
-        let help = super::help_text();
+        let help = crate::cli::help_text();
         for token in ["-tui", "migrate-cs", "-msg", "-spawn", "-queue", "drain", "--dry-run"] {
             assert!(!help.contains(token), "`ws --help` still mentions removed {token:?}");
         }

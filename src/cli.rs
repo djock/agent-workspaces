@@ -3,13 +3,29 @@ use std::io::IsTerminal;
 
 #[derive(Debug, PartialEq)]
 pub enum Cmd {
-    Launch { name: String, agent: Option<String>, fresh: bool, force: bool, handoff: bool },
-    List { tag: Option<String>, archived: bool },
-    Adopt { name: Option<String> },
-    Rm { names: Vec<String>, force: bool },
+    Launch {
+        name: String,
+        agent: Option<String>,
+        fresh: bool,
+        force: bool,
+        handoff: bool,
+    },
+    List {
+        tag: Option<String>,
+        archived: bool,
+    },
+    Adopt {
+        name: Option<String>,
+    },
+    Rm {
+        names: Vec<String>,
+        force: bool,
+    },
     Config(ConfigCmd),
     Version,
     Help,
+    /// `ws <verb> -h` — the lines of `ws -h` that document one verb.
+    VerbHelp(String),
     Setup,
     Internal(Vec<String>),
     Statusline,
@@ -17,20 +33,46 @@ pub enum Cmd {
     Doctor,
     Secrets(SecretsCmd),
     Tag(TagCmd),
-    Status { name: Option<String>, text: Option<String> },
-    Color { name: Option<String>, color: Option<String> },
-    Archive { names: Vec<String>, archived: bool },
-    Search { query: String, include_archived: bool },
-    Update { check: bool, force: bool },
-    Uninstall { force: bool },
+    Status {
+        name: Option<String>,
+        text: Option<String>,
+    },
+    Color {
+        name: Option<String>,
+        color: Option<String>,
+    },
+    Archive {
+        names: Vec<String>,
+        archived: bool,
+    },
+    Search {
+        query: String,
+        include_archived: bool,
+    },
+    Update {
+        check: bool,
+        force: bool,
+    },
+    Uninstall {
+        force: bool,
+    },
     Pick,
     Whoami,
-    Who { name: Option<String> },
-    Conversations { name: Option<String> },
-    Rotate { name: Option<String> },
+    Who {
+        name: Option<String>,
+    },
+    Conversations {
+        name: Option<String>,
+    },
+    Rotate {
+        name: Option<String>,
+    },
     Task(TaskCmd),
     Hooks(HooksCmd),
-    Worktree { spec: String, merge: bool },
+    Worktree {
+        spec: String,
+        merge: bool,
+    },
 }
 
 /// Task capture. `add` defaults to the current workspace so `/ws:task` can call
@@ -92,10 +134,239 @@ pub enum ConfigCmd {
     Set { key: String, value: String },
 }
 
+/// The full command surface.
+///
+/// Lives here rather than in `main.rs` because it is not only printed: `-h` on
+/// any individual verb is answered from these same lines (`verb_usage`), so the
+/// help a verb gives and the help `ws -h` gives cannot disagree.
+pub fn help_text() -> &'static str {
+    "ws — agent workspace manager\n\
+         \n\
+         Launch\n\
+         \x20 ws <name>                    create or resume a workspace (refuses one\n\
+         \x20                                made by a newer ws, as does every\n\
+         \x20                                command that modifies a workspace)\n\
+         \x20 ws <name> -claude | -codex   choose the agent for this launch\n\
+         \x20 ws <name> --agent <id>       same, by id\n\
+         \x20 ws <name> --fresh            start a new agent session, not a resume\n\
+         \x20 ws <name> --handoff          point the agent at the latest handoff\n\
+         \x20 ws <name> --force            take over a workspace another process holds\n\
+         \x20                                (without --force you are offered the\n\
+         \x20                                choice: open a feature, force, new, cancel)\n\
+         \n\
+         Browse\n\
+         \x20 ws                           pick a workspace from a list (arrow keys,\n\
+         \x20                                Enter launches; lists plainly when not a tty)\n\
+         \x20 ws -pick                     same, explicitly\n\
+         \x20 ws -list | -ls               list workspaces (--tag <t>, --archived)\n\
+         \x20 ws -search <query>           search all workspaces (--include-archived)\n\
+         \n\
+         Manage\n\
+         \x20 ws -adopt [<name>]           adopt the current directory\n\
+         \x20 ws -rm <name>...             remove workspace(s) (--force)\n\
+         \x20 ws -archive | -unarchive <name>...\n\
+         \x20 ws -tag add|rm|list [--workspace <n>] <tag>...\n\
+         \x20 ws -status \"<text>\" | --clear\n\
+         \x20 ws -color <color> | --clear  set the tab and status-line color\n\
+         \n\
+         Worktrees\n\
+         \x20 ws <base>@<feature>          create a git worktree workspace off <base>,\n\
+         \x20                                or open it once it exists\n\
+         \x20 ws <base>@<feature> --merge  merge it back (--no-ff) and remove it\n\
+         \n\
+         Coordinate\n\
+         \x20 ws -whoami                   print your actor slug\n\
+         \x20 ws -who [<name>]             who did what in a workspace, from the timeline\n\
+         \x20 ws -conversations [<name>]   conversation lineage: rotations and agent switches\n\
+         \x20 ws -rotate [<name>]          write a handoff skeleton for the next session\n\
+         \x20 ws -task add [<name>] <text> capture a task without interrupting the agent\n\
+         \x20 ws -task list|rm [<name>]    show or drop captured tasks\n\
+         \n\
+         Inspect\n\
+         \x20 ws -limits                   usage limits captured from the status line\n\
+         \x20 ws -doctor                   check agents, hooks and shims\n\
+         \n\
+         Secrets\n\
+         \x20 ws -secrets set|get|rm <name>\n\
+         \x20 ws -secrets list|purge|export|backend\n\
+         \x20 ws -secrets restore <file>   put stored values back into a redacted file\n\
+         \x20 ws -secrets help             the subcommands, in full\n\
+         \n\
+         Setup\n\
+         \x20 ws setup                     install hooks, prompts and status lines\n\
+         \x20 ws config list|get|set       read or change configuration\n\
+         \x20 ws hooks list                show the hooks registered for each agent\n\
+         \x20 ws hooks check               validate hooks.toml without writing anything\n\
+         \x20 ws -update                   install the latest release (--check, --force)\n\
+         \x20 ws -uninstall                remove ws integrations and binary (--force)\n\
+         \x20 ws --version"
+}
+
+/// The lines of `ws -h` that document one verb.
+///
+/// Derived rather than written a second time. A verb's usage existed only inside
+/// its own parser's `bail!` strings, which meant asking a verb for help got the
+/// flag treated as data — `ws -tag --help` answered `unknown -tag subcommand:
+/// --help`, pointing the reader at a subcommand problem when they had asked for
+/// documentation. Deriving it also means the two surfaces cannot drift: a verb
+/// whose help text changes changes here too, and `every_verb_answers_help` fails
+/// if a verb appears in the parser with no line in the help at all.
+///
+/// A line is a match when the verb appears as a whole token in it, so
+/// `ws -list | -ls` answers to both spellings and `ws -archive | -unarchive`
+/// answers to either. Continuation lines (the wrapped half of a two-line entry)
+/// carry no `ws ` of their own and are taken along with the entry above them.
+pub fn verb_usage(verb: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut taking = false;
+    for line in help_text().lines() {
+        if line.trim().is_empty() {
+            taking = false;
+            continue;
+        }
+        if line.starts_with("  ws ") {
+            taking = line_documents(line, verb);
+        }
+        if taking {
+            out.push(line);
+        }
+    }
+    if out.is_empty() {
+        // Every verb should have a line — `help_covers_every_command` enforces
+        // it — but printing the whole help is a better answer than printing
+        // nothing if one ever slips through.
+        return help_text().to_string();
+    }
+    out.join("\n")
+}
+
+/// Every verb `ws -h` documents, in the order it lists them.
+///
+/// One source for the vocabulary. cs shipped three copies of its own — two
+/// completion scripts and an error message — each missing something different,
+/// which is what a hand-maintained list does over time.
+pub fn known_verbs() -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for line in help_text().lines() {
+        for verb in leading_verbs(line) {
+            // `<name>` and `<base>@<feature>` are placeholders for what the user
+            // types, not things to suggest typing.
+            if !verb.starts_with('<') && !out.contains(&verb) {
+                out.push(verb);
+            }
+        }
+    }
+    out
+}
+
+/// The verb (or alternative spellings of it) a help line begins with.
+///
+/// Only the *leading* position, and only alternatives attached to it: `ws -list
+/// | -ls` gives both spellings of one verb, while `ws <name> -claude | -codex`
+/// gives `<name>` alone — the `| -codex` there alternates between two flags of
+/// the launch verb, not between two verbs. Reading every `|` in the line made
+/// `-codex` and `--clear` show up in the list of commands to try.
+fn leading_verbs(line: &str) -> Vec<&str> {
+    if !line.starts_with("  ws ") {
+        return Vec::new();
+    }
+    // The description is separated from the command by a run of spaces; a line
+    // with no description is all command.
+    let cmd = line.trim_start();
+    let cmd = match cmd.find("  ") {
+        Some(i) => &cmd[..i],
+        None => cmd,
+    };
+    let Some(rest) = cmd.strip_prefix("ws ") else { return Vec::new() };
+
+    let mut toks = rest.split_whitespace();
+    let mut out = Vec::new();
+    if let Some(first) = toks.next() {
+        out.push(first);
+    }
+    while toks.next() == Some("|") {
+        match toks.next() {
+            Some(alt) => out.push(alt),
+            None => break,
+        }
+    }
+    out
+}
+
+/// What to suggest after an unknown command.
+///
+/// Anything sharing a prefix with what was typed leads, since a typo is far
+/// likelier than a wholesale invention; the full vocabulary follows either way,
+/// because a user who typed something unrecognisable is exactly the one who
+/// needs to see what exists.
+fn suggestions(typed: &str) -> String {
+    let stem = typed.trim_start_matches('-');
+    let verbs = known_verbs();
+    let near: Vec<&str> = verbs
+        .iter()
+        .copied()
+        .filter(|v| {
+            let vs = v.trim_start_matches('-');
+            !stem.is_empty() && (vs.starts_with(stem) || stem.starts_with(vs))
+        })
+        .collect();
+
+    let mut out = String::new();
+    if !near.is_empty() {
+        out.push_str(&format!("did you mean: {}\n\n", near.join(" | ")));
+    }
+    out.push_str(&format!("commands: {}\nws -h for the full surface", verbs.join(" ")));
+    out
+}
+
+/// Does this help line document `verb`?
+///
+/// Only the verb the line leads with — see [`leading_verbs`]. Matching anywhere
+/// in the line made `ws myproj --help` print the secrets line too, since
+/// `ws -secrets set|get|rm <name>` mentions `<name>` in its arguments.
+fn line_documents(line: &str, verb: &str) -> bool {
+    leading_verbs(line).contains(&verb)
+}
+
+/// Is this verb being asked for its own documentation?
+///
+/// Only the **first** token after the verb counts. Scanning the whole argument
+/// list would make `ws -task add "fix --help handling"` print help instead of
+/// queueing the task — an argument that merely contains the word is data, not a
+/// request.
+fn asks_for_help(args: &[String]) -> bool {
+    matches!(args.first().map(String::as_str), Some("-h") | Some("--help"))
+}
+
 /// Parse argv (excluding the program name) into a Cmd.
 /// Top-level pseudo-subcommands use a single leading dash (`-list`) to match
 /// the spec's CLI surface; `config` is a bare-word subcommand.
 pub fn parse(args: Vec<String>) -> Result<Cmd> {
+    // Asking any verb for help is answered here, ahead of that verb's own
+    // argument parsing and before any workspace name is resolved. Downstream,
+    // `--help` is just another token: it became a subcommand to reject, a
+    // workspace name to look up, or a status string to store.
+    //
+    // `-secrets` is exempt and forwards as before. It is a delegation to eleven
+    // subcommands of its own, with a reference (`SECRETS_USAGE`) that names all
+    // of them; answering it from `ws -h`'s four secrets lines would be a
+    // downgrade, and it already handles `--help` itself.
+    if let (Some(verb), rest) = (args.first(), &args[1.min(args.len())..]) {
+        if verb != "-secrets" && asks_for_help(rest) {
+            // A bare word that is not one of ws's own subcommands is a workspace
+            // name, and `ws myproj --help` is a request for the launch flags —
+            // which the help documents against `ws <name>`, not against the name
+            // the user happened to type.
+            let key = match verb.as_str() {
+                v if v.starts_with('-') => v.to_string(),
+                v @ ("hooks" | "config" | "setup" | "statusline" | "internal") => v.to_string(),
+                v if crate::worktree::parse_name(v).is_some() => "<base>@<feature>".to_string(),
+                _ => "<name>".to_string(),
+            };
+            return Ok(Cmd::VerbHelp(key));
+        }
+    }
+
     let mut it = args.into_iter();
     let first = match it.next() {
         // Bare `ws` offers the arrow-key picker interactively; piped or
@@ -238,7 +509,13 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         "internal" => Ok(Cmd::Internal(it.collect())),
         "statusline" => Ok(Cmd::Statusline),
         other if other.starts_with('-') => {
-            bail!("unknown command: {other}\ntry: ws -list | ws -adopt | ws -rm | ws config | ws <name>");
+            // Derived from the help text, not written out again here. The list
+            // this replaces named five of eighteen verbs and had no way to learn
+            // about a nineteenth: a vocabulary kept in more than one place falls
+            // behind in exactly the copy nobody is looking at. `ws -h` is the
+            // one that has a test keeping it complete, so it is the one to
+            // quote. Anything close to what was typed comes first.
+            bail!("unknown command: {other}\n\n{}", suggestions(other));
         }
         // Known limitation (M1): this arm claims *every* bare name with an
         // inner `@`, so an adopted workspace literally named `client@acme`
