@@ -1,6 +1,6 @@
 [package]
 name = "ws"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "Persistent workspaces shared by Claude Code and Codex"
 license = "MIT"

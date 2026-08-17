@@ -6,6 +6,8 @@ pub enum Cmd {
     Launch {
         name: String,
         agent: Option<String>,
+        /// `-loco` / `-sane`, or `None` to use whatever the workspace remembers.
+        mode: Option<crate::agents::LaunchMode>,
         fresh: bool,
         force: bool,
         handoff: bool,
@@ -167,6 +169,12 @@ pub fn help_text() -> &'static str {
          \x20                                command that modifies a workspace)\n\
          \x20 ws <name> -claude | -codex   choose the agent for this launch\n\
          \x20 ws <name> --agent <id>       same, by id\n\
+         \x20 ws <name> -loco | --loco     run with every permission check bypassed\n\
+         \x20 ws <name> -sane | --sane     apply edits without asking, escalate the rest\n\
+         \x20                                (either one is remembered in\n\
+         \x20                                .ws/workspace.toml, which is committed, so\n\
+         \x20                                later launches reuse it until the other\n\
+         \x20                                flag is given)\n\
          \x20 ws <name> --fresh            start a new agent session, not a resume\n\
          \x20 ws <name> --handoff          point the agent at the latest handoff\n\
          \x20 ws <name> --force            take over a workspace another process holds\n\
@@ -569,6 +577,7 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             // it is rejected with a message saying why — silently accepting it
             // would leave users believing they had opted into something.
             let mut agent = None;
+            let mut mode: Option<crate::agents::LaunchMode> = None;
             let mut fresh = false;
             let mut force = false;
             let mut handoff = false;
@@ -585,6 +594,21 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
                     "--agent" => agent = it.next(),
                     "-claude" => agent = Some("claude".into()),
                     "-codex" => agent = Some("codex".into()),
+                    // The two postures are one setting, so asking for both is a
+                    // contradiction rather than a last-one-wins: a launch that
+                    // quietly picked one of them could bypass every permission
+                    // check on the strength of a typo.
+                    "-loco" | "--loco" | "-sane" | "--sane" => {
+                        let want = if a.trim_start_matches('-').starts_with("loco") {
+                            crate::agents::LaunchMode::Loco
+                        } else {
+                            crate::agents::LaunchMode::Sane
+                        };
+                        if mode.is_some_and(|m| m != want) {
+                            bail!("-loco and -sane are opposites; pick one");
+                        }
+                        mode = Some(want);
+                    }
                     "--fresh" | "-fresh" => fresh = true,
                     "--force" => force = true,
                     "--handoff" => handoff = true,
@@ -601,7 +625,7 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             if porcelain {
                 bail!("--porcelain only applies to `ws <base> -features`");
             }
-            Ok(Cmd::Launch { name: name.to_string(), agent, fresh, force, handoff })
+            Ok(Cmd::Launch { name: name.to_string(), agent, mode, fresh, force, handoff })
         }
     }
 }
@@ -1051,6 +1075,7 @@ mod tests {
             Cmd::Launch {
                 name: "api".into(),
                 agent: None,
+                mode: None,
                 fresh: false,
                 force: false,
                 handoff: false
@@ -1074,6 +1099,7 @@ mod tests {
             Cmd::Launch {
                 name: "mywork".into(),
                 agent: None,
+                mode: None,
                 fresh: false,
                 force: false,
                 handoff: false
@@ -1088,11 +1114,55 @@ mod tests {
             Cmd::Launch {
                 name: "mywork".into(),
                 agent: Some("claude".into()),
+                mode: None,
                 fresh: true,
                 force: true,
                 handoff: false
             }
         );
+    }
+
+    #[test]
+    fn mode_flags_parse_in_both_spellings() {
+        use crate::agents::LaunchMode;
+        for (args, want) in [
+            (vec!["proj", "-loco"], LaunchMode::Loco),
+            (vec!["proj", "--loco"], LaunchMode::Loco),
+            (vec!["proj", "-sane"], LaunchMode::Sane),
+            (vec!["proj", "--sane"], LaunchMode::Sane),
+        ] {
+            match p(&args) {
+                Cmd::Launch { mode, .. } => assert_eq!(mode, Some(want), "{args:?}"),
+                other => panic!("expected a launch, got {other:?}"),
+            }
+        }
+        // Absent is absent, not a posture: a plain launch must leave whatever
+        // the workspace remembers alone.
+        match p(&["proj"]) {
+            Cmd::Launch { mode, .. } => assert_eq!(mode, None),
+            other => panic!("expected a launch, got {other:?}"),
+        }
+    }
+
+    /// The two postures are one setting, so asking for both is a contradiction.
+    /// Last-one-wins would mean a launch could bypass every permission check on
+    /// the strength of a typo, which is the one direction that must never be a
+    /// silent default.
+    #[test]
+    fn loco_and_sane_together_are_refused() {
+        for args in [
+            vec!["proj", "-loco", "-sane"],
+            vec!["proj", "-sane", "--loco"],
+            vec!["proj", "-loco", "-codex", "--sane"],
+        ] {
+            let err = parse(args.iter().map(|s| s.to_string()).collect())
+                .map(|c| format!("{c:?}"))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("opposites"), "{args:?} must be refused, got: {err}");
+        }
+        // Repeating the *same* flag is not a contradiction.
+        assert_eq!(p(&["proj", "-loco", "--loco"]), p(&["proj", "-loco"]));
     }
 
     #[test]

@@ -1246,6 +1246,7 @@ pub fn config(cmd: ConfigCmd) -> Result<()> {
 pub fn launch(
     name: String,
     agent_override: Option<String>,
+    mode_override: Option<agents::LaunchMode>,
     fresh: bool,
     force: bool,
     handoff: bool,
@@ -1256,8 +1257,33 @@ pub fn launch(
     //    Read the recorded default BEFORE open_or_create so a brand-new workspace
     //    (no recorded default yet) is never mistaken for an agent switch — the switch
     //    invariant must not depend on what contract::init happens to write.
-    let recorded_default =
-        crate::meta::read(&workspace::resolve(&name, &cfg).workspace_toml()).default_agent;
+    //    One read serves both the agent and the mode: they come out of the same
+    //    file, and a second read would be a second chance to disagree with it.
+    let recorded = crate::meta::read(&workspace::resolve(&name, &cfg).workspace_toml());
+    let recorded_default = recorded.default_agent.clone();
+
+    // 1b. Resolve the permission posture: -loco/-sane > what the workspace
+    //     remembers > nothing at all, which leaves the agent's own default
+    //     untouched — exactly what every launch did before the modes existed.
+    //     A recorded value that parses as neither is reported, not guessed at:
+    //     the guess that matters would be the permissive one.
+    let mode = match mode_override {
+        Some(m) => Some(m),
+        None => match recorded.mode.as_deref() {
+            None => None,
+            Some(text) => {
+                let parsed = agents::LaunchMode::parse(text);
+                if parsed.is_none() {
+                    eprintln!(
+                        "ws: warning: unrecognized mode {text:?} in .ws/workspace.toml — \
+                         ignoring it and launching with the agent's own default. \
+                         Use `ws {name} -loco` or `ws {name} -sane` to set it."
+                    );
+                }
+                parsed
+            }
+        },
+    };
     let agent_id = agent_override
         .clone()
         .or_else(|| recorded_default.clone())
@@ -1300,7 +1326,7 @@ pub fn launch(
                 // `launch` reuses every step below rather than duplicating it.
                 // The callee execs into the agent, so this frame never returns.
                 crate::collision::Choice::Open(other) => {
-                    return launch(other, agent_override, fresh, false, handoff)
+                    return launch(other, agent_override, mode_override, fresh, false, handoff)
                 }
                 crate::collision::Choice::New => {
                     let Some(feature) = crate::collision::ask_feature_name()? else {
@@ -1310,7 +1336,14 @@ pub fn launch(
                         .ok_or_else(|| anyhow::anyhow!("not a valid feature name: {feature}"))?;
                     let path = crate::worktree::create(&spec)?;
                     println!("created {} at {}", spec.workspace_name(), path.display());
-                    return launch(spec.workspace_name(), agent_override, fresh, false, handoff);
+                    return launch(
+                        spec.workspace_name(),
+                        agent_override,
+                        mode_override,
+                        fresh,
+                        false,
+                        handoff,
+                    );
                 }
                 crate::collision::Choice::Cancel => return Ok(()),
             }
@@ -1373,7 +1406,19 @@ pub fn launch(
         let _ = crate::meta::set_default_agent(&ws.workspace_toml(), agent.id());
     }
 
-    // 4b. Stamp "opened now" so `-list` and the picker can put this workspace at
+    // 4b. Remember an explicitly chosen posture, so `ws <name>` alone keeps it.
+    // Only when the flag was actually typed, and only when it differs from what
+    // is already on disk — a plain launch must not rewrite `workspace.toml`
+    // (which is committed) on every open. Unlike the color backfill below this
+    // one is fatal on failure: silently failing to record `-sane` would leave a
+    // workspace in `loco` while telling the user it had been calmed down.
+    if let Some(m) = mode_override {
+        if recorded.mode.as_deref() != Some(m.as_str()) {
+            crate::meta::set_mode(&ws.workspace_toml(), Some(m.as_str()))?;
+        }
+    }
+
+    // 4c. Stamp "opened now" so `-list` and the picker can put this workspace at
     // the top next time. Written before the agent takes over rather than after
     // it exits: `exec` never comes back, and a launch that ends in a crash still
     // happened.
@@ -1408,6 +1453,19 @@ pub fn launch(
         print!("{notice}");
     }
 
+    // 5d. Say it out loud, every loco launch — not only the one that typed the
+    // flag. The posture is remembered in a committed file, so the launch that
+    // runs without permission checks is usually one that never mentioned loco,
+    // and may be on a machine that never chose it. A notice, never a prompt:
+    // scripted launches go through here too.
+    if mode == Some(agents::LaunchMode::Loco) {
+        eprintln!(
+            "ws: loco — {} runs with permission checks bypassed (`ws {} -sane` to undo)",
+            agent.id(),
+            ws.name
+        );
+    }
+
     // 6. Ask before resuming, when there is something to resume and someone to
     // ask. `y` resumes; the default (Enter) starts a fresh conversation. When
     // there is nobody to ask, resuming stays the unprompted behavior — a
@@ -1418,7 +1476,7 @@ pub fn launch(
             && !ask_resume(&ws.name));
 
     // 7. Build + run — the agent owns the fresh/resume decision and persists its own state.
-    let ctx = LaunchCtx { fresh, sessions_root: config::sessions_root(&cfg) };
+    let ctx = LaunchCtx { fresh, sessions_root: config::sessions_root(&cfg), mode };
     let cmd = agent.launch(&ws, &ctx)?;
 
     // Keep the lock file in place; the launched agent inherits our PID.

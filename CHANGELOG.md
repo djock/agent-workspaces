@@ -4,6 +4,31 @@ All notable changes to this project are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] — 2026-08-17
+
+### Added
+
+- **`ws <name> -loco` / `-sane`: one word for how much the agent may do without
+  asking, on either agent.** `-loco` runs with every permission check bypassed
+  (`--dangerously-skip-permissions`; on Codex,
+  `--dangerously-bypass-approvals-and-sandbox`). `-sane` lets edits land without
+  asking and keeps everything else escalating (`--permission-mode acceptEdits`;
+  on Codex, `--sandbox workspace-write --ask-for-approval on-request` — this
+  Codex has no `--full-auto`, and it takes two flags because it separates the
+  two questions Claude's `acceptEdits` answers at once).
+
+  Either flag is remembered in `.ws/workspace.toml` beside `default_agent`, so
+  it is typed once and every later `ws <name>` opens in the same posture until
+  the other flag is given. A workspace that has never been told either is
+  launched exactly as before, with no flags added.
+
+  That file is tracked and committed, so a recorded `loco` reaches whoever
+  clones the workspace on a machine that never chose it. Every loco launch
+  therefore says so on stderr — including the launches that did not type the
+  flag — and a recorded value that is neither word is reported and ignored
+  rather than resolved to a posture. Asking for both flags at once is refused:
+  last-one-wins would let a typo bypass every permission check.
+
 ## [0.9.0] — 2026-08-14
 
 ### Added

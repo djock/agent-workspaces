@@ -62,6 +62,23 @@ impl Agent for ClaudeAgent {
         )
     }
 
+    /// Verified against the installed `claude --help`: `--permission-mode` takes
+    /// `acceptEdits | auto | bypassPermissions | manual | dontAsk | plan`, and
+    /// bypassing is *also* reachable as its own flag.
+    ///
+    /// Loco uses `--dangerously-skip-permissions` rather than
+    /// `--permission-mode bypassPermissions` deliberately: it is the spelling
+    /// Claude Code treats as the deliberate opt-in (it refuses outright in a few
+    /// contexts, such as running as root), so a refusal surfaces as a refusal
+    /// instead of a session that quietly declines to bypass anything.
+    fn mode_args(&self, mode: crate::agents::LaunchMode) -> Vec<String> {
+        use crate::agents::LaunchMode;
+        match mode {
+            LaunchMode::Loco => vec!["--dangerously-skip-permissions".into()],
+            LaunchMode::Sane => vec!["--permission-mode".into(), "acceptEdits".into()],
+        }
+    }
+
     fn prompts_dir(&self) -> std::path::PathBuf {
         crate::prompts::commands_dir()
     }
@@ -138,6 +155,10 @@ impl Agent for ClaudeAgent {
                 );
             }
         }
+        // After the session args, so `--resume <id>` keeps its value adjacent.
+        if let Some(mode) = ctx.mode {
+            cmd.args(self.mode_args(mode));
+        }
         cmd.current_dir(&ws.root)
             .env("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", ws.memory_dir())
             .env("WS_WORKSPACE", &ws.name)
@@ -178,7 +199,7 @@ mod tests {
     fn fresh_uses_session_id_and_records_it() {
         let d = TempDir::new().unwrap();
         let ws = ws_at(d.path());
-        let ctx = LaunchCtx { fresh: true, sessions_root: "/root".into() };
+        let ctx = LaunchCtx { fresh: true, sessions_root: "/root".into(), mode: None };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         let a = args_of(&cmd);
         assert_eq!(a[0], "--session-id");
@@ -194,7 +215,7 @@ mod tests {
         let d = TempDir::new().unwrap();
         let ws = ws_at(d.path());
         crate::contract::write_session_id(&ws.state_toml(), "claude", "uuid-xyz").unwrap();
-        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into() };
+        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into(), mode: None };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         assert_eq!(args_of(&cmd), vec!["--resume", "uuid-xyz"]);
     }
@@ -216,7 +237,7 @@ mod tests {
         let d = TempDir::new().unwrap();
         let ws = ws_at(d.path());
         std::fs::write(ws.state_toml(), "not toml {{{").unwrap();
-        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into() };
+        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into(), mode: None };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         let a = args_of(&cmd);
         assert_eq!(
@@ -232,7 +253,7 @@ mod tests {
     fn absent_state_toml_with_fresh_false_still_launches_fresh() {
         let d = TempDir::new().unwrap();
         let ws = ws_at(d.path());
-        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into() };
+        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into(), mode: None };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         let a = args_of(&cmd);
         assert_eq!(
@@ -252,7 +273,7 @@ mod tests {
         let ws = ws_at(d.path());
         std::fs::write(ws.state_toml(), "[claude]\nsession_id = \"abc\"\n").unwrap();
         std::fs::set_permissions(ws.state_toml(), std::fs::Permissions::from_mode(0o000)).unwrap();
-        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into() };
+        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into(), mode: None };
         let result = ClaudeAgent.launch(&ws, &ctx);
         // Restore permissions unconditionally so TempDir cleanup can remove the file.
         std::fs::set_permissions(ws.state_toml(), std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -267,7 +288,7 @@ mod tests {
     fn sets_memory_redirect_and_ws_env() {
         let d = TempDir::new().unwrap();
         let ws = ws_at(d.path());
-        let ctx = LaunchCtx { fresh: true, sessions_root: "/root".into() };
+        let ctx = LaunchCtx { fresh: true, sessions_root: "/root".into(), mode: None };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         assert_eq!(
             env_of(&cmd, "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"),
@@ -276,6 +297,60 @@ mod tests {
         assert_eq!(env_of(&cmd, "WS_WORKSPACE"), Some("proj".into()));
         assert_eq!(env_of(&cmd, "WS_DIR"), Some(ws.root.to_string_lossy().to_string()));
         assert_eq!(env_of(&cmd, "WS_ROOT"), Some("/root".into()));
+    }
+
+    /// The posture flags must survive alongside the session args — a resume
+    /// that silently dropped `-loco` (or kept it when `-sane` was asked for)
+    /// is the failure that matters, and it is invisible without launching.
+    #[test]
+    fn mode_args_are_appended_to_both_fresh_and_resume() {
+        use crate::agents::LaunchMode;
+        let d = TempDir::new().unwrap();
+        let ws = ws_at(d.path());
+        crate::contract::write_session_id(&ws.state_toml(), "claude", "uuid-xyz").unwrap();
+
+        let resumed = ClaudeAgent
+            .launch(
+                &ws,
+                &LaunchCtx {
+                    fresh: false,
+                    sessions_root: "/r".into(),
+                    mode: Some(LaunchMode::Loco),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            args_of(&resumed),
+            vec!["--resume", "uuid-xyz", "--dangerously-skip-permissions"]
+        );
+
+        let fresh = ClaudeAgent
+            .launch(
+                &ws,
+                &LaunchCtx {
+                    fresh: true,
+                    sessions_root: "/r".into(),
+                    mode: Some(LaunchMode::Sane),
+                },
+            )
+            .unwrap();
+        let a = args_of(&fresh);
+        assert_eq!(a[0], "--session-id", "the session args still come first: {a:?}");
+        assert_eq!(&a[2..], ["--permission-mode", "acceptEdits"]);
+    }
+
+    /// No mode means no flags at all — a workspace that has never been told
+    /// must launch exactly as it did before the modes existed.
+    #[test]
+    fn no_mode_adds_no_permission_flags() {
+        let d = TempDir::new().unwrap();
+        let ws = ws_at(d.path());
+        let cmd = ClaudeAgent
+            .launch(&ws, &LaunchCtx { fresh: true, sessions_root: "/r".into(), mode: None })
+            .unwrap();
+        let a = args_of(&cmd);
+        assert_eq!(a.len(), 2, "only the session args: {a:?}");
+        assert!(!a.iter().any(|x| x.contains("permission")), "{a:?}");
     }
 
     #[test]
@@ -296,7 +371,7 @@ mod tests {
         crate::config::set("rewrite", "true").unwrap();
 
         let ws = ws_at(&d.path().join("proj"));
-        let ctx = LaunchCtx { fresh: true, sessions_root: "/root".into() };
+        let ctx = LaunchCtx { fresh: true, sessions_root: "/root".into(), mode: None };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         let editor = env_of(&cmd, "EDITOR").expect("rewrite is on, so $EDITOR is ws's shim");
         std::env::remove_var("XDG_CONFIG_HOME");

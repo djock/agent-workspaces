@@ -12,6 +12,10 @@ pub struct Meta {
     pub created: String,
     pub contract_version: i64,
     pub default_agent: Option<String>,
+    /// The remembered permission posture (`"loco"` / `"sane"`), as written; it
+    /// is `agents::LaunchMode::parse`d at the point of use so an unrecognized
+    /// value can be reported rather than silently resolved to a posture.
+    pub mode: Option<String>,
     pub archived: bool,
     pub tags: Vec<String>,
     pub status: Option<String>,
@@ -58,6 +62,7 @@ fn from_table(t: &toml::Table) -> Meta {
             .unwrap_or(0)
             .max(0),
         default_agent: s("default_agent"),
+        mode: s("mode"),
         archived: t.get("archived").and_then(|v| v.as_bool()).unwrap_or(false),
         tags: tags_from_table(t),
         status: s("status"),
@@ -189,6 +194,25 @@ pub fn set_color(ws_toml: &Path, color: Option<&str>) -> Result<()> {
 pub fn set_archived(ws_toml: &Path, archived: bool) -> Result<()> {
     update(ws_toml, |t| {
         t.insert("archived".into(), toml::Value::Boolean(archived));
+    })
+}
+
+/// Remember the permission posture this workspace launches in; `None` clears
+/// the key, which returns the workspace to the agent's own default.
+///
+/// This lands in `workspace.toml` — tracked and git-synced — so a recorded
+/// `loco` travels with a cloned workspace. That is what makes it *remembered*
+/// rather than per-machine, and it is why the launch path announces loco on
+/// every launch instead of only when the flag was typed.
+pub fn set_mode(ws_toml: &Path, mode: Option<&str>) -> Result<()> {
+    let mode = mode.map(str::to_string);
+    update(ws_toml, |t| match mode {
+        Some(m) => {
+            t.insert("mode".into(), toml::Value::String(m));
+        }
+        None => {
+            t.remove("mode");
+        }
     })
 }
 
@@ -414,6 +438,47 @@ mod tests {
         assert!(!read(&p).archived);
         set_default_agent(&p, "codex").unwrap();
         assert_eq!(read(&p).default_agent.as_deref(), Some("codex"));
+    }
+
+    /// The remembered posture round-trips, replaces rather than accumulates,
+    /// clears to *absent* (an empty string is not a posture, and would read
+    /// back as an unrecognized one), and does not disturb keys beside it.
+    #[test]
+    fn mode_round_trips_and_clears() {
+        let (_d, p) = wt("name = \"proj\"\ndefault_agent = \"claude\"\nfuture_key = \"keep\"\n");
+        assert_eq!(read(&p).mode, None, "a workspace starts with no recorded posture");
+
+        set_mode(&p, Some("loco")).unwrap();
+        assert_eq!(read(&p).mode.as_deref(), Some("loco"));
+        set_mode(&p, Some("sane")).unwrap();
+        assert_eq!(read(&p).mode.as_deref(), Some("sane"), "a re-set replaces");
+
+        let s = std::fs::read_to_string(&p).unwrap();
+        assert!(s.contains("future_key"), "unknown keys must survive: {s}");
+        assert_eq!(read(&p).default_agent.as_deref(), Some("claude"));
+
+        set_mode(&p, None).unwrap();
+        assert_eq!(read(&p).mode, None);
+        assert!(
+            !std::fs::read_to_string(&p).unwrap().contains("mode"),
+            "clearing must remove the key, not blank it"
+        );
+    }
+
+    /// `workspace.toml` is hand-editable and git-synced, so the recorded value
+    /// is not guaranteed to be one of the two words. Parsing must refuse the
+    /// rest rather than land anywhere near the permissive one.
+    #[test]
+    fn only_the_two_words_parse_as_a_posture() {
+        use crate::agents::LaunchMode;
+        assert_eq!(LaunchMode::parse("loco"), Some(LaunchMode::Loco));
+        assert_eq!(LaunchMode::parse("sane"), Some(LaunchMode::Sane));
+        for junk in ["", "LOCO", "Loco", "yolo", "bypassPermissions", "loco "] {
+            assert_eq!(LaunchMode::parse(junk), None, "{junk:?} must not parse");
+        }
+        // And the word written is the word read back.
+        assert_eq!(LaunchMode::Loco.as_str(), "loco");
+        assert_eq!(LaunchMode::parse(LaunchMode::Sane.as_str()), Some(LaunchMode::Sane));
     }
 
     #[test]

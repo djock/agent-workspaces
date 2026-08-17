@@ -71,6 +71,31 @@ impl Agent for CodexAgent {
         )
     }
 
+    /// Verified against the installed `codex --help` **and** `codex resume
+    /// --help`: this Codex has no `--full-auto`. What it has is `-s/--sandbox
+    /// read-only|workspace-write|danger-full-access`, `-a/--ask-for-approval
+    /// untrusted|on-request|never`, and `--dangerously-bypass-approvals-and-sandbox`
+    /// — and `resume` accepts all three itself, which is why `launch` can append
+    /// these after `resume <id>` instead of having to put them before the
+    /// subcommand.
+    ///
+    /// Sane needs two flags because Codex separates the two questions claude's
+    /// `acceptEdits` answers at once: `workspace-write` is what lets an edit land
+    /// without asking, and `on-request` is what keeps anything beyond it
+    /// escalating to the user.
+    fn mode_args(&self, mode: crate::agents::LaunchMode) -> Vec<String> {
+        use crate::agents::LaunchMode;
+        match mode {
+            LaunchMode::Loco => vec!["--dangerously-bypass-approvals-and-sandbox".into()],
+            LaunchMode::Sane => vec![
+                "--sandbox".into(),
+                "workspace-write".into(),
+                "--ask-for-approval".into(),
+                "on-request".into(),
+            ],
+        }
+    }
+
     fn prompts_dir(&self) -> std::path::PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -125,6 +150,10 @@ impl Agent for CodexAgent {
             }
             (true, _) => {}
         }
+        // After `resume <id>`, which `codex resume` accepts — see `mode_args`.
+        if let Some(mode) = ctx.mode {
+            cmd.args(self.mode_args(mode));
+        }
         cmd.current_dir(&ws.root)
             .env("WS_WORKSPACE", &ws.name)
             .env("WS_DIR", &ws.root)
@@ -161,7 +190,7 @@ mod tests {
     }
 
     fn ctx(fresh: bool) -> LaunchCtx {
-        LaunchCtx { fresh, sessions_root: std::path::PathBuf::from("/tmp/ws-root") }
+        LaunchCtx { fresh, sessions_root: std::path::PathBuf::from("/tmp/ws-root"), mode: None }
     }
 
     #[test]
@@ -231,6 +260,60 @@ mod tests {
 
         let cmd = CodexAgent.launch(&ws, &ctx(false)).unwrap();
         assert!(args(&cmd).is_empty(), "codex has no session of its own yet");
+    }
+
+    /// The posture flags go *after* `resume <id>`, which is only sound because
+    /// `codex resume` accepts `-s`/`-a`/the bypass flag itself. If a future
+    /// Codex moves them to the top level this test is what notices.
+    #[test]
+    fn mode_args_are_appended_after_the_resume_args() {
+        use crate::agents::LaunchMode;
+        let _g = lock();
+        let d = TempDir::new().unwrap();
+        let ws = ws_at(d.path());
+        let id = "019fa430-273a-7fa2-a329-89fab081f383";
+        contract::write_session_id(&ws.state_toml(), "codex", id).unwrap();
+
+        let cmd = CodexAgent
+            .launch(
+                &ws,
+                &LaunchCtx {
+                    fresh: false,
+                    sessions_root: "/tmp/ws-root".into(),
+                    mode: Some(LaunchMode::Sane),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            args(&cmd),
+            vec!["resume", id, "--sandbox", "workspace-write", "--ask-for-approval", "on-request"]
+        );
+
+        let loco = CodexAgent
+            .launch(
+                &ws,
+                &LaunchCtx {
+                    fresh: true,
+                    sessions_root: "/tmp/ws-root".into(),
+                    mode: Some(LaunchMode::Loco),
+                },
+            )
+            .unwrap();
+        assert_eq!(args(&loco), vec!["--dangerously-bypass-approvals-and-sandbox"]);
+    }
+
+    /// The two agents must not share a spelling: this is the `tool_matcher`
+    /// failure mode (one agent inheriting names that describe the other), and
+    /// here it would silently launch in a posture nobody chose.
+    #[test]
+    fn each_agent_states_its_own_spelling_of_a_posture() {
+        use crate::agents::LaunchMode;
+        for mode in [LaunchMode::Loco, LaunchMode::Sane] {
+            let codex = CodexAgent.mode_args(mode);
+            let claude = crate::agents::claude::ClaudeAgent.mode_args(mode);
+            assert_ne!(codex, claude, "{mode:?} must be spelled per agent");
+            assert!(!codex.is_empty() && !claude.is_empty());
+        }
     }
 
     #[test]

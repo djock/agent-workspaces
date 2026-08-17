@@ -722,3 +722,133 @@ fn notes_for_superseded_versions_are_pruned() {
     assert!(!stale.exists(), "the superseded notes must be gone");
     assert!(env.home.path().join(".cache/ws/update-notes-9.9.9").is_file());
 }
+
+/// The point of the modes is that they are *remembered*: the flag is typed
+/// once, and every later plain `ws proj` launches in the same posture. This is
+/// the whole feature end to end — flag → `workspace.toml` → the next launch's
+/// argv — and none of it is visible from the unit tests, which never write the
+/// file or read it back.
+#[test]
+fn a_chosen_posture_is_remembered_by_later_launches() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    let ws_toml = env.root.join("proj/.ws/workspace.toml");
+
+    launch_cmd(&env, &shim).args(["proj", "-loco"]).assert().success();
+    assert!(
+        std::fs::read_to_string(&ws_toml).unwrap().contains("mode = \"loco\""),
+        "the posture must be recorded where the next launch will find it"
+    );
+
+    // No flag at all: the recorded posture still applies.
+    launch_cmd(&env, &shim).arg("proj").assert().success();
+    let log = env.argv_log();
+    assert_eq!(
+        log.matches("--dangerously-skip-permissions").count(),
+        2,
+        "both launches must be loco, the second without being told: {log}"
+    );
+
+    // And the opposite flag replaces it, rather than adding a second posture.
+    launch_cmd(&env, &shim).args(["proj", "-sane"]).assert().success();
+    let toml = std::fs::read_to_string(&ws_toml).unwrap();
+    assert!(toml.contains("mode = \"sane\""), "{toml}");
+    assert!(!toml.contains("loco"), "the old posture must be gone: {toml}");
+
+    launch_cmd(&env, &shim).arg("proj").assert().success();
+    let log = env.argv_log();
+    assert_eq!(
+        log.matches("--permission-mode acceptEdits").count(),
+        2,
+        "sane must stick the same way loco did: {log}"
+    );
+    assert_eq!(
+        log.matches("--dangerously-skip-permissions").count(),
+        2,
+        "and no later launch may still be bypassing permissions: {log}"
+    );
+}
+
+/// A workspace nobody has told must launch exactly as it did before the modes
+/// existed: no flags, and no `mode` key written into a committed file.
+#[test]
+fn a_workspace_with_no_recorded_posture_is_untouched() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+
+    launch_cmd(&env, &shim).arg("proj").assert().success();
+
+    let log = env.argv_log();
+    assert!(!log.contains("--permission-mode"), "{log}");
+    assert!(!log.contains("--dangerously-skip-permissions"), "{log}");
+    assert!(
+        !std::fs::read_to_string(env.root.join("proj/.ws/workspace.toml"))
+            .unwrap()
+            .contains("mode"),
+        "a plain launch must not write a posture into workspace.toml"
+    );
+}
+
+/// Loco says so on every launch, not only the one that typed the flag: the
+/// posture rides along in a committed file, so the launch running without
+/// permission checks is usually one that never mentioned loco.
+#[test]
+fn every_loco_launch_says_so() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+
+    launch_cmd(&env, &shim).args(["proj", "-loco"]).assert().success();
+    let out = launch_cmd(&env, &shim).arg("proj").assert().success().get_output().clone();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("loco"), "the remembered launch must announce itself: {stderr}");
+    assert!(stderr.contains("-sane"), "and say how to undo it: {stderr}");
+
+    // A sane launch is silent about it.
+    let out =
+        launch_cmd(&env, &shim).args(["proj", "-sane"]).assert().success().get_output().clone();
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("loco"));
+}
+
+/// `workspace.toml` is hand-editable and git-synced, so it can arrive carrying
+/// a `mode` this ws does not know. It must be reported and ignored — never
+/// resolved to a posture, since the only guess that could be made is the
+/// permissive one.
+#[test]
+fn an_unrecognized_recorded_posture_is_reported_and_ignored() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    launch_cmd(&env, &shim).arg("proj").assert().success();
+
+    let ws_toml = env.root.join("proj/.ws/workspace.toml");
+    let body = std::fs::read_to_string(&ws_toml).unwrap();
+    std::fs::write(&ws_toml, format!("{body}mode = \"yolo\"\n")).unwrap();
+
+    let out = launch_cmd(&env, &shim).arg("proj").assert().success().get_output().clone();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unrecognized mode"), "{stderr}");
+    assert!(!env.argv_log().contains("--dangerously-skip-permissions"), "{}", env.argv_log());
+    assert!(!env.argv_log().contains("--permission-mode"), "{}", env.argv_log());
+}
+
+/// Codex gets the same two words, spelled its own way — and on a resume, where
+/// the flags have to follow `resume <id>`.
+#[test]
+fn codex_launches_in_the_remembered_posture_too() {
+    let env = Env::new();
+    let codex = env.fake_codex();
+
+    env.cmd()
+        .env("WS_CODEX_BIN", &codex)
+        .env("WS_NO_EXEC", "1")
+        .args(["proj", "-codex", "-sane"])
+        .assert()
+        .success();
+    env.cmd().env("WS_CODEX_BIN", &codex).env("WS_NO_EXEC", "1").arg("proj").assert().success();
+
+    let log = env.codex_argv_log();
+    assert_eq!(
+        log.matches("--sandbox workspace-write --ask-for-approval on-request").count(),
+        2,
+        "codex must get its own spelling, on the remembered launch too: {log}"
+    );
+}

@@ -9,6 +9,44 @@ use crate::workspace::Workspace;
 pub struct LaunchCtx {
     pub fresh: bool,
     pub sessions_root: PathBuf,
+    /// The permission posture this launch runs with, or `None` to leave the
+    /// agent's own default alone — which is what every launch did before the
+    /// modes existed, and what a workspace that has never been told still gets.
+    pub mode: Option<LaunchMode>,
+}
+
+/// How much the agent is allowed to do without asking.
+///
+/// Two named postures rather than a passthrough for each agent's flags: the
+/// whole point is that one word means the same *intent* on both agents, even
+/// though claude and codex spell it with entirely different flags (and codex
+/// needs two of them). The translation is `Agent::mode_args`, per agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchMode {
+    /// Everything, without asking: bypassed permissions, no sandbox.
+    Loco,
+    /// Edits land without asking; anything further still escalates.
+    Sane,
+}
+
+impl LaunchMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LaunchMode::Loco => "loco",
+            LaunchMode::Sane => "sane",
+        }
+    }
+
+    /// Parse the value recorded in `workspace.toml`. Unknown text is `None`,
+    /// and the caller says so rather than guessing at a posture — guessing
+    /// wrong in the permissive direction is the whole risk here.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "loco" => Some(LaunchMode::Loco),
+            "sane" => Some(LaunchMode::Sane),
+            _ => None,
+        }
+    }
 }
 
 pub trait Agent {
@@ -43,6 +81,16 @@ pub trait Agent {
     /// state its own event set instead of inheriting a list that happens to
     /// describe someone else.
     fn supports_event(&self, event: &str) -> bool;
+
+    /// The flags that put this agent into `mode`.
+    ///
+    /// **No default**, for the same reason as `tool_matcher` and
+    /// `supports_event`: the agents do not agree on how a permission posture is
+    /// spelled — claude takes one `--permission-mode` value, codex takes a
+    /// sandbox *and* an approval policy — and inheriting someone else's spelling
+    /// here would not fail loudly, it would launch an agent in a posture the
+    /// user did not choose. A new agent must state its own translation.
+    fn mode_args(&self, mode: LaunchMode) -> Vec<String>;
 
     /// Where this agent's ws-installed prompts/commands live.
     fn prompts_dir(&self) -> PathBuf;

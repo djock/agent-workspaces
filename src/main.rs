@@ -64,8 +64,8 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
         Cmd::Archive { names, archived } => commands::archive(names, archived)?,
         Cmd::Adopt { name } => commands::adopt(name)?,
         Cmd::Rm { names, force } => commands::rm(names, force)?,
-        Cmd::Launch { name, agent, fresh, force, handoff } => {
-            commands::launch(name, agent, fresh, force, handoff)?
+        Cmd::Launch { name, agent, mode, fresh, force, handoff } => {
+            commands::launch(name, agent, mode, fresh, force, handoff)?
         }
         Cmd::Setup => commands::setup()?,
         Cmd::Internal(args) => internal::run(args)?,
@@ -88,7 +88,9 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
             picker::Outcome::Quit => {}
             // run() has already restored the terminal; launch execs into the
             // agent from here, replacing this process.
-            picker::Outcome::Launch(name) => commands::launch(name, None, false, false, false)?,
+            picker::Outcome::Launch(name) => {
+                commands::launch(name, None, None, false, false, false)?
+            }
         },
         Cmd::Worktree { spec, merge } => {
             let s = worktree::parse_name(&spec)
@@ -102,7 +104,7 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
                 // registry. Deciding here instead left an existing worktree
                 // permanently unreachable: every launch after the first hit
                 // `worktree::create`'s "already exists" and stopped.
-                commands::launch(s.workspace_name(), None, false, false, false)?
+                commands::launch(s.workspace_name(), None, None, false, false, false)?
             } else {
                 let path = worktree::create(&s)?;
                 println!("created {} at {}", s.workspace_name(), path.display());

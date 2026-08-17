@@ -226,6 +226,32 @@ Start a fresh Claude session in the same workspace and include the latest handof
 ws my-project -claude --fresh --handoff
 ```
 
+### Permission posture
+
+`-loco` and `-sane` say how much the agent may do without asking, in one word
+that means the same thing on both agents:
+
+| | `-loco` | `-sane` |
+|---|---|---|
+| Claude | `--dangerously-skip-permissions` | `--permission-mode acceptEdits` |
+| Codex | `--dangerously-bypass-approvals-and-sandbox` | `--sandbox workspace-write --ask-for-approval on-request` |
+
+Either flag is remembered: type it once and every later `ws <name>` opens in the
+same posture, until the other flag is given. A workspace that has never been
+told either keeps its agent's own default.
+
+```sh
+ws my-project -loco     # and every launch after this one is loco
+ws my-project -sane     # back to asking before anything but edits
+```
+
+It is remembered in `.ws/workspace.toml`, which is **tracked and committed** —
+so a recorded `loco` travels to whoever clones the workspace, on a machine that
+never chose it. That is why every loco launch announces itself on stderr,
+including the ones that did not type the flag. To stop a workspace being loco
+for everyone, launch it with `-sane` and commit the change (or remove the `mode`
+line by hand to return to the agent's default).
+
 Switching from one agent to the other automatically points the new agent at the latest available handoff. For the smoothest continuation, ask the current agent to write a concise handoff before switching.
 
 Useful commands:
@@ -236,6 +262,8 @@ ws -pick                       Same, explicitly
 ws -list                       List active workspaces, most recently used first
 ws <name> -claude              Open with Claude Code
 ws <name> -codex               Open with Codex
+ws <name> -loco                Bypass every permission check (remembered)
+ws <name> -sane                Apply edits without asking (remembered)
 ws <name> --fresh              Start a fresh agent session
 ws <name> --handoff            Include the latest handoff
 ws <name> --force              Take over a workspace another process holds
