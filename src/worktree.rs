@@ -162,7 +162,6 @@ impl Readiness {
 }
 
 /// The commit `dir` has checked out.
-#[allow(dead_code)] // consumed by the finished-worktree sweep (src/done.rs), which lands separately
 pub fn head_sha(dir: &Path) -> Result<String> {
     Ok(crate::git::ok(dir, &["rev-parse", "HEAD"])?.trim().to_string())
 }
@@ -170,7 +169,6 @@ pub fn head_sha(dir: &Path) -> Result<String> {
 /// No uncommitted work of the user's in `dir`. `--no-optional-locks` because the
 /// status-line chip calls this on a timer and must not contend with the user's
 /// own git commands; ws's bookkeeping files are not the user's work.
-#[allow(dead_code)] // consumed by the finished-worktree sweep (src/done.rs), which lands separately
 pub fn is_clean(dir: &Path) -> Result<bool> {
     let porcelain = crate::git::ok(dir, &["--no-optional-locks", "status", "--porcelain"])?;
     Ok(user_dirt(&porcelain).is_empty())
@@ -362,7 +360,6 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
 pub struct Feature {
     pub name: String,
     pub feature: String,
-    #[allow(dead_code)] // read by the sweep (src/done.rs), which lands separately
     pub path: PathBuf,
     pub readiness: Readiness,
 }
