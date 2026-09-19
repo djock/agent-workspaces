@@ -49,9 +49,9 @@ makes it stale by itself; nothing needs to delete it. A separate per-sha
 "declined" record (`.ws/local/done-declined.json`, same shape) stops the question being
 asked twice for one `HEAD`.
 
-Both files are ws bookkeeping and must be ignored by `user_dirt`, like the
-existing `.ws/` untracked files, or writing a marker would dirty the tree it
-certifies.
+Both files live under `.ws/local/`, which is gitignored (`.ws/.gitignore`,
+written by `contract.rs`), so writing a marker never dirties the tree it
+certifies and `user_dirt` needed no change.
 
 ### 2. Setting the marker (worktree side)
 
@@ -98,10 +98,12 @@ consequences:
   base's own session. *Resolved:* the pid in `lock.rs`'s lock file is the agent's
   (not the `ws` launcher's), and the caller is that agent's descendant, so a base
   lock whose pid is an ancestor of the current process is treated as the caller's
-  own session and does not block. Where ancestry cannot be established the
-  explicit `--from-session` flag (`ws <base>@<feature> --merge --from-session`,
-  the command the hook and the report hand out) declares the caller to be the
-  base's session. A plain `--merge` is unchanged and still refuses.
+  own session and does not block. `--from-session`
+  (`ws <base>@<feature> --merge --from-session`, the command the hook and the
+  report hand out) is the permission to apply that rule to a merge: it makes
+  `readiness_as` relax the base lock, but only when the lock's pid is this
+  process or an ancestor (`lock::is_self_or_ancestor`). With no ancestry the
+  merge still refuses. A plain `--merge` never relaxes the base lock.
 - **A `/clear`ed worktree stays live** until its agent is closed. That blocker
   is correct — removing a directory under a running agent is the harm it exists
   to prevent — so it stays. Such a worktree is classed Done-blocked and shown as
@@ -113,7 +115,8 @@ consequences:
 The statusline shows `done N` when the base has `N` worktrees with a fresh
 marker (ready or blocked). The count runs git, so it is cached for 20 s in
 `.ws/local/done-chip.json`; a failed classification is not cached, and a cache
-stamped in the future counts as stale. Read-only, no tokens, visible at the moment the user would `/clear`.
+stamped in the future counts as stale. Read-only, no tokens, visible at the
+moment the user would `/clear`.
 
 ### 7. Structure
 
@@ -122,8 +125,9 @@ stamped in the future counts as stale. Read-only, no tokens, visible at the mome
 - `cli.rs`: the `-done` verb (`--undo`, `--declined`, `--porcelain`).
 - `internal.rs`: the two `build_context` additions.
 - `statusline.rs`: the chip.
-- `worktree.rs`: expose `user_dirt` and the base-lock handling; no behaviour
-  change to `merge` or `-features`.
+- `worktree.rs`: added `head_sha`, `is_clean`, `Feature.path`, and the
+  caller-aware `readiness_as`, `features_as` and `merge_as`; `user_dirt` is
+  unchanged, and `merge` and `-features` behave as before.
 - `-features` is unchanged; `-done` is the marker-aware view of the same data.
 
 ## Cost

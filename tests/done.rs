@@ -27,21 +27,22 @@ fn base_workspace(env: &Env, name: &str) -> PathBuf {
     git(&dir, &["config", "user.email", "dev@example.com"]);
     git(&dir, &["config", "user.name", "Dev"]);
     git(&dir, &["add", "-A"]);
-    // `.ws/timeline.jsonl` is ws's own untracked, append-only bookkeeping — a
-    // real `ws <name>` launch never commits it (`contract::init` writes it
-    // only *after* its own commit step, so it never exists at commit time).
-    // Unstage it so this fixture matches that: committing it here would make
+    // `.ws/timeline.jsonl` is ws's own append-only bookkeeping; `contract::init`
+    // writes it only *after* its own commit step, so a launch does not commit
+    // it. Unstage it so this fixture matches that: committing it here would make
     // the *worktree's* later timeline append look like a tracked-file
-    // modification instead of untracked bookkeeping, which the dirty check
-    // correctly does not wave through (see the I2 comment in
-    // src/worktree.rs).
+    // modification, which the dirty check does not wave through (see the I2
+    // comment in src/worktree.rs). Nothing stops a user's own `git add -A` from
+    // staging it; that pre-existing behaviour is out of scope for these tests.
     git(&dir, &["reset", "--", ".ws/timeline.jsonl"]);
     git(&dir, &["commit", "-q", "-m", "init"]);
     dir
 }
 
-/// Write `file`, stage just it and commit. Not `add -A`: that would sweep ws's own
-/// untracked `.ws/timeline.jsonl` into the commit, which no real commit does.
+/// Write `file`, stage just it and commit. Not `add -A`: that would also stage
+/// `.ws/timeline.jsonl` (a real `git add -A` would too), and the resulting
+/// dirt/merge behaviour is pre-existing and not what these tests are about, so
+/// the fixture stays independent of it.
 fn commit_in(dir: &Path, file: &str) {
     std::fs::write(dir.join(file), file).unwrap();
     git(dir, &["config", "user.email", "dev@example.com"]);
