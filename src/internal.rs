@@ -71,7 +71,17 @@ fn session_start() {
     // hook payload is where it surfaces. See `record_session_identity`.
     record_session_identity(&ws, &h);
 
-    println!("{}", hookio::additional_context("SessionStart", &build_context(&ws)));
+    let mut ctx = build_context(&ws);
+    // `/clear` is where the user says "this task is finished". Only then does ws
+    // raise the finished-worktree question — never at startup or resume, when
+    // nothing has just finished.
+    if h.source == "clear" {
+        if let Some(note) = crate::done::clear_note(&ws.name, &ws.root) {
+            ctx.push_str("\n\n");
+            ctx.push_str(&note);
+        }
+    }
+    println!("{}", hookio::additional_context("SessionStart", &ctx));
 }
 
 /// Record which agent session this workspace is now on, and the lineage if it

@@ -120,7 +120,6 @@ pub fn classify(base: &str, own_base_session: bool) -> Result<Vec<Row>> {
 
 /// The line `SessionStart` (source `clear`) adds to the context, or `None` when
 /// there is nothing to say. Swallows every error: a hook must not fail a session.
-#[allow(dead_code)] // consumed by the CLI/hook in a later task
 pub fn clear_note(ws_name: &str, ws_root: &Path) -> Option<String> {
     if let Some(spec) = worktree::parse_name(ws_name) {
         // A feature worktree: offer to mark it done, once per commit.
@@ -164,7 +163,6 @@ pub fn clear_note(ws_name: &str, ws_root: &Path) -> Option<String> {
 /// for `CHIP_TTL_SECS`: the bar repaints once a second and each answer runs git.
 const CHIP_TTL_SECS: u64 = 20;
 
-#[allow(dead_code)] // consumed by the CLI/hook in a later task
 pub fn chip_count(ws_name: &str, ws_root: &Path) -> usize {
     if worktree::parse_name(ws_name).is_some() {
         return 0; // worktrees show nothing; the chip belongs to the base

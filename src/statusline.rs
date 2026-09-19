@@ -91,6 +91,8 @@ pub struct Chip {
     /// prompt digest count them — one definition, so the badge cannot say two
     /// while the digest shows none.
     pub unread: usize,
+    /// Feature worktrees marked done — see `done::chip_count`.
+    pub done: usize,
 }
 
 /// How the bar is drawn.
@@ -239,6 +241,9 @@ pub fn render(input: &StatuslineInput, chip: Option<&Chip>, style: Style) -> Str
             if c.unread > 0 {
                 parts.push(format!("mail {}", c.unread));
             }
+            if c.done > 0 {
+                parts.push(format!("done {}", c.done));
+            }
         }
         if !input.model.display_name.is_empty() {
             parts.push(match input.effort.level.as_str() {
@@ -265,6 +270,10 @@ pub fn render(input: &StatuslineInput, chip: Option<&Chip>, style: Style) -> Str
         // something to read: a badge that is always present is one nobody sees.
         if c.unread > 0 {
             segs.push(Seg::new(format!("\u{2709} {}", c.unread), AMBER));
+        }
+        // Same rule as the badge above: silent until a worktree is done.
+        if c.done > 0 {
+            segs.push(Seg::new(format!("done {}", c.done), AMBER));
         }
     }
     if !input.model.display_name.is_empty() {
@@ -303,6 +312,7 @@ pub fn run() {
             unread: crate::mail::unread_count(&ws.root),
             name: ws.name.clone(),
             color: crate::meta::read(&ws.workspace_toml()).color,
+            done: crate::done::chip_count(&ws.name, &ws.root),
         }
     });
 
@@ -341,11 +351,22 @@ mod tests {
     const BAR: Style = Style { plain: false, dark: true };
 
     fn chip(color: Option<&str>) -> Chip {
-        Chip { name: "ws-ui".into(), color: color.map(str::to_string), unread: 0 }
+        Chip { name: "ws-ui".into(), color: color.map(str::to_string), unread: 0, done: 0 }
+    }
+
+    #[test]
+    fn the_chip_shows_how_many_worktrees_are_done_and_nothing_when_none() {
+        let mut c = chip(None);
+        c.done = 2;
+        let with = render(&input("Sonnet", 10.0, 1.0, 1.0), Some(&c), PLAIN);
+        assert!(with.contains("done 2"), "{with}");
+        c.done = 0;
+        let without = render(&input("Sonnet", 10.0, 1.0, 1.0), Some(&c), PLAIN);
+        assert!(!without.contains("done"), "{without}");
     }
 
     fn chip_with_mail(unread: usize) -> Chip {
-        Chip { name: "ws-ui".into(), color: None, unread }
+        Chip { name: "ws-ui".into(), color: None, unread, done: 0 }
     }
 
     /// A badge that is always there is one nobody sees, so it appears only when
