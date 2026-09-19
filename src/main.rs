@@ -93,11 +93,14 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
                 commands::launch(name, None, None, false, false, false)?
             }
         },
-        Cmd::Worktree { spec, merge } => {
+        Cmd::Done { name, undo, declined, porcelain } => {
+            commands::done(name, undo, declined, porcelain)?
+        }
+        Cmd::Worktree { spec, merge, from_session } => {
             let s = worktree::parse_name(&spec)
                 .ok_or_else(|| anyhow::anyhow!("not a worktree spec: {spec}"))?;
             if merge {
-                worktree::merge(&s)?
+                worktree::merge_as(&s, from_session)?
             } else if registry::lookup_checked(&s.workspace_name())?.is_some() {
                 // Already created: open it. The parser cannot tell "make me a
                 // worktree" from "open the worktree I made" — both are

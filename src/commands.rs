@@ -1831,6 +1831,115 @@ pub fn search(query: String, include_archived: bool) -> Result<()> {
     Ok(())
 }
 
+/// `ws -done` — mark a feature worktree finished, or sweep a base's finished ones.
+pub fn done(name: Option<String>, undo: bool, declined: bool, porcelain: bool) -> Result<()> {
+    // Bare `-done` means "this workspace", as `-task add` does.
+    let name = match name {
+        Some(n) => n,
+        None => crate::internal::current_ws().map(|w| w.name).ok_or_else(|| {
+            anyhow::anyhow!("not inside a ws workspace — name one: `ws <name> -done`")
+        })?,
+    };
+    if let Some(spec) = crate::worktree::parse_name(&name) {
+        let root = crate::registry::lookup_checked(&name)?
+            .ok_or_else(|| anyhow::anyhow!("no workspace named {name}"))?;
+        if undo {
+            crate::done::undo(&root)?;
+            println!("{name} is no longer marked done");
+        } else if declined {
+            crate::done::decline(&root)?;
+        } else {
+            let head = crate::done::mark(&root, "manual")?;
+            println!(
+                "{name} marked done at {}; `ws {} -done` will offer it for merge",
+                &head[..8.min(head.len())],
+                spec.base
+            );
+        }
+        return Ok(());
+    }
+    if undo || declined {
+        anyhow::bail!("--undo and --declined apply to a feature worktree, not a base");
+    }
+    sweep(&name, porcelain)
+}
+
+fn sweep(base: &str, porcelain: bool) -> Result<()> {
+    use crate::done::Class;
+    let rows = crate::done::classify(base, true)?;
+    if porcelain {
+        for r in &rows {
+            let (state, why) = match &r.class {
+                Class::Ready => ("ready", String::new()),
+                Class::DoneBlocked(w) => ("blocked", w.clone()),
+                Class::NotDone => ("not-done", String::new()),
+            };
+            println!("{}\t{}\t{}\t{}", r.feature, state, r.ahead, why);
+        }
+        return Ok(());
+    }
+    if rows.is_empty() {
+        println!("{base} has no feature worktrees (create one with `ws {base}@<feature>`)");
+        return Ok(());
+    }
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let base_path = crate::registry::lookup_checked(base)?
+        .ok_or_else(|| anyhow::anyhow!("no workspace named {base}"))?;
+    let mut ready = 0;
+    for r in &rows {
+        match &r.class {
+            Class::NotDone => println!("· {}  not marked done", r.feature),
+            Class::DoneBlocked(why) => println!("✗ {}  done, but {why}", r.feature),
+            Class::Ready => {
+                ready += 1;
+                println!("✓ {}  {} commit(s)", r.feature, r.ahead);
+                if let Some(log) = crate::git::maybe(
+                    &base_path,
+                    &["log", "--oneline", &format!("HEAD..{}", r.feature)],
+                ) {
+                    print!("{log}");
+                }
+                if let Some(stat) = crate::git::maybe(
+                    &base_path,
+                    &["diff", "--stat", &format!("HEAD...{}", r.feature)],
+                ) {
+                    print!("{stat}");
+                }
+                if interactive {
+                    sweep_prompt(base, &r.feature)?;
+                } else {
+                    println!("  merge with: ws {base}@{} --merge --from-session", r.feature);
+                }
+            }
+        }
+    }
+    if ready == 0 {
+        println!("\nNothing is ready to merge.");
+    }
+    Ok(())
+}
+
+/// One worktree, one answer. A failed merge is reported and the sweep goes on:
+/// a conflict in one worktree must not strand the rest.
+fn sweep_prompt(base: &str, feature: &str) -> Result<()> {
+    use std::io::Write;
+    print!("  [m]erge / [s]kip / [o]pen? ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    match line.trim().to_lowercase().as_str() {
+        "m" | "merge" => {
+            let spec = crate::worktree::Spec { base: base.into(), feature: feature.into() };
+            if let Err(e) = crate::worktree::merge_as(&spec, true) {
+                eprintln!("  {e:#}");
+            }
+        }
+        "o" | "open" => println!("  open it with: ws {base}@{feature}"),
+        _ => println!("  skipped"),
+    }
+    Ok(())
+}
+
 /// Capture a task without interrupting whatever the agent is doing.
 ///
 /// This is the `/btw` shape: the point is to record something and get straight

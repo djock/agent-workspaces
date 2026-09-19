@@ -41,7 +41,6 @@ pub fn is_fresh(root: &Path) -> bool {
 }
 
 /// Mark the worktree at `root` done at its current `HEAD`.
-#[allow(dead_code)] // consumed by the CLI/hook in a later task
 pub fn mark(root: &Path, by: &str) -> Result<String> {
     if !worktree::is_clean(root)? {
         bail!(
@@ -55,7 +54,6 @@ pub fn mark(root: &Path, by: &str) -> Result<String> {
     Ok(head)
 }
 
-#[allow(dead_code)] // consumed by the CLI/hook in a later task
 pub fn undo(root: &Path) -> Result<()> {
     match std::fs::remove_file(marker_path(root)) {
         Ok(()) => Ok(()),
@@ -66,7 +64,6 @@ pub fn undo(root: &Path) -> Result<()> {
 
 /// Remember "the user said no" for this `HEAD`, so the question is asked once
 /// per commit rather than on every `/clear`.
-#[allow(dead_code)] // consumed by the CLI/hook in a later task
 pub fn decline(root: &Path) -> Result<()> {
     let m = Marker { head: worktree::head_sha(root)?, at: crate::now_iso(), by: "declined".into() };
     write_json(&declined_path(root), &m)
@@ -106,7 +103,6 @@ pub struct Row {
 
 /// Every `base@*` worktree, classified. The merge rule is `worktree::readiness`,
 /// not a copy of it, so this cannot promise a merge the merge then refuses.
-#[allow(dead_code)] // consumed by the CLI/hook in a later task
 pub fn classify(base: &str, own_base_session: bool) -> Result<Vec<Row>> {
     let mut rows = Vec::new();
     for f in worktree::features_as(base, own_base_session)? {

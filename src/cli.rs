@@ -75,11 +75,20 @@ pub enum Cmd {
     Worktree {
         spec: String,
         merge: bool,
+        from_session: bool,
     },
     /// `ws <base> -features` — the base's feature worktrees and what merging
     /// each would do.
     Features {
         base: String,
+        porcelain: bool,
+    },
+    /// `ws -done` / `ws <base> -done` / `ws <base>@<feature> -done` — mark a
+    /// feature worktree finished, or (on a base) sweep the ones that have.
+    Done {
+        name: Option<String>,
+        undo: bool,
+        declined: bool,
         porcelain: bool,
     },
 }
@@ -200,8 +209,12 @@ pub fn help_text() -> &'static str {
          \x20 ws <base>@<feature>          create a git worktree workspace off <base>,\n\
          \x20                                or open it once it exists\n\
          \x20 ws <base>@<feature> --merge  merge it back (--no-ff) and remove it\n\
+         \x20                                (--from-session when run inside <base>'s own session)\n\
          \x20 ws <base> -features          list its feature worktrees and whether\n\
          \x20                                each can merge (--porcelain)\n\
+         \x20 ws <base> -done              review the feature worktrees marked done and merge\n\
+         \x20                                the ones you approve (--porcelain)\n\
+         \x20 ws -done                     mark this feature worktree done (--undo, --declined)\n\
          \n\
          Coordinate\n\
          \x20 ws -whoami                   print your actor slug\n\
@@ -428,6 +441,7 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             }
             Ok(Cmd::Whoami)
         }
+        "-done" => parse_done_flags(None, it),
         "-who" => {
             let name = it.next();
             if it.next().is_some() {
@@ -559,14 +573,22 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
         // anything — so the workspace is unreachable, never damaged.
         // Disambiguating would mean consulting the registry from the parser.
         name if crate::worktree::parse_name(name).is_some() => {
-            let mut merge = false;
-            for a in it {
+            let rest: Vec<String> = it.collect();
+            if rest.first().map(String::as_str) == Some("-done") {
+                return parse_done_flags(Some(name.to_string()), rest.into_iter().skip(1));
+            }
+            let (mut merge, mut from_session) = (false, false);
+            for a in rest {
                 match a.as_str() {
                     "--merge" => merge = true,
+                    "--from-session" => from_session = true,
                     other => bail!("unexpected argument: {other}"),
                 }
             }
-            Ok(Cmd::Worktree { spec: name.to_string(), merge })
+            if from_session && !merge {
+                bail!("--from-session only applies to --merge");
+            }
+            Ok(Cmd::Worktree { spec: name.to_string(), merge, from_session })
         }
         name => {
             // launch: ws <name> [-claude|-codex] [--fresh|-fresh] [--agent X] [--force] [--handoff]
@@ -583,8 +605,12 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             let mut handoff = false;
             let mut features = false;
             let mut porcelain = false;
+            let (mut done, mut undo, mut declined) = (false, false, false);
             while let Some(a) = it.next() {
                 match a.as_str() {
+                    "-done" => done = true,
+                    "--undo" => undo = true,
+                    "--declined" => declined = true,
                     // Not a launch at all: `-features` asks about a workspace
                     // rather than opening it. It lives in this arm because the
                     // thing it asks about is named the same way a launch names
@@ -619,6 +645,15 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
                     other => bail!("unexpected argument: {other}"),
                 }
             }
+            if done {
+                if undo && declined {
+                    bail!("--undo and --declined are opposites; pick one");
+                }
+                return Ok(Cmd::Done { name: Some(name.to_string()), undo, declined, porcelain });
+            }
+            if undo || declined {
+                bail!("--undo and --declined only apply to `-done`");
+            }
             if features {
                 return Ok(Cmd::Features { base: name.to_string(), porcelain });
             }
@@ -628,6 +663,23 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             Ok(Cmd::Launch { name: name.to_string(), agent, mode, fresh, force, handoff })
         }
     }
+}
+
+/// The flags `-done` takes, after the verb.
+fn parse_done_flags(name: Option<String>, rest: impl Iterator<Item = String>) -> Result<Cmd> {
+    let (mut undo, mut declined, mut porcelain) = (false, false, false);
+    for a in rest {
+        match a.as_str() {
+            "--undo" => undo = true,
+            "--declined" => declined = true,
+            "--porcelain" => porcelain = true,
+            other => bail!("unexpected argument: {other}"),
+        }
+    }
+    if undo && declined {
+        bail!("--undo and --declined are opposites; pick one");
+    }
+    Ok(Cmd::Done { name, undo, declined, porcelain })
 }
 
 fn parse_secrets(args: Vec<String>) -> Result<Cmd> {
@@ -935,10 +987,13 @@ mod tests {
 
     #[test]
     fn a_name_with_an_at_parses_as_a_worktree_not_a_launch() {
-        assert_eq!(p(&["api@retry"]), Cmd::Worktree { spec: "api@retry".into(), merge: false });
+        assert_eq!(
+            p(&["api@retry"]),
+            Cmd::Worktree { spec: "api@retry".into(), merge: false, from_session: false }
+        );
         assert_eq!(
             p(&["api@retry", "--merge"]),
-            Cmd::Worktree { spec: "api@retry".into(), merge: true }
+            Cmd::Worktree { spec: "api@retry".into(), merge: true, from_session: false }
         );
     }
 
@@ -1349,6 +1404,49 @@ mod tests {
         assert_eq!(p(&["-uninstall"]), Cmd::Uninstall { force: false });
         assert_eq!(p(&["-uninstall", "--force"]), Cmd::Uninstall { force: true });
         assert!(parse(vec!["-uninstall".into(), "--unknown".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_done_in_all_three_positions() {
+        assert_eq!(
+            p(&["-done"]),
+            Cmd::Done { name: None, undo: false, declined: false, porcelain: false }
+        );
+        assert_eq!(
+            p(&["-done", "--declined"]),
+            Cmd::Done { name: None, undo: false, declined: true, porcelain: false }
+        );
+        assert_eq!(
+            p(&["api", "-done"]),
+            Cmd::Done { name: Some("api".into()), undo: false, declined: false, porcelain: false }
+        );
+        assert_eq!(
+            p(&["api", "-done", "--porcelain"]),
+            Cmd::Done { name: Some("api".into()), undo: false, declined: false, porcelain: true }
+        );
+        assert_eq!(
+            p(&["api@retry", "-done", "--undo"]),
+            Cmd::Done {
+                name: Some("api@retry".into()),
+                undo: true,
+                declined: false,
+                porcelain: false
+            }
+        );
+    }
+
+    #[test]
+    fn from_session_only_applies_to_a_merge() {
+        assert_eq!(
+            p(&["api@retry", "--merge", "--from-session"]),
+            Cmd::Worktree { spec: "api@retry".into(), merge: true, from_session: true }
+        );
+        assert!(parse(vec!["api@retry".into(), "--from-session".into()]).is_err());
+    }
+
+    #[test]
+    fn undo_and_declined_are_opposites() {
+        assert!(parse(vec!["-done".into(), "--undo".into(), "--declined".into()]).is_err());
     }
 
     #[test]

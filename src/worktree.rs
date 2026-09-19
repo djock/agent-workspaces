@@ -554,13 +554,10 @@ fn rollback_created_worktree(base: &Path, path: &Path, branch: &str, name: &str)
     }
 }
 
-/// Merge the worktree back into its base and remove it.
-pub fn merge(spec: &Spec) -> Result<()> {
-    merge_as(spec, false)
-}
-
-/// [`merge`] for a caller that may be running inside the base's own session;
-/// see [`readiness_as`].
+/// Merge the worktree back into its base and remove it. `own_base_session` is
+/// for a caller that may be running inside the base's own session (`false` is
+/// the plain `--merge`, which refuses while that session's lock is live); see
+/// [`readiness_as`].
 pub fn merge_as(spec: &Spec, own_base_session: bool) -> Result<()> {
     let name = spec.workspace_name();
     let path = crate::registry::lookup_checked(&name)?
@@ -965,7 +962,8 @@ mod tests {
         git(&wt, &["add", "feature.txt"]);
         git(&wt, &["commit", "-q", "-m", "feature work"]);
 
-        merge(&spec).expect("the documented round trip must complete with no manual git steps");
+        merge_as(&spec, false)
+            .expect("the documented round trip must complete with no manual git steps");
 
         assert_eq!(
             std::fs::read_to_string(base.join("feature.txt")).unwrap(),
