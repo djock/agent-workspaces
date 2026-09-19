@@ -86,8 +86,8 @@ returns one of:
 | Not done | no fresh marker | one line, not offered |
 
 For each Ready worktree the sweep shows commits and diffstat, then asks
-`merge` / `skip` / `open`. `merge` calls the existing `worktree::merge`
-unchanged. One worktree at a time, so a conflict in one never stops the rest.
+`merge` / `skip` / `open`. `merge` calls `worktree::merge_as`, which
+re-checks readiness. One worktree at a time, so a conflict in one never stops the rest.
 
 ### 5. Live-session blockers (found while reading `readiness()`)
 

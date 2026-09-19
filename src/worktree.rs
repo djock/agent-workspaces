@@ -178,17 +178,7 @@ pub fn is_clean(dir: &Path) -> Result<bool> {
 ///
 /// `feature_ws` and `base_ws` are the workspace names, used for the liveness
 /// check and for the messages; the paths are their roots.
-#[allow(dead_code)] // consumed by the finished-worktree sweep (src/done.rs), which lands separately
-pub fn readiness(
-    base_path: &Path,
-    base_ws: &str,
-    feature_path: &Path,
-    feature_ws: &str,
-    branch: &str,
-) -> Result<Readiness> {
-    readiness_as(base_path, base_ws, feature_path, feature_ws, branch, false)
-}
-
+///
 /// `own_base_session`: the caller is running inside the base's own session, so
 /// a base lock held by this process or an ancestor is the caller, not a rival.
 /// The feature's lock is never relaxed: that agent is somebody else's, and the

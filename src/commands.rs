@@ -1876,7 +1876,7 @@ fn sweep(base: &str, porcelain: bool) -> Result<()> {
             };
             // A blocker message is free text; a tab or newline in it would
             // break the tab-separated rows a script parses.
-            let why = why.replace(['\t', '\n'], " ");
+            let why = why.replace(['\t', '\n', '\r'], " ");
             println!("{}\t{}\t{}\t{}", r.feature, state, r.ahead, why);
         }
         return Ok(());
@@ -1915,7 +1915,8 @@ fn sweep(base: &str, porcelain: bool) -> Result<()> {
                     )
                 );
                 if interactive {
-                    sweep_prompt(base, &r.feature)?;
+                    let shown = crate::worktree::head_sha(&r.path).unwrap_or_default();
+                    sweep_prompt(base, &r.feature, &r.path, &shown)?;
                 }
             }
         }
@@ -1943,14 +1944,16 @@ fn format_ready_row(
         out.push_str(&format!("  {line}\n"));
     }
     if !interactive {
-        out.push_str(&format!("  merge with: ws {base}@{feature} --merge --from-session\n"));
+        out.push_str(&format!(
+            "  merge with: ws {base}@{feature} --merge --from-session   (from inside {base}'s own session)\n"
+        ));
     }
     out
 }
 
 /// One worktree, one answer. A failed merge is reported and the sweep goes on:
 /// a conflict in one worktree must not strand the rest.
-fn sweep_prompt(base: &str, feature: &str) -> Result<()> {
+fn sweep_prompt(base: &str, feature: &str, path: &std::path::Path, shown: &str) -> Result<()> {
     use std::io::Write;
     print!("  [m]erge / [s]kip / [o]pen? ");
     std::io::stdout().flush().ok();
@@ -1958,6 +1961,15 @@ fn sweep_prompt(base: &str, feature: &str) -> Result<()> {
     std::io::stdin().read_line(&mut line)?;
     match line.trim().to_lowercase().as_str() {
         "m" | "merge" => {
+            // The user approved the commit they were shown; the agent may have
+            // committed since. Re-check right before acting.
+            let now = crate::worktree::head_sha(path).unwrap_or_default();
+            if shown.is_empty()
+                || !crate::done::still_the_reviewed_commit(shown, &now, crate::done::is_fresh(path))
+            {
+                println!("  {feature} changed since it was shown — run `ws {base} -done` again");
+                return Ok(());
+            }
             let spec = crate::worktree::Spec { base: base.into(), feature: feature.into() };
             if let Err(e) = crate::worktree::merge_as(&spec, true) {
                 eprintln!("  {e:#}");
@@ -1977,7 +1989,7 @@ fn sweep_prompt(base: &str, feature: &str) -> Result<()> {
 /// `ws <base> -features` — the base's feature worktrees and what merging each
 /// would do.
 ///
-/// Every line is computed by `worktree::readiness`, which is the same function
+/// Every line is computed by `worktree::readiness_as`, which is the same function
 /// the merge itself refuses through. A second implementation for display is how
 /// a screen ends up promising a merge that then refuses.
 pub fn features(base: String, porcelain: bool) -> Result<()> {
@@ -2182,7 +2194,7 @@ mod sweep_tests {
         );
         assert!(out.contains("\n  def456 two\n   a.txt | 1 +\n"), "{out}");
         assert!(
-            out.contains("\n   1 file changed\n  merge with: ws api@feat --merge --from-session\n"),
+            out.contains("\n   1 file changed\n  merge with: ws api@feat --merge --from-session   (from inside api's own session)\n"),
             "{out}"
         );
     }

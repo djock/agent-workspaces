@@ -12,15 +12,15 @@ The project follows [Semantic Versioning](https://semver.org/).
   worktree can now mark itself done (`ws <base>@<feature> -done`, or the question
   the agent asks after a `/clear` when the worktree has commits the base does
   not), and `ws <base> -done` then lists the marked ones, shows each one's
-  commits and diffstat, and asks `[m]erge / [s]kip / [o]pen`. Only a plain `m`
-  merges. The mark is tied to the commit it was made on, so a new commit or an
+  commits and diffstat, and asks `[m]erge / [s]kip / [o]pen`. `m` or `merge`
+  merges; anything else, including end of input, skips. The mark is tied to the commit it was made on, so a new commit or an
   uncommitted edit makes it stale on its own, and `-done --undo` withdraws it.
   A `/clear` in the base names the finished worktrees, the status line shows
   `done N`, and a worktree whose agent is still open is listed as blocked rather
   than offered. Without a terminal the sweep prints its report and never waits;
   `--porcelain` gives one record per worktree. `ws <base>@<feature> --merge
-  --from-session` lets a merge started from inside the base's own session go
-  through, where a plain `--merge` still refuses while that session is running.
+  --from-session` lets a merge go through when the base session's lock belongs to an
+  ancestor of the caller, where a plain `--merge` still refuses while that session is running.
 
 ## [0.10.1] — 2026-09-19
 

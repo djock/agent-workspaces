@@ -301,6 +301,15 @@ mod tests {
     }
 
     #[test]
+    fn a_child_process_is_not_an_ancestor() {
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let not_ancestor = !is_self_or_ancestor(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(not_ancestor, "a child is a descendant, never an ancestor");
+    }
+
+    #[test]
     fn live_pid_reports_only_running_holders() {
         let d = TempDir::new().unwrap();
         let lf = d.path().join("lock");

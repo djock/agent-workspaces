@@ -227,3 +227,34 @@ fn clear_in_a_worktree_asks_once_per_commit() {
     commit_in(&f, "b.txt");
     assert!(hook().contains("mark this feature done"), "a new commit is a new question");
 }
+
+/// Kills the child on drop, so a failed assertion never leaks a `sleep`.
+struct Kill(std::process::Child);
+impl Drop for Kill {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn a_base_lock_held_by_a_non_ancestor_still_blocks_even_with_from_session() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    env.cmd().arg("api@f").assert().success();
+    commit_in(&env.root.join("api@f"), "a.txt");
+    env.cmd().args(["api@f", "-done"]).assert().success();
+    // A sibling process, not an ancestor of the `ws` children below.
+    let sibling = Kill(std::process::Command::new("sleep").arg("30").spawn().unwrap());
+    std::fs::create_dir_all(base.join(".ws/local")).unwrap();
+    std::fs::write(base.join(".ws/local/lock"), format!("pid = {}\n", sibling.0.id())).unwrap();
+
+    env.cmd().args(["api", "-done", "--porcelain"]).assert().success().stdout(
+        predicates::str::contains("f\tblocked").and(predicates::str::contains("f\tready").not()),
+    );
+    env.cmd()
+        .args(["api@f", "--merge", "--from-session"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("is in use by pid"));
+}

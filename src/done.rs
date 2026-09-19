@@ -95,13 +95,13 @@ pub enum Class {
 #[derive(Debug, Clone)]
 pub struct Row {
     pub feature: String,
-    #[allow(dead_code)] // consumed by the CLI in a later task
-    pub name: String,
+    /// The feature worktree's checkout path.
+    pub path: PathBuf,
     pub ahead: usize,
     pub class: Class,
 }
 
-/// Every `base@*` worktree, classified. The merge rule is `worktree::readiness`,
+/// Every `base@*` worktree, classified. The merge rule is `worktree::readiness_as`,
 /// not a copy of it, so this cannot promise a merge the merge then refuses.
 pub fn classify(base: &str, own_base_session: bool) -> Result<Vec<Row>> {
     let mut rows = Vec::new();
@@ -113,7 +113,7 @@ pub fn classify(base: &str, own_base_session: bool) -> Result<Vec<Row>> {
         } else {
             Class::DoneBlocked(f.readiness.blockers[0].summary())
         };
-        rows.push(Row { feature: f.feature, name: f.name, ahead: f.readiness.ahead, class });
+        rows.push(Row { feature: f.feature, path: f.path, ahead: f.readiness.ahead, class });
     }
     Ok(rows)
 }
@@ -194,6 +194,12 @@ fn cache_hit(cached: Option<(u64, usize)>, now: u64) -> Option<usize> {
     (at <= now && now - at < CHIP_TTL_SECS).then_some(n)
 }
 
+/// The approval a user gave was for the commit they were shown. It holds only
+/// while that commit is still the worktree's `HEAD` and the marker is still fresh.
+pub fn still_the_reviewed_commit(shown: &str, now: &str, fresh: bool) -> bool {
+    fresh && shown == now
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +227,13 @@ mod tests {
         git(&d, &["add", "-A"]);
         git(&d, &["commit", "-q", "-m", "init"]);
         d
+    }
+
+    #[test]
+    fn an_approval_holds_only_for_the_commit_that_was_shown() {
+        assert!(still_the_reviewed_commit("abc", "abc", true));
+        assert!(!still_the_reviewed_commit("abc", "def", true), "HEAD moved");
+        assert!(!still_the_reviewed_commit("abc", "abc", false), "marker went stale");
     }
 
     #[test]

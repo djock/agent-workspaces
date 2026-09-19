@@ -354,8 +354,8 @@ twice.
 When you `/clear` in `api` itself, the agent is told which worktrees are marked
 done and asks whether to review them. `ws api -done` runs the sweep at any time.
 On a terminal it shows each ready worktree's commits and diffstat and asks
-`[m]erge / [s]kip / [o]pen`; anything but `m` skips, so a stray key never
-merges. With no terminal (a script, or the agent's shell) it only prints the
+`[m]erge / [s]kip / [o]pen`; `m` or `merge` merges and anything else, including
+end of input, skips, so a stray key never merges. With no terminal (a script, or the agent's shell) it only prints the
 report, with the `--merge` command for each, and never waits for input.
 
 The status line shows `done N` while `N` worktrees are marked done. It is read
