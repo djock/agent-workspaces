@@ -382,6 +382,19 @@ mod tests {
     }
 
     #[test]
+    fn the_done_segment_shows_only_when_a_worktree_is_done() {
+        let i = input("Opus", 10.0, 10.0, 10.0);
+        let mut c = chip_with_mail(0);
+        let none = text_of(&render(&i, Some(&c), BAR));
+        assert!(!none.contains("done"), "no segment with nothing done: {none:?}");
+        c.done = 2;
+        let raw = render(&i, Some(&c), BAR);
+        assert!(raw.contains('\u{1b}'), "the coloured bar carries escapes: {raw:?}");
+        let some = text_of(&raw);
+        assert!(some.contains("done 2"), "{some:?}");
+    }
+
+    #[test]
     fn the_mail_badge_survives_no_color() {
         let i = input("Opus", 10.0, 10.0, 10.0);
         let plain = render(&i, Some(&chip_with_mail(2)), PLAIN);

@@ -169,19 +169,29 @@ pub fn chip_count(ws_name: &str, ws_root: &Path) -> usize {
     }
     let cache = ws_root.join(".ws/local/done-chip.json");
     let now = crate::limits::now_epoch().max(0) as u64;
-    if let Some((at, n)) = std::fs::read_to_string(&cache)
+    let cached = std::fs::read_to_string(&cache)
         .ok()
-        .and_then(|s| serde_json::from_str::<(u64, usize)>(&s).ok())
-    {
-        if now.saturating_sub(at) < CHIP_TTL_SECS {
-            return n;
-        }
+        .and_then(|s| serde_json::from_str::<(u64, usize)>(&s).ok());
+    if let Some(n) = cache_hit(cached, now) {
+        return n;
     }
-    let n = classify(ws_name, true)
-        .map(|rows| rows.iter().filter(|r| r.class != Class::NotDone).count())
-        .unwrap_or(0);
-    let _ = write_json(&cache, &(now, n));
-    n
+    // A failed classify is not "0 done": answer 0 for now but cache nothing, so
+    // the next repaint tries again.
+    match classify(ws_name, true) {
+        Ok(rows) => {
+            let n = rows.iter().filter(|r| r.class != Class::NotDone).count();
+            let _ = write_json(&cache, &(now, n));
+            n
+        }
+        Err(_) => 0,
+    }
+}
+
+/// A cached chip count is usable only when it is younger than the TTL and not
+/// stamped in the future (a clock step back must not pin a stale answer).
+fn cache_hit(cached: Option<(u64, usize)>, now: u64) -> Option<usize> {
+    let (at, n) = cached?;
+    (at <= now && now - at < CHIP_TTL_SECS).then_some(n)
 }
 
 #[cfg(test)]
@@ -211,6 +221,14 @@ mod tests {
         git(&d, &["add", "-A"]);
         git(&d, &["commit", "-q", "-m", "init"]);
         d
+    }
+
+    #[test]
+    fn the_chip_cache_expires_and_ignores_a_future_stamp() {
+        assert_eq!(cache_hit(Some((100, 3)), 105), Some(3));
+        assert_eq!(cache_hit(Some((100, 3)), 100 + CHIP_TTL_SECS), None, "expired");
+        assert_eq!(cache_hit(Some((200, 3)), 100), None, "a future stamp is stale");
+        assert_eq!(cache_hit(None, 100), None);
     }
 
     #[test]
