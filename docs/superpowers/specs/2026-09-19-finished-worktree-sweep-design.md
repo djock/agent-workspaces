@@ -40,13 +40,13 @@ The only missing pieces are a *done signal* and a *trigger*.
 
 ### 1. The marker
 
-`<worktree>/.ws/done`, written atomically, holding `head` (commit sha), `at`
+`<worktree>/.ws/local/done.json`, written atomically, holding `head` (commit sha), `at`
 (timestamp) and `by` (`prompt` | `manual`).
 
 A marker is **fresh** only when `head` equals the worktree's current `HEAD` and
 the tree has no user dirt (the existing `user_dirt` rule). A later commit or edit
 makes it stale by itself; nothing needs to delete it. A separate per-sha
-"declined" record (`.ws/done-declined`, same shape) stops the question being
+"declined" record (`.ws/local/done-declined.json`, same shape) stops the question being
 asked twice for one `HEAD`.
 
 Both files are ws bookkeeping and must be ignored by `user_dirt`, like the
@@ -69,7 +69,10 @@ certifies.
   `base@*` marker is fresh, `build_context` appends "N worktrees are marked done:
   … Review them now?". Yes runs `ws <base> -done`. None fresh: no addition.
 - Manual: `ws <base> -done` forces the sweep at any time.
-- No tty and no agent (script, CI): print one line and exit 0. Never wait.
+- Two modes. On a tty the sweep prompts per worktree (`m` merges; anything else,
+  including EOF, skips). Without a tty (script, CI, the agent's shell) it prints
+  the report with the `--merge --from-session` command for each and exits 0. It
+  never waits for input.
 
 ### 4. The sweep
 
@@ -92,12 +95,13 @@ unchanged. One worktree at a time, so a conflict in one never stops the rest.
 consequences:
 
 - **The base is always live during the sweep** — the sweep runs from inside the
-  base's own session. The base lock must not block a sweep started by its own
-  holder. The sweep therefore treats a base lock whose pid is an ancestor of the
-  current process as the caller. *Open point:* confirm during implementation what
-  pid `lock.rs` records (the `ws` launcher or the agent) and that ancestry can be
-  established portably on macOS and Linux; if it cannot, fall back to an explicit
-  `--from-session` flag set by the hook-issued command.
+  base's own session. *Resolved:* the pid in `lock.rs`'s lock file is the agent's
+  (not the `ws` launcher's), and the caller is that agent's descendant, so a base
+  lock whose pid is an ancestor of the current process is treated as the caller's
+  own session and does not block. Where ancestry cannot be established the
+  explicit `--from-session` flag (`ws <base>@<feature> --merge --from-session`,
+  the command the hook and the report hand out) declares the caller to be the
+  base's session. A plain `--merge` is unchanged and still refuses.
 - **A `/clear`ed worktree stays live** until its agent is closed. That blocker
   is correct — removing a directory under a running agent is the harm it exists
   to prevent — so it stays. Such a worktree is classed Done-blocked and shown as
@@ -106,8 +110,10 @@ consequences:
 
 ### 6. Statusline chip
 
-The statusline shows `N ready` when the workspace has fresh, merge-ready
-markers. Read-only, no tokens, visible at the moment the user would `/clear`.
+The statusline shows `done N` when the base has `N` worktrees with a fresh
+marker (ready or blocked). The count runs git, so it is cached for 20 s in
+`.ws/local/done-chip.json`; a failed classification is not cached, and a cache
+stamped in the future counts as stale. Read-only, no tokens, visible at the moment the user would `/clear`.
 
 ### 7. Structure
 

@@ -335,6 +335,37 @@ Readiness comes from the same computation `--merge` refuses through, so the
 screen cannot promise a merge that then refuses. `--porcelain` emits one
 tab-separated record per worktree instead.
 
+### Finishing feature worktrees
+
+```sh
+ws api@retries -done            # mark this worktree finished (-done --undo to take it back)
+ws api -done                    # review and merge everything that is marked done
+ws api -done --porcelain        # the same classification, one tab-separated record per worktree
+```
+
+A worktree is *done* when it says so. After a `/clear` inside `api@retries`, if
+it has commits `api` does not, the agent asks once whether to mark it done;
+`ws api@retries -done` does the same by hand. The mark belongs to one commit: it
+is kept in `.ws/local/done.json` beside the worktree and stops counting the
+moment `HEAD` moves or the tree gets uncommitted changes, so nothing has to
+clean it up. A "no" is remembered for that commit too, so you are not asked
+twice.
+
+When you `/clear` in `api` itself, the agent is told which worktrees are marked
+done and asks whether to review them. `ws api -done` runs the sweep at any time.
+On a terminal it shows each ready worktree's commits and diffstat and asks
+`[m]erge / [s]kip / [o]pen`; anything but `m` skips, so a stray key never
+merges. With no terminal (a script, or the agent's shell) it only prints the
+report, with the `--merge` command for each, and never waits for input.
+
+The status line shows `done N` while `N` worktrees are marked done. It is read
+from a 20-second cache, so it can lag a mark by that long.
+
+A worktree whose agent session is still open is listed as blocked, not offered:
+removing a directory under a running agent is the harm `--merge` refuses to do.
+Close that session and it becomes ready without being marked again. The base's
+own session does not block the sweep it started.
+
 ## Prompt rewriting (opt-in)
 
 ```sh
