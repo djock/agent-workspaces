@@ -45,9 +45,17 @@ pub fn countdown(resets_at: i64, now: i64) -> String {
         return "0m".to_string();
     }
     let secs = resets_at - now;
-    let h = secs / 3600;
+    let d = secs / 86_400;
+    let h = (secs % 86_400) / 3600;
     let m = (secs % 3600) / 60;
-    format!("{h}h{m}m")
+    // The weekly window runs to three digits of hours, which reads as a number
+    // you have to divide yourself. Days only appear once there is one to show,
+    // so the 5-hour countdown keeps its compact two-part form.
+    if d > 0 {
+        format!("{d}d {h}h {m}m")
+    } else {
+        format!("{h}h{m}m")
+    }
 }
 
 /// Beyond this, a snapshot is reported as stale rather than current.
@@ -138,6 +146,12 @@ mod tests {
     #[test]
     fn countdown_formats() {
         assert_eq!(countdown(1_000_000, 1_000_000 - 4800), "1h20m"); // 80 min
+        assert_eq!(
+            countdown(1_000_000, 1_000_000 - (2 * 86_400 + 12 * 3600 + 34 * 60)),
+            "2d 12h 34m"
+        );
+        assert_eq!(countdown(1_000_000, 1_000_000 - (86_400 - 60)), "23h59m"); // just under a day
+        assert_eq!(countdown(1_000_000, 1_000_000 - 86_400), "1d 0h 0m");
         assert_eq!(countdown(1_000_000, 1_000_000 - 45), "0h0m");
         assert_eq!(countdown(1_000_000, 1_000_000 + 10), "0m"); // already passed
         assert_eq!(countdown(0, 1_000_000), "0m"); // unknown

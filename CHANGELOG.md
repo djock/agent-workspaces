@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.10.1] — 2026-09-19
+
+### Changed
+
+- **A countdown longer than a day says so.** The weekly window resets up to
+  seven days out, and `ws -limits` rendered that as `93h25m` — a number you have
+  to divide before it means anything. It now reads `3d 21h 25m`. The day part
+  appears only once there is one, so the five-hour window keeps its compact
+  `4h15m` form, and the status line's clock glyph is unchanged for it.
+
 ## [0.10.0] — 2026-08-17
 
 ### Added
