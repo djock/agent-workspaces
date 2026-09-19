@@ -161,16 +161,47 @@ impl Readiness {
     }
 }
 
+/// The commit `dir` has checked out.
+#[allow(dead_code)] // consumed by the finished-worktree sweep (src/done.rs), which lands separately
+pub fn head_sha(dir: &Path) -> Result<String> {
+    Ok(crate::git::ok(dir, &["rev-parse", "HEAD"])?.trim().to_string())
+}
+
+/// No uncommitted work of the user's in `dir`. `--no-optional-locks` because the
+/// status-line chip calls this on a timer and must not contend with the user's
+/// own git commands; ws's bookkeeping files are not the user's work.
+#[allow(dead_code)] // consumed by the finished-worktree sweep (src/done.rs), which lands separately
+pub fn is_clean(dir: &Path) -> Result<bool> {
+    let porcelain = crate::git::ok(dir, &["--no-optional-locks", "status", "--porcelain"])?;
+    Ok(user_dirt(&porcelain).is_empty())
+}
+
 /// Compute readiness for one feature worktree.
 ///
 /// `feature_ws` and `base_ws` are the workspace names, used for the liveness
 /// check and for the messages; the paths are their roots.
+#[allow(dead_code)] // consumed by the finished-worktree sweep (src/done.rs), which lands separately
 pub fn readiness(
     base_path: &Path,
     base_ws: &str,
     feature_path: &Path,
     feature_ws: &str,
     branch: &str,
+) -> Result<Readiness> {
+    readiness_as(base_path, base_ws, feature_path, feature_ws, branch, false)
+}
+
+/// `own_base_session`: the caller is running inside the base's own session, so
+/// a base lock held by this process or an ancestor is the caller, not a rival.
+/// The feature's lock is never relaxed: that agent is somebody else's, and the
+/// merge deletes its directory.
+pub fn readiness_as(
+    base_path: &Path,
+    base_ws: &str,
+    feature_path: &Path,
+    feature_ws: &str,
+    branch: &str,
+    own_base_session: bool,
 ) -> Result<Readiness> {
     let mut blockers = Vec::new();
 
@@ -180,7 +211,9 @@ pub fn readiness(
         blockers.push(Blocker::Live { workspace: feature_ws.to_string(), pid });
     }
     if let Some(pid) = crate::lock::live_pid_checked(&base_path.join(".ws/local/lock"))? {
-        blockers.push(Blocker::Live { workspace: base_ws.to_string(), pid });
+        if !(own_base_session && crate::lock::is_self_or_ancestor(pid)) {
+            blockers.push(Blocker::Live { workspace: base_ws.to_string(), pid });
+        }
     }
     let feature_dirt = user_dirt(&crate::git::ok(feature_path, &["status", "--porcelain"])?)
         .into_iter()
@@ -329,6 +362,8 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
 pub struct Feature {
     pub name: String,
     pub feature: String,
+    #[allow(dead_code)] // read by the sweep (src/done.rs), which lands separately
+    pub path: PathBuf,
     pub readiness: Readiness,
 }
 
@@ -338,6 +373,12 @@ pub struct Feature {
 /// found by a listing of `myproj@wip-2`'s base, which is the shape of collision
 /// a `starts_with` on the base name alone produces.
 pub fn features(base: &str) -> Result<Vec<Feature>> {
+    features_as(base, false)
+}
+
+/// [`features`] for a caller that may be running inside the base's own session;
+/// see [`readiness_as`].
+pub fn features_as(base: &str, own_base_session: bool) -> Result<Vec<Feature>> {
     let base_path = crate::registry::lookup_checked(base)?
         .ok_or_else(|| anyhow::anyhow!("no workspace named {base}"))?;
     let prefix = format!("{base}@");
@@ -365,7 +406,7 @@ pub fn features(base: &str) -> Result<Vec<Feature>> {
                 ))],
             }
         } else {
-            match readiness(&base_path, base, &path, &name, feature) {
+            match readiness_as(&base_path, base, &path, &name, feature, own_base_session) {
                 Ok(r) => r,
                 Err(e) => Readiness {
                     ahead: 0,
@@ -374,7 +415,7 @@ pub fn features(base: &str) -> Result<Vec<Feature>> {
                 },
             }
         };
-        out.push(Feature { feature: feature.to_string(), name, readiness });
+        out.push(Feature { feature: feature.to_string(), name, path: path.clone(), readiness });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
@@ -518,6 +559,12 @@ fn rollback_created_worktree(base: &Path, path: &Path, branch: &str, name: &str)
 
 /// Merge the worktree back into its base and remove it.
 pub fn merge(spec: &Spec) -> Result<()> {
+    merge_as(spec, false)
+}
+
+/// [`merge`] for a caller that may be running inside the base's own session;
+/// see [`readiness_as`].
+pub fn merge_as(spec: &Spec, own_base_session: bool) -> Result<()> {
     let name = spec.workspace_name();
     let path = crate::registry::lookup_checked(&name)?
         .ok_or_else(|| anyhow::anyhow!("no workspace named {name}"))?;
@@ -534,7 +581,8 @@ pub fn merge(spec: &Spec) -> Result<()> {
     // one only to be refused for the next is the slow way to learn there were
     // three. `live_pid_checked` inside: this deletes a directory, so an
     // unreadable lock must stop us rather than read as "nobody home".
-    let state = readiness(&base_path, &spec.base, &path, &name, &spec.feature)?;
+    let state =
+        readiness_as(&base_path, &spec.base, &path, &name, &spec.feature, own_base_session)?;
     if !state.ready() {
         // The refusals name the *directories*, not the workspace names: what a
         // user does next is clean or commit in one of them, and a path is what
@@ -623,6 +671,56 @@ mod tests {
         git(&root, &["add", "."]);
         git(&root, &["commit", "-q", "-m", "init"]);
         root
+    }
+
+    #[test]
+    fn head_sha_and_is_clean_track_the_checkout() {
+        let td = TempDir::new().unwrap();
+        let base = base_repo(&td);
+        let sha = head_sha(&base).unwrap();
+        assert_eq!(sha.len(), 40);
+        assert!(is_clean(&base).unwrap());
+        std::fs::write(base.join("x.txt"), "x").unwrap();
+        assert!(!is_clean(&base).unwrap(), "an untracked user file is dirt");
+    }
+
+    #[test]
+    fn a_base_lock_held_by_an_ancestor_only_blocks_a_plain_readiness() {
+        let td = TempDir::new().unwrap();
+        let base = base_repo(&td);
+        let feat = td.path().join("feat");
+        add_worktree(&base, &feat, "feat").unwrap();
+        std::fs::create_dir_all(base.join(".ws/local")).unwrap();
+        // The lock names this test process, which is an ancestor of itself.
+        std::fs::write(base.join(".ws/local/lock"), format!("pid = {}\n", std::process::id()))
+            .unwrap();
+
+        let plain = readiness_as(&base, "api", &feat, "api@feat", "feat", false).unwrap();
+        assert!(plain
+            .blockers
+            .iter()
+            .any(|b| matches!(b, Blocker::Live { workspace, .. } if workspace == "api")));
+
+        let own = readiness_as(&base, "api", &feat, "api@feat", "feat", true).unwrap();
+        assert!(!own.blockers.iter().any(|b| matches!(b, Blocker::Live { .. })));
+    }
+
+    #[test]
+    fn a_feature_lock_is_never_relaxed_even_for_the_callers_own_session() {
+        let td = TempDir::new().unwrap();
+        let base = base_repo(&td);
+        let feat = td.path().join("feat");
+        add_worktree(&base, &feat, "feat").unwrap();
+        std::fs::create_dir_all(feat.join(".ws/local")).unwrap();
+        std::fs::write(feat.join(".ws/local/lock"), format!("pid = {}\n", std::process::id()))
+            .unwrap();
+        let r = readiness_as(&base, "api", &feat, "api@feat", "feat", true).unwrap();
+        assert!(
+            r.blockers
+                .iter()
+                .any(|b| matches!(b, Blocker::Live { workspace, .. } if workspace == "api@feat")),
+            "removing a directory under a running agent is what this blocker prevents"
+        );
     }
 
     #[test]

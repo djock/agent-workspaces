@@ -110,6 +110,42 @@ pub fn live_pid_checked(lock_file: &Path) -> Result<Option<u32>> {
     Ok(pid_alive(pid).then_some(pid))
 }
 
+/// Is `pid` this process or one of its ancestors?
+///
+/// A session's lock holds the agent's pid (`LockGuard::keep` runs before `exec`),
+/// and every `ws` the agent runs through its Bash tool descends from it. So "the
+/// lock is held by my own ancestor" is how a command running *inside* a session
+/// recognises that session as itself rather than as another writer.
+///
+/// Walks `ps -o ppid=` (present on macOS and Linux) and is bounded, so a cycle
+/// or an unreadable process table reads as "not an ancestor" — the safe answer
+/// for a check that only ever *relaxes* a refusal.
+pub fn is_self_or_ancestor(pid: u32) -> bool {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
+    let mut cur = std::process::id();
+    for _ in 0..64 {
+        if cur == pid {
+            return true;
+        }
+        if cur <= 1 {
+            return false;
+        }
+        let parent = Command::new("ps")
+            .args(["-o", "ppid=", "-p", &cur.to_string()])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u32>().ok());
+        match parent {
+            Some(p) if p != cur => cur = p,
+            _ => return false,
+        }
+    }
+    false
+}
+
 fn lock_body() -> String {
     format!(
         "pid = {}\nhost = \"{}\"\ntty = \"{}\"\nstarted = \"{}\"\n",
@@ -254,6 +290,15 @@ fn hostname() -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn self_and_parent_are_ancestors_but_a_stranger_is_not() {
+        assert!(is_self_or_ancestor(std::process::id()));
+        assert!(is_self_or_ancestor(std::os::unix::process::parent_id()));
+        // Above i32::MAX there is no such pid; must be false, not a panic.
+        assert!(!is_self_or_ancestor(u32::MAX));
+        assert!(!is_self_or_ancestor(0));
+    }
 
     #[test]
     fn live_pid_reports_only_running_holders() {
