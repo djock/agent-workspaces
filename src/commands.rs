@@ -1874,6 +1874,9 @@ fn sweep(base: &str, porcelain: bool) -> Result<()> {
                 Class::DoneBlocked(w) => ("blocked", w.clone()),
                 Class::NotDone => ("not-done", String::new()),
             };
+            // A blocker message is free text; a tab or newline in it would
+            // break the tab-separated rows a script parses.
+            let why = why.replace(['\t', '\n'], " ");
             println!("{}\t{}\t{}\t{}", r.feature, state, r.ahead, why);
         }
         return Ok(());
@@ -1892,23 +1895,27 @@ fn sweep(base: &str, porcelain: bool) -> Result<()> {
             Class::DoneBlocked(why) => println!("✗ {}  done, but {why}", r.feature),
             Class::Ready => {
                 ready += 1;
-                println!("✓ {}  {} commit(s)", r.feature, r.ahead);
-                if let Some(log) = crate::git::maybe(
+                let log = crate::git::maybe(
                     &base_path,
                     &["log", "--oneline", &format!("HEAD..{}", r.feature)],
-                ) {
-                    print!("{log}");
-                }
-                if let Some(stat) = crate::git::maybe(
+                );
+                let stat = crate::git::maybe(
                     &base_path,
                     &["diff", "--stat", &format!("HEAD...{}", r.feature)],
-                ) {
-                    print!("{stat}");
-                }
+                );
+                print!(
+                    "{}",
+                    format_ready_row(
+                        &r.feature,
+                        r.ahead,
+                        log.as_deref().unwrap_or(""),
+                        stat.as_deref().unwrap_or(""),
+                        base,
+                        interactive
+                    )
+                );
                 if interactive {
                     sweep_prompt(base, &r.feature)?;
-                } else {
-                    println!("  merge with: ws {base}@{} --merge --from-session", r.feature);
                 }
             }
         }
@@ -1917,6 +1924,28 @@ fn sweep(base: &str, porcelain: bool) -> Result<()> {
         println!("\nNothing is ready to merge.");
     }
     Ok(())
+}
+
+/// One ready worktree's report. `git::maybe` trims its output, so every piece
+/// is put on its own line here rather than trusting a trailing newline: printed
+/// raw, the last log line ran into the diffstat and the stat into the merge
+/// command a user copies. Interactive, the prompt follows instead of that command.
+fn format_ready_row(
+    feature: &str,
+    ahead: usize,
+    log: &str,
+    stat: &str,
+    base: &str,
+    interactive: bool,
+) -> String {
+    let mut out = format!("✓ {feature}  {ahead} commit(s)\n");
+    for line in log.lines().chain(stat.lines()) {
+        out.push_str(&format!("  {line}\n"));
+    }
+    if !interactive {
+        out.push_str(&format!("  merge with: ws {base}@{feature} --merge --from-session\n"));
+    }
+    out
 }
 
 /// One worktree, one answer. A failed merge is reported and the sweep goes on:
@@ -2134,5 +2163,27 @@ pub fn task(cmd: crate::cli::TaskCmd) -> Result<()> {
             println!("dropped task {index} in {}", ws.name);
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod sweep_tests {
+    use super::format_ready_row;
+
+    #[test]
+    fn a_ready_row_keeps_log_stat_and_merge_command_on_separate_lines() {
+        let out = format_ready_row(
+            "feat",
+            2,
+            "abc123 one\ndef456 two",
+            " a.txt | 1 +\n 1 file changed",
+            "api",
+            false,
+        );
+        assert!(out.contains("\n  def456 two\n   a.txt | 1 +\n"), "{out}");
+        assert!(
+            out.contains("\n   1 file changed\n  merge with: ws api@feat --merge --from-session\n"),
+            "{out}"
+        );
     }
 }
