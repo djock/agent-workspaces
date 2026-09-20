@@ -28,6 +28,11 @@ pub struct Config {
     /// Whether the Stop hook surfaces captured tasks and asks whether to start
     /// the oldest. Fires once per change to the queue, never per turn.
     pub task_prompt: bool,
+    /// Whether the Stop hook asks about finished worktrees: a feature worktree
+    /// whether to mark itself done, a base whether to review the ones that are.
+    /// Fires once per commit (worktree) or per change of the ready set (base),
+    /// and costs one extra agent turn when it does.
+    pub done_prompt: bool,
     /// Whether the Stop hook reminds the agent to write up its findings in the
     /// workspace notebook. Rate-limited to once per cooldown, and skipped
     /// entirely on continuation stops; set it false to never be reminded.
@@ -57,6 +62,7 @@ impl Default for Config {
             limit_action: "handoff-stop".into(),
             secrets_backend: "auto".into(),
             task_prompt: true,
+            done_prompt: true,
             notebook_prompt: true,
             resume_prompt: true,
             rewrite: false,
@@ -138,6 +144,7 @@ pub fn list(cfg: &Config) -> Vec<(String, String)> {
         ("limit_action".into(), cfg.limit_action.clone()),
         ("secrets_backend".into(), cfg.secrets_backend.clone()),
         ("task_prompt".into(), cfg.task_prompt.to_string()),
+        ("done_prompt".into(), cfg.done_prompt.to_string()),
         ("notebook_prompt".into(), cfg.notebook_prompt.to_string()),
         ("resume_prompt".into(), cfg.resume_prompt.to_string()),
         ("rewrite".into(), cfg.rewrite.to_string()),
@@ -194,6 +201,7 @@ fn set_locked(path: &std::path::Path, key: &str, value: &str) -> Result<()> {
         }
         "statusline" => cfg.statusline = parse_bool(value)?,
         "task_prompt" => cfg.task_prompt = parse_bool(value)?,
+        "done_prompt" => cfg.done_prompt = parse_bool(value)?,
         "notebook_prompt" => cfg.notebook_prompt = parse_bool(value)?,
         "resume_prompt" => cfg.resume_prompt = parse_bool(value)?,
         "rewrite" => cfg.rewrite = parse_bool(value)?,

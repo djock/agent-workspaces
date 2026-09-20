@@ -258,3 +258,126 @@ fn a_base_lock_held_by_a_non_ancestor_still_blocks_even_with_from_session() {
         .failure()
         .stderr(predicates::str::contains("is in use by pid"));
 }
+
+// ---- the Stop-hook prompt (`done_check`) -----------------------------------
+
+/// Run `ws internal stop` as workspace `name` rooted at `dir`; returns stdout.
+fn stop_with(env: &Env, name: &str, dir: &Path, payload: &str) -> String {
+    let out = env
+        .cmd()
+        .env("WS_WORKSPACE", name)
+        .env("WS_DIR", dir)
+        .args(["internal", "stop"])
+        .write_stdin(payload)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn stop(env: &Env, name: &str, dir: &Path) -> String {
+    stop_with(env, name, dir, "{}")
+}
+
+/// A base with `feature` created, one commit on it, and marked done.
+fn done_feature(env: &Env, base: &str, feature: &str, file: &str) {
+    env.cmd().arg(format!("{base}@{feature}")).assert().success();
+    let f = env.root.join(format!("{base}@{feature}"));
+    commit_in(&f, file);
+    env.cmd().args([&format!("{base}@{feature}"), "-done"]).assert().success();
+}
+
+#[test]
+fn the_base_stop_hook_asks_once_per_change_of_the_ready_set() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    done_feature(&env, "api", "one", "a.txt");
+
+    let first = stop(&env, "api", &base);
+    assert!(first.contains("\"decision\":\"block\""), "{first}");
+    assert!(first.contains("one (1 commit(s))"), "{first}");
+    assert!(first.contains("ws api -done"), "{first}");
+    assert_eq!(stop(&env, "api", &base), "", "the same ready set is not asked twice");
+
+    done_feature(&env, "api", "two", "b.txt");
+    let again = stop(&env, "api", &base);
+    assert!(again.contains("\"decision\":\"block\"") && again.contains("two"), "{again}");
+    assert_eq!(stop(&env, "api", &base), "");
+}
+
+#[test]
+fn a_base_with_only_blocked_worktrees_does_not_prompt() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    done_feature(&env, "api", "f", "a.txt");
+    let f = env.root.join("api@f");
+    std::fs::create_dir_all(f.join(".ws/local")).unwrap();
+    std::fs::write(f.join(".ws/local/lock"), format!("pid = {}\n", std::process::id())).unwrap();
+    assert_eq!(stop(&env, "api", &base), "", "nothing actionable, so nothing to ask");
+}
+
+#[test]
+fn a_worktree_stop_hook_asks_once_per_commit_and_respects_the_answer() {
+    let env = Env::new();
+    base_workspace(&env, "api");
+    env.cmd().arg("api@f").assert().success();
+    let f = env.root.join("api@f");
+    commit_in(&f, "a.txt");
+
+    let first = stop(&env, "api@f", &f);
+    assert!(first.contains("\"decision\":\"block\""), "{first}");
+    assert!(first.contains("mark this feature done"), "{first}");
+    assert_eq!(stop(&env, "api@f", &f), "", "asked once for this commit");
+
+    env.cmd()
+        .current_dir(&f)
+        .env("WS_WORKSPACE", "api@f")
+        .env("WS_DIR", &f)
+        .args(["-done", "--declined"])
+        .assert()
+        .success();
+    commit_in(&f, "b.txt");
+    let new_head = stop(&env, "api@f", &f);
+    assert!(new_head.contains("mark this feature done"), "a new commit is a new question");
+
+    env.cmd().args(["api@f", "-done"]).assert().success();
+    // Drop the stamp so silence can only come from the fresh marker, not from
+    // this head having been asked about already.
+    let _ = std::fs::remove_file(f.join(".ws/local/done-prompt.stamp"));
+    assert_eq!(stop(&env, "api@f", &f), "", "already marked done");
+}
+
+#[test]
+fn done_prompt_false_silences_the_hook_and_writes_no_stamp() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    done_feature(&env, "api", "f", "a.txt");
+    env.cmd().args(["config", "set", "done_prompt", "false"]).assert().success();
+    assert_eq!(stop(&env, "api", &base), "");
+    assert!(!base.join(".ws/local/done-prompt.stamp").exists(), "opted out: nothing consumed");
+    env.cmd().args(["config", "set", "done_prompt", "true"]).assert().success();
+    assert!(stop(&env, "api", &base).contains("\"decision\":\"block\""), "opting back in asks");
+}
+
+#[test]
+fn a_continuation_stop_never_asks() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    done_feature(&env, "api", "f", "a.txt");
+    let out = stop_with(&env, "api", &base, r#"{"stop_hook_active":true}"#);
+    assert_eq!(out, "");
+    assert!(!base.join(".ws/local/done-prompt.stamp").exists());
+}
+
+#[test]
+fn a_dirty_worktree_is_not_asked_about() {
+    let env = Env::new();
+    base_workspace(&env, "api");
+    env.cmd().arg("api@f").assert().success();
+    let f = env.root.join("api@f");
+    commit_in(&f, "a.txt");
+    std::fs::write(f.join("dirty.txt"), "x").unwrap();
+    assert_eq!(stop(&env, "api@f", &f), "");
+}

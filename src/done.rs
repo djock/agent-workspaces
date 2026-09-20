@@ -159,6 +159,66 @@ pub fn clear_note(ws_name: &str, ws_root: &Path) -> Option<String> {
     ))
 }
 
+/// What the Stop hook asks at the end of a turn: `(signature, directive)`, or
+/// `None` when there is nothing worth an extra turn. The signature identifies
+/// the question, so the caller can ask it once and stay quiet until it changes.
+/// Swallows every error: a hook must not fail a turn.
+pub fn stop_prompt(ws_name: &str, ws_root: &Path) -> Option<(String, String)> {
+    if let Some(spec) = worktree::parse_name(ws_name) {
+        // A feature worktree: one question per commit, and only for finished-looking
+        // work (clean, not already marked, not already declined, something to merge).
+        let head = worktree::head_sha(ws_root).ok()?;
+        if is_fresh(ws_root) || was_declined(ws_root, &head) || !worktree::is_clean(ws_root).ok()? {
+            return None;
+        }
+        let me = worktree::features(&spec.base).ok()?.into_iter().find(|f| f.name == ws_name)?;
+        if me.readiness.ahead == 0 {
+            return None;
+        }
+        let directive = format!(
+            "ws: {ws_name} has {} commit(s) that {} does not. Ask the user once whether \
+             to mark this feature done so {} can offer it for merge. If yes run `ws -done`; \
+             if no run `ws -done --declined`. Do not do anything else about it, and do not \
+             start new work on your own.",
+            me.readiness.ahead, spec.base, spec.base
+        );
+        return Some((head, directive));
+    }
+    // A base: only worktrees that could actually be merged are worth a turn. A
+    // set that is all blocked is something the user cannot act on from here.
+    let rows = classify(ws_name, true).ok()?;
+    let ready: Vec<&Row> = rows.iter().filter(|r| r.class == Class::Ready).collect();
+    if ready.is_empty() {
+        return None;
+    }
+    let mut sig = Vec::new();
+    for r in &ready {
+        sig.push(format!("{}:{}", r.feature, worktree::head_sha(&r.path).ok()?));
+    }
+    sig.sort();
+    let list =
+        ready.iter().map(|r| format!("{} ({} commit(s))", r.feature, r.ahead)).collect::<Vec<_>>();
+    let blocked = rows
+        .iter()
+        .filter(|r| matches!(r.class, Class::DoneBlocked(_)))
+        .map(|r| r.feature.as_str())
+        .collect::<Vec<_>>();
+    let also = if blocked.is_empty() {
+        String::new()
+    } else {
+        format!(" Also marked done but still open or blocked: {}.", blocked.join(", "))
+    };
+    let directive = format!(
+        "ws: worktrees of {ws_name} are marked done and ready to merge: {}.{also} Ask the \
+         user whether to review them now. Do NOT merge anything unless they say yes. If yes \
+         run `ws {ws_name} -done`, show its report, and merge each one the user approves \
+         with `ws {ws_name}@<feature> --merge --from-session`. If they decline, drop the \
+         subject; this will not ask again until the set of ready worktrees changes.",
+        list.join(", ")
+    );
+    Some((sig.join(","), directive))
+}
+
 /// How many `base@*` worktrees have a fresh marker, for the status line. Cached
 /// for `CHIP_TTL_SECS`: the bar repaints once a second and each answer runs git.
 const CHIP_TTL_SECS: u64 = 20;

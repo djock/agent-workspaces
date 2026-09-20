@@ -208,7 +208,33 @@ fn stop() {
     // what to do next. When both are due they fire on consecutive stops.
     if let Some(directive) = task_check(&ws) {
         println!("{}", hookio::decision_block(&directive));
+        return;
     }
+
+    // Finished worktrees last of all: the user's own queue and the notebook
+    // come first, and this question is only worth an extra turn once nothing
+    // more pressing is due.
+    if let Some(directive) = done_check(&ws) {
+        println!("{}", hookio::decision_block(&directive));
+    }
+}
+
+/// Returns Some(directive) when the Stop hook should ask about finished
+/// worktrees (see `done::stop_prompt`). Modelled on `task_check`: a signature
+/// of what would be asked is stamped, so the same question is not repeated
+/// until it changes. Every error reads as "nothing to ask".
+fn done_check(ws: &Workspace) -> Option<String> {
+    if !crate::config::load().done_prompt {
+        return None;
+    }
+    let (signature, directive) = crate::done::stop_prompt(&ws.name, &ws.root)?;
+    let stamp = ws.local_dir().join("done-prompt.stamp");
+    if std::fs::read_to_string(&stamp).is_ok_and(|s| s.trim() == signature) {
+        return None; // already asked about exactly this
+    }
+    let _ = std::fs::create_dir_all(ws.local_dir());
+    let _ = std::fs::write(&stamp, &signature);
+    Some(directive)
 }
 
 /// Returns Some(reason) when the Stop hook should ask for a notebook update.
