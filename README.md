@@ -358,6 +358,21 @@ On a terminal it shows each ready worktree's commits and diffstat and asks
 end of input, skips, so a stray key never merges. With no terminal (a script, or the agent's shell) it only prints the
 report, with the `--merge` command for each, and never waits for input.
 
+The question is also asked at the end of a turn, the way captured tasks are: the
+Stop hook has the agent raise it, so you see it without having to `/clear`. A
+worktree is asked about once per commit (clean, not marked, not declined, with
+commits the base lacks); the base is asked once per change of the *ready* set,
+and never for worktrees that are only blocked, since there is nothing to act on.
+Firing costs one extra agent turn. `ws config set done_prompt false` turns the
+end-of-turn question off; the `/clear` note stays.
+
+A locally modified `.ws/timeline.jsonl` in the base is bookkeeping, not
+uncommitted work: if your repo tracks that file, every launch appends to it, and
+it would otherwise block every merge. It is ignored on the base side only, and
+only when it is an unstaged edit and the branch being merged does not touch the
+file itself. A worktree's own timeline edit still counts, because removing a
+worktree with a modified tracked file would fail after the merge had landed.
+
 The status line shows `done N` while `N` worktrees are marked done. It is read
 from a 20-second cache, so it can lag a mark by that long.
 

@@ -164,3 +164,25 @@ with a zero-token prompt.
   never touch the key mapping).
 - Release notes follow `docs/releasing.md`; a new verb needs the README and
   help-text token test to stay green.
+
+## Follow-up: Stop-hook prompt and timeline dirt
+
+- **End-of-turn prompt.** `/clear` context only reaches the agent when the user
+  next types, so nothing was visible. `internal stop` now runs `done_check` after
+  `task_check` (limit, notebook, task, done: one directive per stop). The logic is
+  `done::stop_prompt`, returning a signature and a directive. Worktree: eligible
+  when clean, not fresh, not declined for this head, and ahead of its base;
+  signature is the head sha. Base: eligible only when at least one row is
+  `Ready`; signature is the sorted `feature:head` pairs of the Ready rows. The
+  signature is stamped in `.ws/local/done-prompt.stamp`, so it is asked once until
+  it changes. `done_prompt` (default true) opts out, and nothing is stamped when
+  it is off. Continuation stops (`stop_hook_active`) return before any directive.
+  `clear_note` stays as the fallback.
+- **Timeline dirt.** In a repo that tracks `.ws/timeline.jsonl` the file reads
+  ` M` forever and blocked every merge. `worktree::base_dirt`, shared by
+  `readiness_as` and `merge_worktree`, drops exactly the unstaged ` M` line when
+  `git diff --name-only HEAD...<branch>` succeeds and does not list the file
+  (git merges around a local edit and `merge --abort` restores it). A failed diff
+  or a branch that touches it keeps it as dirt. The feature side is not relaxed:
+  `git worktree remove` without `--force` refuses a modified tracked file after
+  the merge has landed.
