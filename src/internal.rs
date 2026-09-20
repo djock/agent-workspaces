@@ -220,20 +220,22 @@ fn stop() {
 }
 
 /// Returns Some(directive) when the Stop hook should ask about finished
-/// worktrees (see `done::stop_prompt`). Modelled on `task_check`: a signature
-/// of what would be asked is stamped, so the same question is not repeated
-/// until it changes. Every error reads as "nothing to ask".
+/// worktrees (see `done::stop_prompt`). The stamp holds every question already
+/// asked, one per line, so the same question is not repeated until something new
+/// is due. Every error reads as "nothing to ask".
 fn done_check(ws: &Workspace) -> Option<String> {
     if !crate::config::load().done_prompt {
         return None;
     }
-    let (signature, directive) = crate::done::stop_prompt(&ws.name, &ws.root)?;
     let stamp = ws.local_dir().join("done-prompt.stamp");
-    if std::fs::read_to_string(&stamp).is_ok_and(|s| s.trim() == signature) {
-        return None; // already asked about exactly this
-    }
-    let _ = std::fs::create_dir_all(ws.local_dir());
-    let _ = std::fs::write(&stamp, &signature);
+    let asked: std::collections::BTreeSet<String> = std::fs::read_to_string(&stamp)
+        .map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect())
+        .unwrap_or_default();
+    let (next, directive) = crate::done::stop_prompt(&ws.name, &ws.root, &asked)?;
+    let body = next.iter().map(String::as_str).collect::<Vec<_>>().join("\n");
+    // A question that cannot be recorded would be asked again every turn.
+    std::fs::create_dir_all(ws.local_dir()).ok()?;
+    std::fs::write(&stamp, body).ok()?;
     Some(directive)
 }
 

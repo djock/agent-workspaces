@@ -496,3 +496,182 @@ fn a_conflicting_merge_leaves_the_base_and_its_timeline_edit_as_they_were() {
     assert!(after.contains(&edit), "the local timeline edit survived the abort: {after}");
     assert_eq!(git(&base, &["status", "--porcelain"]).trim_end(), " M .ws/timeline.jsonl");
 }
+
+// ---- fix wave: asked-set, cheap prechecks, the tracked-timeline configuration --
+
+fn ws_at(env: &Env, name: &str, dir: &Path) -> assert_cmd::Command {
+    let mut c = env.cmd();
+    c.current_dir(dir).env("WS_WORKSPACE", name).env("WS_DIR", dir);
+    c
+}
+
+fn count_blocks(s: &str) -> usize {
+    s.matches("\"decision\":\"block\"").count()
+}
+
+/// Base that already tracks its timeline, as in a real repo: worktrees are
+/// created afterwards, so their own launch shows as a modification.
+fn tracking_base(env: &Env, name: &str) -> PathBuf {
+    let base = base_workspace(env, name);
+    git(&base, &["add", "-f", ".ws/timeline.jsonl"]);
+    git(&base, &["commit", "-q", "-m", "track the timeline"]);
+    base
+}
+
+fn append_line(dir: &Path, line: &str) {
+    let p = dir.join(".ws/timeline.jsonl");
+    let mut s = std::fs::read_to_string(&p).unwrap_or_default();
+    s.push_str(line);
+    s.push('\n');
+    std::fs::write(p, s).unwrap();
+}
+
+#[test]
+fn merging_one_of_two_asked_worktrees_does_not_re_ask_about_the_other() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    done_feature(&env, "api", "one", "a.txt");
+    done_feature(&env, "api", "two", "b.txt");
+    assert_eq!(count_blocks(&stop(&env, "api", &base)), 1);
+    env.cmd().args(["api@one", "--merge", "--from-session"]).assert().success();
+    assert_eq!(stop(&env, "api", &base), "", "a smaller ready set is not news");
+}
+
+#[test]
+fn a_worktree_that_flaps_out_of_ready_and_back_is_not_asked_again() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    done_feature(&env, "api", "one", "a.txt");
+    done_feature(&env, "api", "two", "b.txt");
+    assert_eq!(count_blocks(&stop(&env, "api", &base)), 1);
+    let lock = env.root.join("api@one/.ws/local/lock");
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    std::fs::write(&lock, format!("pid = {}\n", std::process::id())).unwrap();
+    assert_eq!(stop(&env, "api", &base), "", "one is blocked, two was already asked");
+    std::fs::remove_file(&lock).unwrap();
+    assert_eq!(stop(&env, "api", &base), "", "one is back, and it was already asked");
+}
+
+#[test]
+fn a_new_commit_on_an_asked_worktree_is_a_new_question() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    done_feature(&env, "api", "one", "a.txt");
+    assert_eq!(count_blocks(&stop(&env, "api", &base)), 1);
+    commit_in(&env.root.join("api@one"), "more.txt");
+    env.cmd().args(["api@one", "-done"]).assert().success();
+    assert_eq!(count_blocks(&stop(&env, "api", &base)), 1);
+}
+
+#[test]
+fn a_stamp_that_cannot_be_written_means_no_prompt() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    done_feature(&env, "api", "one", "a.txt");
+    std::fs::create_dir_all(base.join(".ws/local/done-prompt.stamp")).unwrap();
+    assert_eq!(stop(&env, "api", &base), "", "an unrecordable question would repeat every turn");
+}
+
+#[test]
+fn a_base_with_no_markers_is_silent_without_asking_git_anything() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    env.cmd().arg("api@f").assert().success();
+    commit_in(&env.root.join("api@f"), "a.txt");
+    std::fs::remove_dir_all(env.root.join("api@f")).unwrap();
+    assert_eq!(stop(&env, "api", &base), "");
+}
+
+#[test]
+fn a_due_task_goes_first_and_the_done_question_follows_on_the_next_stop() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    ws_at(&env, "api", &base).args(["-task", "add", "water the plants"]).assert().success();
+    // The queue file is a new untracked path in the base; commit it so it is not
+    // taken for the user's uncommitted work and the worktree stays mergeable.
+    git(&base, &["add", ".ws/queue"]);
+    git(&base, &["commit", "-q", "-m", "queue"]);
+    done_feature(&env, "api", "one", "a.txt");
+    let first = stop(&env, "api", &base);
+    assert_eq!(count_blocks(&first), 1, "{first}");
+    assert!(first.contains("water the plants"), "{first}");
+    let second = stop(&env, "api", &base);
+    assert_eq!(count_blocks(&second), 1, "{second}");
+    assert!(second.contains("ready to merge"), "{second}");
+    assert_eq!(stop(&env, "api", &base), "");
+}
+
+#[test]
+fn a_branch_that_renames_the_timeline_keeps_a_modified_base_timeline_as_dirt() {
+    let env = Env::new();
+    let base = tracking_base(&env, "api");
+    env.cmd().arg("api@f").assert().success();
+    let f = env.root.join("api@f");
+    git(&f, &["config", "user.email", "dev@example.com"]);
+    git(&f, &["config", "user.name", "Dev"]);
+    git(&f, &["checkout", "-q", "--", ".ws/timeline.jsonl"]);
+    git(&f, &["mv", ".ws/timeline.jsonl", ".ws/moved.jsonl"]);
+    git(&f, &["commit", "-q", "-m", "move the timeline"]);
+    append_line(&base, "{\"local\":1}");
+    env.cmd().args(["api@f", "-done"]).assert().success();
+    assert!(sweep(&env).contains("f\tblocked"), "a rename must not hide the touched path");
+    env.cmd()
+        .args(["api@f", "--merge", "--from-session"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("uncommitted changes"));
+}
+
+/// The configuration the tool is actually used in: the timeline is tracked, so
+/// every launch leaves a modification in the base *and* in each worktree.
+fn real_config(env: &Env) -> (PathBuf, PathBuf) {
+    let base = tracking_base(env, "api");
+    env.cmd().arg("api@f").assert().success();
+    let f = env.root.join("api@f");
+    append_line(&base, "{\"launch\":\"base\"}");
+    append_line(&f, "{\"launch\":\"feature\"}");
+    commit_in(&f, "a.txt");
+    assert!(git(&f, &["status", "--porcelain"]).contains(" M .ws/timeline.jsonl"));
+    (base, f)
+}
+
+#[test]
+fn a_worktree_with_a_tracked_modified_timeline_can_be_marked_done_and_merged_without_stranding() {
+    let env = Env::new();
+    let (base, f) = real_config(&env);
+    env.cmd().args(["api@f", "-done"]).assert().success();
+    assert!(sweep(&env).contains("f\tready"), "{}", sweep(&env));
+    assert_eq!(count_blocks(&stop(&env, "api", &base)), 1, "the prompt can fire");
+
+    env.cmd().args(["api@f", "--merge", "--from-session"]).assert().success();
+    assert!(!f.exists(), "the worktree directory is gone");
+    let reg = std::fs::read_to_string(env.home.path().join(".config/ws/registry.toml")).unwrap();
+    assert!(!reg.contains("api@f"), "and it is unregistered: {reg}");
+    assert!(base.join("a.txt").is_file());
+    let tl = std::fs::read_to_string(base.join(".ws/timeline.jsonl")).unwrap();
+    assert!(tl.contains("\"launch\":\"base\""), "the base's local append survived: {tl}");
+}
+
+#[test]
+fn a_staged_timeline_change_in_the_worktree_still_refuses() {
+    let env = Env::new();
+    let (_base, f) = real_config(&env);
+    git(&f, &["add", ".ws/timeline.jsonl"]);
+    env.cmd()
+        .args(["api@f", "-done"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("uncommitted changes"));
+}
+
+#[test]
+fn a_modified_timeline_plus_another_dirty_file_in_the_worktree_still_refuses() {
+    let env = Env::new();
+    let (_base, f) = real_config(&env);
+    std::fs::write(f.join("a.txt"), "edited").unwrap();
+    env.cmd()
+        .args(["api@f", "-done"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("uncommitted changes"));
+}

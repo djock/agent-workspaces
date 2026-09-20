@@ -11,16 +11,25 @@ The project follows [Semantic Versioning](https://semver.org/).
 - **The finished-worktree question is asked at the end of a turn.** Like the
   task queue, the Stop hook now has the agent raise it, so it is visible without
   a `/clear`: a feature worktree is asked once per commit whether to mark itself
-  done, and a base once per change of the set of worktrees that are ready to
-  merge (blocked-only sets are not asked about). It costs one extra agent turn
+  done, and a base is asked when a ready worktree appears that it has not asked
+  about (it remembers every worktree-at-a-commit already asked, so merging or
+  skipping some, or a worktree flapping in and out of ready, does not repeat the
+  question). Blocked-only sets are not asked about. It costs one extra agent turn
   when it fires. `ws config set done_prompt false` turns it off.
 
 ### Changed
 
-- A locally modified, tracked `.ws/timeline.jsonl` in the base no longer counts
-  as uncommitted work when merging a worktree, provided the edit is unstaged and
-  the branch being merged does not touch that file. The base's screen and the
-  merge gate share one rule. A worktree's own modified timeline still blocks.
+- A locally modified, tracked `.ws/timeline.jsonl` no longer counts as
+  uncommitted work. In the base it is ignored when the edit is unstaged and the
+  branch being merged does not touch the file (renames included); the screen and
+  the merge gate share one rule. In a feature worktree the unstaged edit is
+  always ignored, so such a worktree can be marked done and merged, and the merge
+  restores its timeline to the committed state rather than deleting it, which
+  used to strand a merged worktree. Staged changes and other modified files
+  still block.
+- The end-of-turn check does its cheap work first (a marker file check in the
+  base, one `rev-list` in a worktree) instead of computing every sibling's
+  readiness each turn.
 
 ## [0.11.0] — 2026-09-20
 

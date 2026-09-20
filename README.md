@@ -361,17 +361,23 @@ report, with the `--merge` command for each, and never waits for input.
 The question is also asked at the end of a turn, the way captured tasks are: the
 Stop hook has the agent raise it, so you see it without having to `/clear`. A
 worktree is asked about once per commit (clean, not marked, not declined, with
-commits the base lacks); the base is asked once per change of the *ready* set,
-and never for worktrees that are only blocked, since there is nothing to act on.
-Firing costs one extra agent turn. `ws config set done_prompt false` turns the
-end-of-turn question off; the `/clear` note stays.
+commits the base lacks). The base remembers every worktree-at-a-commit it has
+already asked about and asks again only when a ready worktree it has not asked
+about appears (a new one, or a new commit on one), so merging or skipping some of
+them, or a worktree briefly blocked by a live session, does not repeat the
+question. Sets that are only blocked are never asked about, since there is
+nothing to act on. Firing costs one extra agent turn.
+`ws config set done_prompt false` turns the end-of-turn question off; the
+`/clear` note stays.
 
-A locally modified `.ws/timeline.jsonl` in the base is bookkeeping, not
-uncommitted work: if your repo tracks that file, every launch appends to it, and
-it would otherwise block every merge. It is ignored on the base side only, and
-only when it is an unstaged edit and the branch being merged does not touch the
-file itself. A worktree's own timeline edit still counts, because removing a
-worktree with a modified tracked file would fail after the merge had landed.
+If your repo tracks `.ws/timeline.jsonl`, every launch leaves it modified, which
+would otherwise block every mark and merge. An unstaged edit of that one file is
+not counted as uncommitted work. In the base it is ignored only when the branch
+being merged does not touch the file (a rename counts as touching it). In a
+worktree it is always ignored; on merge ws restores the worktree's copy to its
+committed state (the discarded lines are that worktree's own launch log) so the
+worktree can be removed. A staged change, or any other modified file, still
+blocks.
 
 The status line shows `done N` while `N` worktrees are marked done. It is read
 from a 20-second cache, so it can lag a mark by that long.

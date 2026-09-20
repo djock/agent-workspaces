@@ -170,19 +170,34 @@ with a zero-token prompt.
 - **End-of-turn prompt.** `/clear` context only reaches the agent when the user
   next types, so nothing was visible. `internal stop` now runs `done_check` after
   `task_check` (limit, notebook, task, done: one directive per stop). The logic is
-  `done::stop_prompt`, returning a signature and a directive. Worktree: eligible
-  when clean, not fresh, not declined for this head, and ahead of its base;
-  signature is the head sha. Base: eligible only when at least one row is
-  `Ready`; signature is the sorted `feature:head` pairs of the Ready rows. The
-  signature is stamped in `.ws/local/done-prompt.stamp`, so it is asked once until
-  it changes. `done_prompt` (default true) opts out, and nothing is stamped when
-  it is off. Continuation stops (`stop_hook_active`) return before any directive.
-  `clear_note` stays as the fallback.
-- **Timeline dirt.** In a repo that tracks `.ws/timeline.jsonl` the file reads
-  ` M` forever and blocked every merge. `worktree::base_dirt`, shared by
-  `readiness_as` and `merge_worktree`, drops exactly the unstaged ` M` line when
-  `git diff --name-only HEAD...<branch>` succeeds and does not list the file
-  (git merges around a local edit and `merge --abort` restores it). A failed diff
-  or a branch that touches it keeps it as dirt. The feature side is not relaxed:
-  `git worktree remove` without `--force` refuses a modified tracked file after
-  the merge has landed.
+  `done::stop_prompt(ws_name, root, asked)`, returning the next asked set and a
+  directive. Worktree: eligible when clean, not fresh, not declined for this head,
+  and ahead of its base (one `rev-list --count HEAD..<feature>` in the base); the
+  pair is the head sha. Base: eligible only when a sibling has a `done.json` (a
+  file check that skips all git otherwise) and at least one row is `Ready`; the
+  pairs are `feature:head` of the Ready rows.
+- **Asked set, not last signature.** `.ws/local/done-prompt.stamp` holds every
+  pair already asked, one per line. The prompt fires only when the current ready
+  set holds a pair not in it, so a shrinking set (one merged) or a flapping one (a
+  lock came and went) is silent while a new commit (new sha) asks again. On firing
+  the stamp becomes asked plus current, pruned to worktrees that still exist. If
+  the stamp cannot be written, nothing is emitted (it would repeat every turn).
+  `done_prompt` (default true) opts out and writes nothing. Continuation stops
+  (`stop_hook_active`) return before any directive. `clear_note` stays as the
+  fallback.
+- **Timeline dirt, base side.** In a repo that tracks `.ws/timeline.jsonl` the
+  file reads ` M` forever. `worktree::base_dirt`, shared by `readiness_as` and
+  `merge_worktree`, drops exactly the unstaged ` M` line when
+  `git diff --name-only --no-renames HEAD...<branch>` succeeds and does not list
+  the file (git merges around a local edit and `merge --abort` restores it).
+  `--no-renames` because a branch that moves the file would otherwise list only
+  the new path. A failed diff or a touching branch keeps it as dirt.
+- **Timeline dirt, feature side.** The same tracked file is modified in every
+  worktree after a launch, so nothing could be marked or merged.
+  `feature_user_dirt` (used by `readiness_as`, `merge_worktree` and `is_clean`)
+  drops the same exact ` M` line with no branch guard: after the merge lands
+  `merge_worktree` restores a tracked bookkeeping file with `git checkout -- <path>`
+  (only from clean or unstaged-modified; staged content is left so the removal
+  refuses loudly) instead of deleting it, since deleting a tracked file left a
+  modification that made `git worktree remove` refuse and stranded a merged
+  worktree. Untracked bookkeeping is deleted as before.

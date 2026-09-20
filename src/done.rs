@@ -7,6 +7,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::worktree;
@@ -108,10 +109,11 @@ pub fn classify(base: &str, own_base_session: bool) -> Result<Vec<Row>> {
     for f in worktree::features_as(base, own_base_session)? {
         let class = if !is_fresh(&f.path) {
             Class::NotDone
-        } else if f.readiness.ready() {
-            Class::Ready
         } else {
-            Class::DoneBlocked(f.readiness.blockers[0].summary())
+            match f.readiness.blockers.first() {
+                None => Class::Ready,
+                Some(b) => Class::DoneBlocked(b.summary()),
+            }
         };
         rows.push(Row { feature: f.feature, path: f.path, ahead: f.readiness.ahead, class });
     }
@@ -159,43 +161,85 @@ pub fn clear_note(ws_name: &str, ws_root: &Path) -> Option<String> {
     ))
 }
 
-/// What the Stop hook asks at the end of a turn: `(signature, directive)`, or
-/// `None` when there is nothing worth an extra turn. The signature identifies
-/// the question, so the caller can ask it once and stay quiet until it changes.
-/// Swallows every error: a hook must not fail a turn.
-pub fn stop_prompt(ws_name: &str, ws_root: &Path) -> Option<(String, String)> {
+/// What the Stop hook asks at the end of a turn, or `None` when there is
+/// nothing new worth an extra turn. Swallows every error: a hook must not fail
+/// a turn.
+///
+/// `asked` holds every question already put to the user, as `feature:head` pairs
+/// for a base (a bare `head` for a worktree). A question is new only when the
+/// current ready set contains a pair not in it, so a set that shrinks (one was
+/// merged) or flaps (a lock came and went) is silent, while a new commit is a new
+/// sha and asks again. The returned set is what to store next: `asked` plus the
+/// current pairs, pruned to worktrees that still exist so the file cannot grow
+/// for ever.
+///
+/// This runs at the end of every turn, so the cheap checks come first and git
+/// runs only once something could be asked.
+pub fn stop_prompt(
+    ws_name: &str,
+    ws_root: &Path,
+    asked: &BTreeSet<String>,
+) -> Option<(BTreeSet<String>, String)> {
     if let Some(spec) = worktree::parse_name(ws_name) {
         // A feature worktree: one question per commit, and only for finished-looking
         // work (clean, not already marked, not already declined, something to merge).
         let head = worktree::head_sha(ws_root).ok()?;
-        if is_fresh(ws_root) || was_declined(ws_root, &head) || !worktree::is_clean(ws_root).ok()? {
+        if asked.contains(&head) || was_declined(ws_root, &head) || is_fresh(ws_root) {
             return None;
         }
-        let me = worktree::features(&spec.base).ok()?.into_iter().find(|f| f.name == ws_name)?;
-        if me.readiness.ahead == 0 {
+        if !worktree::is_clean(ws_root).ok()? {
+            return None;
+        }
+        // One rev-list, not the readiness of every sibling to find our own `ahead`.
+        let base_path = crate::registry::lookup_checked(&spec.base).ok()??;
+        let ahead: usize = crate::git::ok(
+            &base_path,
+            &["rev-list", "--count", &format!("HEAD..{}", spec.feature)],
+        )
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+        if ahead == 0 {
             return None;
         }
         let directive = format!(
-            "ws: {ws_name} has {} commit(s) that {} does not. Ask the user once whether \
+            "ws: {ws_name} has {ahead} commit(s) that {} does not. Ask the user once whether \
              to mark this feature done so {} can offer it for merge. If yes run `ws -done`; \
              if no run `ws -done --declined`. Do not do anything else about it, and do not \
              start new work on your own.",
-            me.readiness.ahead, spec.base, spec.base
+            spec.base, spec.base
         );
-        return Some((head, directive));
+        let mut next = asked.clone();
+        next.insert(head);
+        return Some((next, directive));
     }
-    // A base: only worktrees that could actually be merged are worth a turn. A
-    // set that is all blocked is something the user cannot act on from here.
-    let rows = classify(ws_name, true).ok()?;
-    let ready: Vec<&Row> = rows.iter().filter(|r| r.class == Class::Ready).collect();
-    if ready.is_empty() {
+    // A base. Nothing can be ready unless some sibling has written a marker, and
+    // that is a file check: skip every git call when none has.
+    let prefix = format!("{ws_name}@");
+    let siblings: Vec<(String, PathBuf)> = crate::registry::all_checked()
+        .ok()?
+        .into_iter()
+        .filter(|(n, _)| n.strip_prefix(&prefix).is_some_and(|f| !f.is_empty()))
+        .collect();
+    if !siblings.iter().any(|(_, p)| marker_path(p).is_file()) {
         return None;
     }
-    let mut sig = Vec::new();
+    // Only worktrees that could actually be merged are worth a turn; a set that is
+    // all blocked is something the user cannot act on from here.
+    let rows = classify(ws_name, true).ok()?;
+    let ready: Vec<&Row> = rows.iter().filter(|r| r.class == Class::Ready).collect();
+    let mut current = BTreeSet::new();
     for r in &ready {
-        sig.push(format!("{}:{}", r.feature, worktree::head_sha(&r.path).ok()?));
+        current.insert(format!("{}:{}", r.feature, worktree::head_sha(&r.path).ok()?));
     }
-    sig.sort();
+    if current.is_empty() || current.is_subset(asked) {
+        return None;
+    }
+    let mut next: BTreeSet<String> = asked.union(&current).cloned().collect();
+    next.retain(|pair| {
+        pair.rsplit_once(':').is_some_and(|(f, _)| rows.iter().any(|r| r.feature == f))
+    });
     let list =
         ready.iter().map(|r| format!("{} ({} commit(s))", r.feature, r.ahead)).collect::<Vec<_>>();
     let blocked = rows
@@ -216,7 +260,7 @@ pub fn stop_prompt(ws_name: &str, ws_root: &Path) -> Option<(String, String)> {
          subject; this will not ask again until the set of ready worktrees changes.",
         list.join(", ")
     );
-    Some((sig.join(","), directive))
+    Some((next, directive))
 }
 
 /// How many `base@*` worktrees have a fresh marker, for the status line. Cached

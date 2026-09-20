@@ -67,6 +67,24 @@ fn user_dirt(porcelain: &str) -> Vec<&str> {
 /// prints it. Exactly this line: a staged `M ` or `MM` is not the bookkeeping case.
 const MODIFIED_TIMELINE: &str = " M .ws/timeline.jsonl";
 
+/// `user_dirt` for a *feature* worktree, minus its locally modified tracked
+/// `.ws/timeline.jsonl` (the exact unstaged ` M` line only: never `M `, `MM`,
+/// ` T`, a rename, or any other path).
+///
+/// In a repo that tracks the timeline, every ws launch of the worktree leaves it
+/// modified, which made a worktree unmarkable and unmergeable, so the feature
+/// never became ready. Unlike the base side no "branch untouched" guard is
+/// needed: the local edit is discarded by `merge_worktree` once the merge has
+/// landed (the lines are the worktree's own launch log, in a directory about to
+/// be deleted), and whatever the branch committed to the timeline merges through
+/// its `merge=union` attribute. Staged content is still dirt, so nothing of the
+/// user's is thrown away.
+fn feature_user_dirt(porcelain: &str) -> Vec<&str> {
+    let mut dirt = user_dirt(porcelain);
+    dirt.retain(|l| *l != MODIFIED_TIMELINE);
+    dirt
+}
+
 /// The base's uncommitted work that stands in the way of merging `branch`:
 /// `user_dirt`, minus a locally modified *tracked* `.ws/timeline.jsonl`.
 ///
@@ -87,9 +105,11 @@ fn base_dirt(base: &Path, branch: &str) -> Result<Vec<String>> {
     if dirt.iter().any(|l| l == MODIFIED_TIMELINE) {
         // Not `git::maybe`: it answers None for both failure and empty output, and
         // "could not ask" must not read as "the branch leaves it alone".
+        // `--no-renames`: with rename detection a branch that moves the timeline
+        // lists only the new path, hiding that it touches the old one.
         let untouched = crate::git::raw(
             base,
-            &["diff", "--name-only", &format!("HEAD...{branch}")],
+            &["diff", "--name-only", "--no-renames", &format!("HEAD...{branch}")],
         )
         .is_ok_and(|o| {
             o.status.success()
@@ -210,7 +230,7 @@ pub fn head_sha(dir: &Path) -> Result<String> {
 /// own git commands; ws's bookkeeping files are not the user's work.
 pub fn is_clean(dir: &Path) -> Result<bool> {
     let porcelain = crate::git::ok(dir, &["--no-optional-locks", "status", "--porcelain"])?;
-    Ok(user_dirt(&porcelain).is_empty())
+    Ok(feature_user_dirt(&porcelain).is_empty())
 }
 
 /// Compute readiness for one feature worktree.
@@ -242,10 +262,13 @@ pub fn readiness_as(
             blockers.push(Blocker::Live { workspace: base_ws.to_string(), pid });
         }
     }
-    let feature_dirt = user_dirt(&crate::git::ok(feature_path, &["status", "--porcelain"])?)
-        .into_iter()
-        .map(String::from)
-        .collect::<Vec<_>>();
+    let feature_dirt = feature_user_dirt(&crate::git::ok(
+        feature_path,
+        &["--no-optional-locks", "status", "--porcelain"],
+    )?)
+    .into_iter()
+    .map(String::from)
+    .collect::<Vec<_>>();
     if !feature_dirt.is_empty() {
         blockers.push(Blocker::FeatureDirty(feature_dirt));
     }
@@ -286,7 +309,7 @@ pub fn add_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
 /// leave the change stranded in a directory this function then deletes.
 pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
     let porcelain = crate::git::ok(path, &["status", "--porcelain"])?;
-    let dirty = user_dirt(&porcelain);
+    let dirty = feature_user_dirt(&porcelain);
     if !dirty.is_empty() {
         bail!(
             "{} has uncommitted changes — commit or discard them first:\n{}",
@@ -371,7 +394,24 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
     // removal, loudly, which is the behaviour we want.
     for rel in WS_BOOKKEEPING {
         let f = path.join(rel);
-        if f.exists() {
+        if !f.exists() {
+            continue;
+        }
+        // A *tracked* bookkeeping file (a repo that commits its timeline) cannot
+        // be deleted: that is a modification `git worktree remove` refuses, after
+        // the merge already landed, stranding a merged worktree. Put it back to
+        // HEAD instead. Only from a clean or plain unstaged-modified state: staged
+        // content is left alone so the removal refuses loudly rather than this
+        // discarding work.
+        let tracked = crate::git::raw(path, &["ls-files", "--error-unmatch", "--", rel])
+            .is_ok_and(|o| o.status.success());
+        if tracked {
+            let status =
+                crate::git::ok(path, &["--no-optional-locks", "status", "--porcelain", "--", rel])?;
+            if status.lines().all(|l| l.starts_with(" M ")) {
+                crate::git::ok(path, &["checkout", "--", rel])?;
+            }
+        } else {
             std::fs::remove_file(&f).with_context(|| format!("cannot remove {}", f.display()))?;
         }
     }
