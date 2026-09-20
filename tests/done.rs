@@ -381,3 +381,118 @@ fn a_dirty_worktree_is_not_asked_about() {
     std::fs::write(f.join("dirty.txt"), "x").unwrap();
     assert_eq!(stop(&env, "api@f", &f), "");
 }
+
+// ---- a locally modified tracked timeline in the base is bookkeeping ---------
+
+/// Track `.ws/timeline.jsonl` in the base (as in a repo whose owner ran
+/// `git add -A` once) and append a line, so it reads ` M`. Call *after* the
+/// feature worktrees exist: a worktree branched from a base that tracks the file
+/// would see its own launch append as a modification of a tracked file.
+fn track_and_modify_timeline(base: &Path) -> String {
+    git(base, &["add", "-f", ".ws/timeline.jsonl"]);
+    git(base, &["commit", "-q", "-m", "track the timeline"]);
+    let line = "{\"local\":\"edit\"}\n";
+    let path = base.join(".ws/timeline.jsonl");
+    let mut s = std::fs::read_to_string(&path).unwrap();
+    s.push_str(line);
+    std::fs::write(&path, s).unwrap();
+    line.to_string()
+}
+
+fn sweep(env: &Env) -> String {
+    let out = env.cmd().args(["api", "-done", "--porcelain"]).assert().success();
+    String::from_utf8_lossy(&out.get_output().stdout).to_string()
+}
+
+fn done_feature_only(env: &Env, file: &str) -> PathBuf {
+    env.cmd().arg("api@f").assert().success();
+    let f = env.root.join("api@f");
+    commit_in(&f, file);
+    f
+}
+
+#[test]
+fn a_modified_tracked_timeline_in_the_base_does_not_block_and_survives_the_merge() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    done_feature_only(&env, "a.txt");
+    let edit = track_and_modify_timeline(&base);
+    env.cmd().args(["api@f", "-done"]).assert().success();
+
+    assert!(sweep(&env).contains("f\tready"), "the timeline edit is not dirt");
+    env.cmd().args(["api@f", "--merge", "--from-session"]).assert().success();
+    assert!(base.join("a.txt").is_file(), "the merge landed");
+    let after = std::fs::read_to_string(base.join(".ws/timeline.jsonl")).unwrap();
+    assert!(after.contains(&edit), "the local timeline edit is still there: {after}");
+}
+
+#[test]
+fn a_feature_that_touches_the_timeline_keeps_it_as_base_dirt() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    let f = done_feature_only(&env, "a.txt");
+    git(&f, &["add", "-f", ".ws/timeline.jsonl"]);
+    git(&f, &["commit", "-q", "-m", "feature timeline"]);
+    track_and_modify_timeline(&base);
+    env.cmd().args(["api@f", "-done"]).assert().success();
+
+    assert!(sweep(&env).contains("f\tblocked"), "{}", sweep(&env));
+    env.cmd()
+        .args(["api@f", "--merge", "--from-session"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("uncommitted changes"));
+}
+
+#[test]
+fn a_staged_timeline_change_is_still_dirt() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    done_feature_only(&env, "a.txt");
+    track_and_modify_timeline(&base);
+    git(&base, &["add", ".ws/timeline.jsonl"]);
+    env.cmd().args(["api@f", "-done"]).assert().success();
+    assert!(sweep(&env).contains("f\tblocked"), "staged is not the unstaged bookkeeping case");
+    env.cmd().args(["api@f", "--merge", "--from-session"]).assert().failure();
+}
+
+#[test]
+fn another_modified_tracked_file_next_to_the_timeline_is_still_dirt() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    done_feature_only(&env, "a.txt");
+    commit_in(&base, "t.txt");
+    track_and_modify_timeline(&base);
+    std::fs::write(base.join("t.txt"), "edited").unwrap();
+    env.cmd().args(["api@f", "-done"]).assert().success();
+    assert!(sweep(&env).contains("f\tblocked"));
+    env.cmd()
+        .args(["api@f", "--merge", "--from-session"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("t.txt"));
+}
+
+#[test]
+fn a_conflicting_merge_leaves_the_base_and_its_timeline_edit_as_they_were() {
+    let env = Env::new();
+    let base = base_workspace(&env, "api");
+    let f = done_feature_only(&env, "x.txt");
+    std::fs::write(f.join("x.txt"), "feature side").unwrap();
+    git(&f, &["commit", "-q", "-am", "feature x"]);
+    std::fs::write(base.join("x.txt"), "base side").unwrap();
+    git(&base, &["add", "x.txt"]);
+    git(&base, &["commit", "-q", "-m", "base x"]);
+    let edit = track_and_modify_timeline(&base);
+    env.cmd().args(["api@f", "-done"]).assert().success();
+
+    env.cmd()
+        .args(["api@f", "--merge", "--from-session"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("was left untouched"));
+    assert_eq!(std::fs::read_to_string(base.join("x.txt")).unwrap(), "base side");
+    let after = std::fs::read_to_string(base.join(".ws/timeline.jsonl")).unwrap();
+    assert!(after.contains(&edit), "the local timeline edit survived the abort: {after}");
+    assert_eq!(git(&base, &["status", "--porcelain"]).trim_end(), " M .ws/timeline.jsonl");
+}

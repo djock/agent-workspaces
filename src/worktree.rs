@@ -63,6 +63,45 @@ fn user_dirt(porcelain: &str) -> Vec<&str> {
         .collect()
 }
 
+/// The unstaged modification of ws's tracked timeline, as `status --porcelain`
+/// prints it. Exactly this line: a staged `M ` or `MM` is not the bookkeeping case.
+const MODIFIED_TIMELINE: &str = " M .ws/timeline.jsonl";
+
+/// The base's uncommitted work that stands in the way of merging `branch`:
+/// `user_dirt`, minus a locally modified *tracked* `.ws/timeline.jsonl`.
+///
+/// The timeline is append-only bookkeeping that every ws launch writes, so in a
+/// repo that tracks it, it reads ` M` forever and would block every merge. When
+/// the incoming branch does not touch it, git merges around a local edit to it,
+/// and `merge --abort` restores an unstaged edit to a file the merge never
+/// touched. When the branch does touch it (or we cannot tell), git would refuse
+/// or the abort could not promise to restore it, so it stays dirt.
+///
+/// Base side only, and shared by `readiness_as` and `merge_worktree` so the
+/// screen and the gate cannot disagree. The *feature* side is not relaxed:
+/// `git worktree remove` (no `--force`) refuses on a modified tracked file after
+/// the merge has already landed, which would strand a merged worktree.
+fn base_dirt(base: &Path, branch: &str) -> Result<Vec<String>> {
+    let porcelain = crate::git::ok(base, &["--no-optional-locks", "status", "--porcelain"])?;
+    let mut dirt: Vec<String> = user_dirt(&porcelain).into_iter().map(String::from).collect();
+    if dirt.iter().any(|l| l == MODIFIED_TIMELINE) {
+        // Not `git::maybe`: it answers None for both failure and empty output, and
+        // "could not ask" must not read as "the branch leaves it alone".
+        let untouched = crate::git::raw(
+            base,
+            &["diff", "--name-only", &format!("HEAD...{branch}")],
+        )
+        .is_ok_and(|o| {
+            o.status.success()
+                && !String::from_utf8_lossy(&o.stdout).lines().any(|l| l == ".ws/timeline.jsonl")
+        });
+        if untouched {
+            dirt.retain(|l| l != MODIFIED_TIMELINE);
+        }
+    }
+    Ok(dirt)
+}
+
 /// Why a feature worktree cannot be merged right now.
 ///
 /// One value per refusal the merge actually performs, so the screen that
@@ -213,12 +252,9 @@ pub fn readiness_as(
     if mid_merge(base_path)? {
         blockers.push(Blocker::BaseMidMerge);
     }
-    let base_dirt = user_dirt(&crate::git::ok(base_path, &["status", "--porcelain"])?)
-        .into_iter()
-        .map(String::from)
-        .collect::<Vec<_>>();
-    if !base_dirt.is_empty() {
-        blockers.push(Blocker::BaseDirty(base_dirt));
+    let base_dirty = base_dirt(base_path, branch)?;
+    if !base_dirty.is_empty() {
+        blockers.push(Blocker::BaseDirty(base_dirty));
     }
 
     // `HEAD..branch` counts what merging would bring in. An unborn or unknown
@@ -274,8 +310,7 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
     // conflict, `merge --abort` cannot promise to reconstruct arbitrary
     // pre-existing changes. Require a clean base, except for ws's exact
     // per-checkout bookkeeping paths.
-    let base_porcelain = crate::git::ok(base, &["status", "--porcelain"])?;
-    let base_dirty = user_dirt(&base_porcelain);
+    let base_dirty = base_dirt(base, branch)?;
     if !base_dirty.is_empty() {
         bail!(
             "{} has uncommitted changes — commit or discard them before merging:\n{}",
