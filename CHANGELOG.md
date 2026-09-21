@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-09-21
+
 ### Added
 
 - **The finished-worktree question is asked at the end of a turn.** Like the
