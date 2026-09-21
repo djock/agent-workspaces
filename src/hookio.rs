@@ -24,6 +24,11 @@ pub struct HookInput {
     /// be re-entered forever.
     #[serde(default)]
     pub stop_hook_active: bool,
+    /// The agent's own transcript. For Codex this is the session rollout, which
+    /// is also where Codex records its rate-limit windows (Codex CLI 0.155.1
+    /// sends it on every hook payload).
+    #[serde(default)]
+    pub transcript_path: String,
 }
 
 #[derive(Debug, Default, Deserialize)]

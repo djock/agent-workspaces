@@ -48,6 +48,15 @@ impl Workspace {
     pub fn limit_guard(&self) -> PathBuf {
         self.local_dir().join("limit-guard")
     }
+    /// The guard marker for one agent's limits. Claude keeps the original
+    /// unsuffixed name; every other agent gets its own, so one agent's handoff
+    /// never silences or triggers another's.
+    pub fn limit_guard_for(&self, agent: &str) -> PathBuf {
+        match agent {
+            "" | "claude" => self.limit_guard(),
+            a => self.local_dir().join(format!("limit-guard.{a}")),
+        }
+    }
     /// Is this an initialised workspace?
     ///
     /// The identity file, not the `.ws/` directory. Those differ: acquiring the

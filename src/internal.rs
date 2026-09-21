@@ -142,10 +142,14 @@ fn user_prompt() {
     let _ = readme::capture_objective(&ws.readme(), &h.prompt);
     // Phase 2: capture only, no context injection → no stdout.
 
-    if ws.limit_guard().exists() {
-        let notice = "Note: the ws rate-limit guard is active (a handoff was already saved). \
-            Continuing spends more of the current budget — that's fine, but it's your call.";
-        println!("{}", hookio::additional_context("UserPromptSubmit", notice));
+    let agent = active_agent(&h);
+    if ws.limit_guard_for(&agent).exists() {
+        let notice = format!(
+            "Note: the ws rate-limit guard is active for {} (a handoff was already saved). \
+             Continuing spends more of the current budget — that's fine, but it's your call.",
+            agent_label(&agent)
+        );
+        println!("{}", hookio::additional_context("UserPromptSubmit", &notice));
     }
 
     // Unread mail rides every prompt until it is read, rather than being
@@ -194,7 +198,7 @@ fn stop() {
     }
 
     // Limit-aware handoff: check before the notebook reminder.
-    if let Some(directive) = limit_check(&ws) {
+    if let Some(directive) = limit_check(&ws, &h) {
         println!("{}", hookio::decision_block(&directive));
         return;
     }
@@ -304,14 +308,72 @@ fn task_check(ws: &Workspace) -> Option<String> {
     ))
 }
 
+/// Which agent this hook is running under.
+///
+/// `$WS_AGENT` when ws launched it. A bare launch in a workspace directory still
+/// fires the hooks (Codex's are registered globally), so without the variable
+/// the transcript path decides: Codex names its rollouts `rollout-*.jsonl`
+/// under `.codex/sessions`. Anything else is Claude, the only other agent ws
+/// registers hooks for.
+fn active_agent(h: &hookio::HookInput) -> String {
+    if let Ok(a) = std::env::var("WS_AGENT") {
+        if !a.is_empty() {
+            return a;
+        }
+    }
+    let t = std::path::Path::new(&h.transcript_path);
+    let is_rollout =
+        t.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("rollout-"));
+    if is_rollout || h.transcript_path.contains("/.codex/") {
+        "codex".into()
+    } else {
+        "claude".into()
+    }
+}
+
+fn agent_label(agent: &str) -> String {
+    let mut c = agent.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => "the agent".into(),
+    }
+}
+
+/// The active agent's own limits, or None when there is no reading for it.
+///
+/// `limits.json` is written by Claude's statusline and only ever describes
+/// Claude. Applying it regardless of the agent is how a Codex turn got blocked
+/// over Claude's weekly window while Codex itself sat at 1%.
+fn active_limits(
+    ws: &Workspace,
+    agent: &str,
+    h: &hookio::HookInput,
+) -> Option<limits::LimitsSnapshot> {
+    match agent {
+        "codex" => {
+            if h.transcript_path.is_empty() {
+                return None;
+            }
+            limits::from_codex_rollout(std::path::Path::new(&h.transcript_path))
+        }
+        _ => {
+            let snap = limits::read(&ws.local_dir().join("limits.json"))?;
+            // An empty agent is a snapshot from before the field was filled.
+            (snap.agent.is_empty() || snap.agent == agent).then_some(snap)
+        }
+    }
+}
+
 /// Returns Some(directive) when the Stop hook should block for a limit handoff.
-/// Also manages the guard marker (write on first cross; clear on reset) and a
-/// best-effort desktop notification. Returns None to fall through to the
-/// notebook reminder (including in "warn" mode).
-fn limit_check(ws: &Workspace) -> Option<String> {
+/// Also manages the active agent's guard marker (write on first cross; clear on
+/// reset) and a best-effort desktop notification. Returns None to fall through
+/// to the notebook reminder (including in "warn" mode).
+fn limit_check(ws: &Workspace, h: &hookio::HookInput) -> Option<String> {
     let cfg = crate::config::load();
-    let snap = limits::read(&ws.local_dir().join("limits.json"))?;
-    let guard = ws.limit_guard();
+    let agent = active_agent(h);
+    let snap = active_limits(ws, &agent, h)?;
+    let guard = ws.limit_guard_for(&agent);
+    let label = agent_label(&agent);
 
     match limits::over_threshold(&snap, cfg.limit_warn_5h, cfg.limit_warn_week) {
         None => {
@@ -325,7 +387,7 @@ fn limit_check(ws: &Workspace) -> Option<String> {
                 let _ = std::fs::create_dir_all(ws.local_dir());
                 let _ = std::fs::write(&guard, crate::now_iso());
                 notify(&format!(
-                    "ws: Claude {window} limit high in {} — work is being saved.",
+                    "ws: {label} {window} limit high in {} — work is being saved.",
                     ws.name
                 ));
             }
@@ -337,7 +399,7 @@ fn limit_check(ws: &Workspace) -> Option<String> {
                 return None;
             }
             Some(format!(
-                "Rate-limit guard: the Claude {window} window is high. Finish only the \
+                "Rate-limit guard: the {label} {window} window is high. Finish only the \
                  current step — start no new work — update your notebook \
                  (.ws/notebook/notebook.<actor>.md), write a handoff to .ws/handoffs/, then \
                  stop and tell the user: work is saved, continue in a fresh window later or \

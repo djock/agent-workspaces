@@ -40,6 +40,66 @@ pub fn over_threshold(snap: &LimitsSnapshot, warn_5h: u8, warn_week: u8) -> Opti
     None
 }
 
+/// How much of a rollout's tail to scan for the latest rate-limit event. Codex
+/// emits one with every `token_count`, so the newest is always near the end; a
+/// long session's rollout runs to megabytes and is read on every Stop.
+const ROLLOUT_TAIL_BYTES: u64 = 512 * 1024;
+
+/// Codex's rate limits, read from its session rollout.
+///
+/// Codex has no statusline for ws to hook, so `limits.json` only ever holds
+/// Claude's numbers — and a Stop hook in Codex that read it blocked Codex over
+/// Claude's weekly window. Codex records its own windows in the rollout as
+/// `event_msg`/`token_count` payloads (verified against Codex CLI 0.155.1):
+/// `rate_limits.primary`/`secondary`, each `{used_percent, window_minutes,
+/// resets_at}`. The windows are placed by `window_minutes` rather than by
+/// primary/secondary, since those names say nothing about which is which.
+pub fn from_codex_rollout(path: &Path) -> Option<LimitsSnapshot> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(ROLLOUT_TAIL_BYTES);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let stamped_at = f
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // Newest first; the first line may be cut mid-way by the seek and simply
+    // fails to parse.
+    text.lines()
+        .rev()
+        .filter(|l| l.contains("\"rate_limits\""))
+        .find_map(|l| codex_windows(l, stamped_at))
+}
+
+fn codex_windows(line: &str, stamped_at: i64) -> Option<LimitsSnapshot> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let rl = v.get("payload")?.get("rate_limits")?;
+    let mut snap = LimitsSnapshot { agent: "codex".into(), stamped_at, ..Default::default() };
+    let mut found = false;
+    for key in ["primary", "secondary"] {
+        let Some(w) = rl.get(key).filter(|w| w.is_object()) else { continue };
+        let window = Window {
+            used_pct: w.get("used_percent")?.as_f64()?,
+            resets_at: w.get("resets_at").and_then(|r| r.as_i64()).unwrap_or(0),
+        };
+        match w.get("window_minutes").and_then(|m| m.as_i64()) {
+            Some(m) if m <= 300 => snap.five_hour = window,
+            Some(_) => snap.seven_day = window,
+            None => continue,
+        }
+        found = true;
+    }
+    found.then_some(snap)
+}
+
 pub fn countdown(resets_at: i64, now: i64) -> String {
     if resets_at <= 0 || resets_at <= now {
         return "0m".to_string();
@@ -188,6 +248,40 @@ mod tests {
         let s2 = snap(40.0, 50.0);
         assert_eq!(age_secs(&s2, 400_000), None, "future stamp has no meaningful age");
         assert!(is_stale(&s2, 400_000));
+    }
+
+    /// The shape Codex CLI 0.155.1 writes, trimmed. Windows are placed by
+    /// `window_minutes`, and the newest event wins over older ones.
+    #[test]
+    fn codex_rollout_yields_the_newest_windows() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("rollout.jsonl");
+        let ev = |five: f64, week: f64| {
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"token_count","rate_limits":{{"limit_id":"codex","primary":{{"used_percent":{five},"window_minutes":300,"resets_at":111}},"secondary":{{"used_percent":{week},"window_minutes":10080,"resets_at":222}}}}}}}}"#
+            )
+        };
+        let body = format!(
+            "{}\n{{\"type\":\"response_item\"}}\n{}\n{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"rate_limits\":null}}}}\n",
+            ev(90.0, 95.0),
+            ev(8.0, 1.0)
+        );
+        std::fs::write(&p, body).unwrap();
+        let s = from_codex_rollout(&p).unwrap();
+        assert_eq!(s.agent, "codex");
+        assert_eq!(s.five_hour.used_pct, 8.0);
+        assert_eq!(s.five_hour.resets_at, 111);
+        assert_eq!(s.seven_day.used_pct, 1.0);
+        assert_eq!(s.seven_day.resets_at, 222);
+    }
+
+    #[test]
+    fn codex_rollout_without_limits_is_none() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("rollout.jsonl");
+        std::fs::write(&p, "{\"type\":\"session_meta\"}\n").unwrap();
+        assert!(from_codex_rollout(&p).is_none());
+        assert!(from_codex_rollout(&d.path().join("missing.jsonl")).is_none());
     }
 
     #[test]

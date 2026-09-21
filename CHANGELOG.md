@@ -31,6 +31,15 @@ The project follows [Semantic Versioning](https://semver.org/).
   base, one `rev-list` in a worktree) instead of computing every sibling's
   readiness each turn.
 
+### Fixed
+
+- **The rate-limit guard watches the agent that is running.** It used to read
+  Claude's statusline snapshot in every agent, so a Codex turn was told to stop
+  because "the Claude week window is high" while Codex's own usage was low. Codex's
+  windows are now read from its session rollout (the hook payload's
+  `transcript_path`), each agent has its own guard marker, and the directive,
+  notification and follow-up notice name the agent.
+
 ## [0.11.0] — 2026-09-20
 
 ### Added

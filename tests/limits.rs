@@ -174,3 +174,103 @@ fn user_prompt_notes_active_limit_guard() {
         .stdout(predicates::str::contains("limit guard"))
         .stdout(predicates::str::contains("hookSpecificOutput"));
 }
+
+/// A Codex rollout line carrying the given 5h and weekly usage, in the shape
+/// Codex CLI 0.155.1 writes.
+fn codex_rollout(dir: &std::path::Path, five: f64, week: f64) -> std::path::PathBuf {
+    let p = dir.join("rollout-2026-09-21T16-33-05-sess.jsonl");
+    std::fs::write(
+        &p,
+        format!(
+            r#"{{"type":"event_msg","payload":{{"type":"token_count","rate_limits":{{"limit_id":"codex","primary":{{"used_percent":{five},"window_minutes":300,"resets_at":9999999999}},"secondary":{{"used_percent":{week},"window_minutes":10080,"resets_at":9999999999}}}}}}}}"#
+        ) + "\n",
+    )
+    .unwrap();
+    p
+}
+
+/// The reported bug: Claude's weekly window sat at 97%, and a Stop in Codex
+/// (Codex itself at 1%) was told "the Claude week window is high" and to stop.
+#[test]
+fn codex_stop_ignores_claudes_limits() {
+    let env = Env::new();
+    let proj = env.home.path().join("cx");
+    std::fs::create_dir_all(&proj).unwrap();
+    env.cmd().current_dir(&proj).args(["-adopt", "cx"]).assert().success();
+
+    let claude_high = r#"{"rate_limits":{"five_hour":{"used_percentage":6.0,"resets_at":9999999999},"seven_day":{"used_percentage":97.0,"resets_at":9999999999}}}"#;
+    env.cmd()
+        .env("WS_WORKSPACE", "cx")
+        .env("WS_DIR", &proj)
+        .arg("statusline")
+        .write_stdin(claude_high)
+        .assert()
+        .success();
+    let rollout = codex_rollout(env.home.path(), 8.0, 1.0);
+    let payload = serde_json::json!({ "transcript_path": rollout }).to_string();
+
+    env.cmd()
+        .env("WS_WORKSPACE", "cx")
+        .env("WS_DIR", &proj)
+        .env("WS_AGENT", "codex")
+        .args(["internal", "stop"])
+        .write_stdin(payload.clone())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Rate-limit guard").not());
+    assert!(!proj.join(".ws/local/limit-guard.codex").exists());
+    assert!(!proj.join(".ws/local/limit-guard").exists());
+
+    // No WS_AGENT (a bare `codex` in the workspace): the rollout path says Codex.
+    env.cmd()
+        .env("WS_WORKSPACE", "cx")
+        .env("WS_DIR", &proj)
+        .args(["internal", "stop"])
+        .write_stdin(payload)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Rate-limit guard").not());
+}
+
+#[test]
+fn codex_stop_blocks_on_codexs_own_limits() {
+    let env = Env::new();
+    let proj = env.home.path().join("cx2");
+    std::fs::create_dir_all(&proj).unwrap();
+    env.cmd().current_dir(&proj).args(["-adopt", "cx2"]).assert().success();
+
+    let rollout = codex_rollout(env.home.path(), 10.0, 96.0);
+    let payload = serde_json::json!({ "transcript_path": rollout }).to_string();
+    env.cmd()
+        .env("WS_WORKSPACE", "cx2")
+        .env("WS_DIR", &proj)
+        .env("WS_AGENT", "codex")
+        .args(["internal", "stop"])
+        .write_stdin(payload)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"decision\":\"block\""))
+        .stdout(predicates::str::contains("the Codex week window is high"));
+    assert!(proj.join(".ws/local/limit-guard.codex").exists());
+    assert!(!proj.join(".ws/local/limit-guard").exists(), "Claude's guard is untouched");
+
+    // The follow-up notice names Codex, and a Claude prompt sees no guard.
+    env.cmd()
+        .env("WS_WORKSPACE", "cx2")
+        .env("WS_DIR", &proj)
+        .env("WS_AGENT", "codex")
+        .args(["internal", "user-prompt"])
+        .write_stdin(r#"{"prompt":"keep going"}"#)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("guard is active for Codex"));
+    env.cmd()
+        .env("WS_WORKSPACE", "cx2")
+        .env("WS_DIR", &proj)
+        .env("WS_AGENT", "claude")
+        .args(["internal", "user-prompt"])
+        .write_stdin(r#"{"prompt":"keep going"}"#)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("limit guard").not());
+}
