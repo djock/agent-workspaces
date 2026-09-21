@@ -7,18 +7,25 @@ BUILD_FROM_SOURCE=0
 RUN_SETUP=1
 REQUESTED_VERSION=""
 ALLOW_UNSIGNED=0
+# Set by `ws -update`, which prints its own progress: keep to warnings and
+# errors. An environment variable rather than a flag, so an installer that
+# predates it ignores it instead of refusing an unknown option.
+QUIET="${WS_INSTALL_QUIET:-0}"
+
+# gh appends "A new release of gh is available" to whatever it runs. That is
+# gh's news, not ours, and in the middle of an install it reads like a problem.
+export GH_NO_UPDATE_NOTIFIER=1
 
 # The minisign public key releases are signed with.
 #
-# Empty means "no signing key has been published yet". Verification is then
-# impossible rather than merely skipped, and the install SAYS SO on every run —
-# see the authenticity block below. Silence was the old behaviour and it was the
-# wrong one: a gate that cannot check must not read like a gate that passed.
-# Fill this in and CI will start signing; see docs/releasing.md. Because this
-# key lives in the repository, trust is established when you obtain the
-# repository and is strong from then on: a compromised release host can replace
+# Releases are signed with the matching secret key (the MINISIGN_SECRET_KEY
+# Actions secret); see docs/releasing.md. `WS_MINISIGN_PUBKEY` overrides it, and
+# an explicitly *empty* override means "no key" — the tests use that to reach the
+# unverifiable path, which then SAYS SO on every run rather than reading like a
+# gate that passed. Because this key lives in the repository, trust is
+# established when you obtain the repository and is strong from then on: a compromised release host can replace
 # the assets but cannot produce a signature that matches this key.
-MINISIGN_PUBKEY="${WS_MINISIGN_PUBKEY:-}"
+MINISIGN_PUBKEY="${WS_MINISIGN_PUBKEY-RWRRVgoYi1K98UjElv5KinneRvR3GacpBkVfML4iKQFNg7/RjvRBAhHH}"
 
 usage() {
     cat <<'EOF'
@@ -169,8 +176,12 @@ else
                     exit 1
                 fi
             else
-                echo "install.sh: WARNING: release authenticity was NOT checked — no signing key is published for $REPOSITORY yet." >&2
-                echo "The checksum verified below proves the download arrived intact, not that it came from the ws authors." >&2
+                if [ "$QUIET" = 1 ]; then
+                    echo "  ! release authenticity was NOT checked — no signing key is published for $REPOSITORY yet; the checksum proves the download is intact, not who made it." >&2
+                else
+                    echo "install.sh: WARNING: release authenticity was NOT checked — no signing key is published for $REPOSITORY yet." >&2
+                    echo "The checksum verified below proves the download arrived intact, not that it came from the ws authors." >&2
+                fi
             fi
         else
             if [ ! -f SHA256SUMS.minisig ]; then
@@ -182,12 +193,16 @@ else
                     exit 1
                 fi
             elif command -v minisign >/dev/null 2>&1; then
-                minisign -V -P "$MINISIGN_PUBKEY" -m SHA256SUMS -x SHA256SUMS.minisig || {
+                minisign -V -P "$MINISIGN_PUBKEY" -m SHA256SUMS -x SHA256SUMS.minisig >/dev/null || {
                     echo "install.sh: SIGNATURE VERIFICATION FAILED for $TAG." >&2
                     echo "Do not install this. Report it: the assets do not match the release key." >&2
                     exit 1
                 }
-                echo "install.sh: signature verified."
+                if [ "$QUIET" = 1 ]; then
+                    echo "  ✓ signature verified"
+                else
+                    echo "install.sh: signature verified."
+                fi
             elif [ "$ALLOW_UNSIGNED" -eq 1 ]; then
                 echo "install.sh: WARNING: minisign is not installed, signature NOT checked (--allow-unsigned)." >&2
             else
@@ -201,23 +216,31 @@ else
         # 2. Integrity. `sha256sum` on Linux, `shasum` on macOS — hardcoding
         #    `shasum` broke the Linux path this installer now supports. Absent
         #    both, refuse rather than install an unverified binary.
+        #    Quiet mode drops the "<asset>: OK" line but still shows a mismatch.
         if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum --ignore-missing -c SHA256SUMS
+            CHECKED="$(sha256sum --ignore-missing -c SHA256SUMS 2>&1)" || {
+                echo "$CHECKED" >&2
+                exit 1
+            }
         elif command -v shasum >/dev/null 2>&1; then
             # BSD shasum has no --ignore-missing; check just our asset's line.
             grep " $ASSET\$" SHA256SUMS > SHA256SUMS.ours
-            shasum -a 256 -c SHA256SUMS.ours
+            CHECKED="$(shasum -a 256 -c SHA256SUMS.ours 2>&1)" || {
+                echo "$CHECKED" >&2
+                exit 1
+            }
         else
             echo "install.sh: neither sha256sum nor shasum found; cannot verify the download." >&2
             exit 1
         fi
+        [ "$QUIET" = 1 ] || echo "$CHECKED"
 
         tar -xzf "$ASSET"
     )
     install -m 0755 "$TEMP_DIR/ws" "$DESTINATION"
 fi
 
-echo "Installed $("$DESTINATION" --version) at $DESTINATION"
+[ "$QUIET" = 1 ] || echo "Installed $("$DESTINATION" --version) at $DESTINATION"
 
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;

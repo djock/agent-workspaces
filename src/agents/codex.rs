@@ -109,8 +109,8 @@ impl Agent for CodexAgent {
 
     fn hook_trust_note(&self) -> Option<&'static str> {
         Some(
-            "Run `/hooks` in Codex to trust the ws hooks. Until you do, ws cannot record \
-             Codex session ids, so every launch starts a fresh session instead of resuming.",
+            "run `/hooks` in Codex once to trust the ws hooks — until then ws cannot \
+             record session ids, so every launch starts fresh instead of resuming.",
         )
     }
 

@@ -39,7 +39,7 @@ fn statusline_false_stops_setup_registering_a_status_line() {
         .arg("setup")
         .assert()
         .success()
-        .stdout(predicates::str::contains("skipped status line registration"));
+        .stdout(predicates::str::contains("status line skipped (config statusline = false)"));
 
     let settings = env.home.path().join(".claude/settings.json");
     let body = std::fs::read_to_string(&settings).unwrap_or_default();

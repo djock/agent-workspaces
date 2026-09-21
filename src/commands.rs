@@ -182,6 +182,11 @@ fn workspace_root(name: &str) -> Result<std::path::PathBuf> {
 
 pub fn setup() -> Result<()> {
     let ws_bin = std::env::current_exe()?;
+    // Configure each installed agent's status bar with the same core fields —
+    // unless the user turned it off. `statusline` used to be settable and read
+    // nowhere, so `ws config set statusline false` reported success and the next
+    // `ws setup` claimed the status bar anyway.
+    let statusline = config::load().statusline;
     for id in ["claude", "codex"] {
         let agent = crate::agents::for_id(id)?;
         if !agent.is_installed() {
@@ -193,31 +198,19 @@ pub fn setup() -> Result<()> {
             agent.as_ref(),
         )?;
         let np = crate::prompts::install_for(&agent.prompts_dir(), |b| agent.prompt_filename(b))?;
-        println!(
-            "ws setup [{}]: installed {nh} hook(s) → {}\n            installed {np} prompt(s) → {}",
-            agent.id(),
-            agent.hooks_config_path().display(),
-            agent.prompts_dir().display(),
-        );
+        let status = if !statusline {
+            "status line skipped (config statusline = false)"
+        } else if id == "claude" {
+            crate::hooksetup::register_statuslines(&ws_bin)?;
+            "status line"
+        } else {
+            crate::hooksetup::register_codex_statusline()?;
+            "status line"
+        };
+        println!("  ✓ {:<8}{nh} hooks, {np} prompts, {status}", agent.id());
         if let Some(note) = agent.hook_trust_note() {
-            println!("  note: {note}");
+            println!("    ! {note}");
         }
-    }
-    // Configure each installed agent's status bar with the same core fields —
-    // unless the user turned it off. `statusline` used to be settable and read
-    // nowhere, so `ws config set statusline false` reported success and the next
-    // `ws setup` claimed the status bar anyway.
-    if !config::load().statusline {
-        println!("skipped status line registration (config statusline = false)");
-        return Ok(());
-    }
-    if crate::agents::for_id("claude")?.is_installed() {
-        crate::hooksetup::register_statuslines(&ws_bin)?;
-        println!("registered Claude statusline + subagent-statusline");
-    }
-    if crate::agents::for_id("codex")?.is_installed() {
-        crate::hooksetup::register_codex_statusline()?;
-        println!("registered Codex statusline");
     }
     Ok(())
 }

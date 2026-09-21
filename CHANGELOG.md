@@ -6,6 +6,26 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-09-21
+
+### Changed
+
+- **`ws -update` reads like a progress report.** One line per step (install,
+  then each agent's hooks, prompts and status line), ending with the headlines
+  of what you just installed. gh's own "a new release of gh is available" notice
+  no longer leaks into the output, the checksum `OK` line is gone, and the
+  unsigned-release warning is one line. `ws setup` prints one line per agent
+  instead of misaligned two-line blocks.
+
+### Security
+
+- **Releases are signed.** `install.sh` now carries the release public key
+  (minisign `RWRRVgoYi1K98UjElv5KinneRvR3GacpBkVfML4iKQFNg7/RjvRBAhHH`) and
+  verifies `SHA256SUMS.minisig` before the checksum. It fails closed: a missing
+  or foreign signature stops the install. Installing or updating now needs
+  `minisign` (`brew install minisign` / `apt-get install minisign`), or
+  `--allow-unsigned` to skip the check.
+
 ## [0.12.0] — 2026-09-21
 
 ### Added

@@ -397,7 +397,7 @@ const INFO_RECENT_LINES: usize = 4;
 
 /// `~/x` rather than `/Users/someone/x`. Cosmetic, but the home prefix is the
 /// least informative part of every path on the page.
-fn home_relative(p: &Path) -> String {
+pub(crate) fn home_relative(p: &Path) -> String {
     let s = p.display().to_string();
     match dirs::home_dir().map(|h| h.display().to_string()) {
         Some(home) if !home.is_empty() => match s.strip_prefix(&home) {

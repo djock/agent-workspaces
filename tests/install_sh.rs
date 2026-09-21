@@ -115,7 +115,9 @@ fn stub_gh(bin_dir: &Path, release: &Path) {
             r#"#!/bin/sh
 # Stub gh. `release view` names the tag; `release download` copies whatever the
 # fixture has into --dir, ignoring --pattern (install.sh checks for itself that
-# what it needs arrived, which is the behaviour under test).
+# what it needs arrived, which is the behaviour under test). Like the real gh,
+# it nags about its own upgrades unless GH_NO_UPDATE_NOTIFIER is set.
+[ -n "${{GH_NO_UPDATE_NOTIFIER:-}}" ] || echo "A new release of gh is available: 2.0.0 → 2.1.0" >&2
 case "$1 $2" in
   "auth status") exit 0 ;;
   "release view") echo "v{VERSION}"; exit 0 ;;
@@ -154,6 +156,15 @@ impl Run {
 
 /// Run the real `install.sh` against `release`, with `gh` stubbed.
 fn install(release: &Release, pubkey: Option<&str>, extra: &[&str]) -> Run {
+    install_env(release, pubkey, extra, &[])
+}
+
+fn install_env(
+    release: &Release,
+    pubkey: Option<&str>,
+    extra: &[&str],
+    envs: &[(&str, &str)],
+) -> Run {
     let home = tempfile::TempDir::new().unwrap();
     let stub = home.path().join("stub");
     stub_gh(&stub, release.path());
@@ -171,7 +182,9 @@ fn install(release: &Release, pubkey: Option<&str>, extra: &[&str]) -> Run {
         .env("PATH", format!("{}:{}", stub.display(), std::env::var("PATH").unwrap()))
         .env("HOME", home.path())
         .env("WS_REPOSITORY", "example/ws")
-        .env("WS_MINISIGN_PUBKEY", pubkey.unwrap_or(""));
+        .env("WS_MINISIGN_PUBKEY", pubkey.unwrap_or(""))
+        .env_remove("GH_NO_UPDATE_NOTIFIER")
+        .envs(envs.iter().copied());
 
     let output = cmd.output().unwrap();
     Run { output, destination: install_dir.join("ws"), _home: home }
@@ -230,4 +243,109 @@ fn a_configured_key_refuses_an_unsigned_release() {
 fn a_tampered_asset_never_reaches_the_install_directory() {
     let run = install(&Release::new().tampered(), None, &[]);
     assert!(!run.installed(), "a corrupt asset was installed: {}", run.stderr());
+}
+
+/// gh's "a new release of gh is available" is not ours to print; mid-install it
+/// read like a failure.
+#[test]
+fn the_gh_upgrade_notice_is_kept_out_of_the_install() {
+    let run = install(&Release::new(), None, &[]);
+    assert!(run.installed(), "{}", run.stderr());
+    assert!(!run.stderr().contains("new release of gh"), "gh nagged: {}", run.stderr());
+}
+
+/// `ws -update` narrates the install itself, so the installer it runs keeps to
+/// warnings — but the unsigned-release warning is one of them and must survive.
+#[test]
+fn quiet_mode_prints_only_warnings() {
+    let run = install_env(&Release::new(), None, &[], &[("WS_INSTALL_QUIET", "1")]);
+    let out = String::from_utf8_lossy(&run.output.stdout).to_string();
+    let err = run.stderr();
+    assert!(run.installed(), "{err}");
+    // The PATH hint may still appear (it is advice, not progress); the checksum
+    // line and the "Installed" line are what `ws -update` replaces.
+    assert!(!out.contains(": OK"), "quiet mode printed the checksum line: {out}");
+    assert!(!out.contains("Installed"), "quiet mode printed the install line: {out}");
+    assert!(err.contains("authenticity was NOT checked"), "the warning must survive: {err}");
+    assert_eq!(err.trim().lines().count(), 1, "one warning line, not a paragraph: {err}");
+}
+
+/// Quiet must not swallow a checksum mismatch: that is an error, not progress.
+#[test]
+fn quiet_mode_still_reports_a_tampered_asset() {
+    let run = install_env(&Release::new().tampered(), None, &[], &[("WS_INSTALL_QUIET", "1")]);
+    assert!(!run.installed(), "a corrupt asset was installed: {}", run.stderr());
+    assert!(run.stderr().contains(&asset_name()), "the mismatch must be named: {}", run.stderr());
+}
+
+/// A throwaway minisign keypair, returning the public key's base64 line.
+/// `None` when minisign is not installed, so the caller can skip.
+fn keypair(dir: &Path) -> Option<String> {
+    if !which("minisign") {
+        eprintln!("skipping: minisign is not installed");
+        return None;
+    }
+    let (p, s) = (dir.join("k.pub"), dir.join("k.key"));
+    let ok = Command::new("minisign")
+        .args(["-G", "-W", "-p"])
+        .arg(&p)
+        .arg("-s")
+        .arg(&s)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    Some(std::fs::read_to_string(&p).unwrap().lines().nth(1).unwrap().to_string())
+}
+
+fn sign(release: &Release, keys: &Path) {
+    let ok = Command::new("minisign")
+        .arg("-S")
+        .arg("-s")
+        .arg(keys.join("k.key"))
+        .arg("-m")
+        .arg(release.path().join("SHA256SUMS"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+}
+
+/// The path every release takes once a key is published: signed, verified,
+/// installed — and in quiet mode, with no warning at all.
+#[test]
+fn a_correctly_signed_release_installs_without_a_warning() {
+    let keys = tempfile::TempDir::new().unwrap();
+    let Some(pubkey) = keypair(keys.path()) else { return };
+    let release = Release::new();
+    sign(&release, keys.path());
+    let run = install_env(&release, Some(&pubkey), &[], &[("WS_INSTALL_QUIET", "1")]);
+    let out = String::from_utf8_lossy(&run.output.stdout).to_string();
+    assert!(run.installed(), "{}", run.stderr());
+    assert!(out.contains("signature verified"), "{out}");
+    assert!(!run.stderr().contains("NOT checked"), "{}", run.stderr());
+}
+
+/// What a compromised release host can produce: a valid signature, from the
+/// wrong key.
+#[test]
+fn a_signature_from_another_key_is_refused() {
+    let (ours, theirs) = (tempfile::TempDir::new().unwrap(), tempfile::TempDir::new().unwrap());
+    let Some(pubkey) = keypair(ours.path()) else { return };
+    keypair(theirs.path()).unwrap();
+    let release = Release::new();
+    sign(&release, theirs.path());
+    let run = install(&release, Some(&pubkey), &[]);
+    assert!(!run.installed(), "a foreign signature was accepted: {}", run.stderr());
+    assert!(run.stderr().contains("SIGNATURE VERIFICATION FAILED"), "{}", run.stderr());
+}
+
+/// The published key must stay baked in. Blanking it would not fail anything
+/// else: installs would quietly drop back to "authenticity NOT checked".
+#[test]
+fn install_sh_ships_the_release_public_key() {
+    let script =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh")).unwrap();
+    let line = script.lines().find(|l| l.starts_with("MINISIGN_PUBKEY=")).unwrap();
+    assert!(line.contains("${WS_MINISIGN_PUBKEY-RW"), "no default public key: {line}");
 }

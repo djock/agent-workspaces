@@ -67,6 +67,8 @@ pub fn run(check: bool, force: bool) -> Result<()> {
     let temp = TempDir::new()?;
     let installer = temp.path().join("install.sh");
 
+    println!("Updating ws {current} → {latest_version}");
+
     run_gh(
         &repository,
         &[
@@ -93,11 +95,15 @@ pub fn run(check: bool, force: bool) -> Result<()> {
         .arg(install_dir)
         .arg("--no-setup")
         .env("WS_REPOSITORY", &repository)
+        // This command narrates the update; the installer keeps to warnings.
+        .env("WS_INSTALL_QUIET", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
         .status()
         .context("failed to run the release installer")?;
     if !status.success() {
         bail!("release installer exited with {status}");
     }
+    println!("  ✓ installed {} (checksum OK)", crate::picker::home_relative(&current_exe));
 
     let status = Command::new(&current_exe)
         .arg("setup")
@@ -108,6 +114,13 @@ pub fn run(check: bool, force: bool) -> Result<()> {
     }
 
     println!("Updated ws {current} → {latest_version}");
+    for (version, summary) in notes(latest_version, current) {
+        if version == MORE {
+            println!("  {summary}");
+        } else {
+            println!("  {version}  {summary}");
+        }
+    }
     Ok(())
 }
 
@@ -447,8 +460,11 @@ fn latest_tag(repository: &str) -> Result<String> {
 
 fn run_gh(_repository: &str, args: &[&str]) -> Result<String> {
     let gh = std::env::var("WS_GH_BIN").unwrap_or_else(|_| "gh".to_string());
-    let output =
-        Command::new(&gh).args(args).output().with_context(|| format!("failed to run `{gh}`"))?;
+    let output = Command::new(&gh)
+        .args(args)
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .output()
+        .with_context(|| format!("failed to run `{gh}`"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("`gh {}` failed: {}", args.join(" "), stderr.trim());

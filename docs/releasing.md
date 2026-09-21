@@ -32,7 +32,7 @@ set it as the default in `install.sh`:
 
 ```sh
 # in install.sh
-MINISIGN_PUBKEY="${WS_MINISIGN_PUBKEY:-RWQf6...}"
+MINISIGN_PUBKEY="${WS_MINISIGN_PUBKEY-RWQf6...}"   # `-`, not `:-`: an empty override means "no key"
 ```
 
 Commit that. The public key living in the repository is the point: trust is

@@ -17,7 +17,8 @@ jobs:
   # turns that from a claim into a fact, and it is the prerequisite for shipping
   # a Linux binary at all.
   #
-  # `tmux` is installed because `spawn::tmux_available` gates on it.
+  # `tmux` is installed because `spawn::tmux_available` gates on it; `minisign`
+  # so the installer's signature tests run instead of skipping.
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -33,9 +34,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}
-      - name: Install tmux (Linux)
+      - name: Install tmux and minisign (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux minisign
+      # tests/install_sh.rs signs a fixture release with a real key; without
+      # minisign those tests skip, and the signature gate goes unexercised.
+      - name: Install minisign (macOS)
+        if: runner.os == 'macOS'
+        run: brew install minisign
       # The style is pinned in rustfmt.toml to what this codebase already
       # writes (max_width 100 — the 99th-percentile line was 99 columns —
       # with the small-function heuristics off). Default rustfmt disagreed
