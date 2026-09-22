@@ -55,7 +55,8 @@ fn setup_installs_codex_hooks_and_prompts_when_codex_present() {
     // namespaced codex prompt installed
     assert!(env.home.path().join(".codex/prompts/ws-summary.md").is_file());
 
-    // Codex's native footer uses the same compact information as Claude's.
+    // Codex's native footer carries the closest available native counterpart to
+    // Claude's ws status line: identity, work, model, and both usage windows.
     let config = std::fs::read_to_string(env.home.path().join(".codex/config.toml")).unwrap();
     let parsed: toml::Value = toml::from_str(&config).unwrap();
     let items = parsed["tui"]["status_line"].as_array().unwrap();
@@ -63,8 +64,10 @@ fn setup_installs_codex_hooks_and_prompts_when_codex_present() {
     assert_eq!(
         items,
         vec![
-            "model-with-reasoning",
+            "project-name",
             "git-branch",
+            "model-with-reasoning",
+            "task-progress",
             "context-used",
             "five-hour-limit",
             "weekly-limit",
