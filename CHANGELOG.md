@@ -6,6 +6,17 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-09-22
+
+### Changed
+
+- The Codex footer now identifies the project and shows live task progress,
+  alongside the model, branch, context, and usage limits.
+- Crash-recovery notices now make clear that answering `y` resumes the previous
+  conversation only; snapshots are never restored automatically.
+- The resume prompt accepts `y` as a single keystroke; Enter is no longer
+  required.
+
 ## [0.13.0] — 2026-09-21
 
 ### Changed
@@ -973,7 +984,8 @@ Secret Service — so neither produced artifacts.
 - Provide an interactive terminal dashboard.
 - Add installation, update, uninstall, diagnostics, CI, and release packaging.
 
-[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/djock/agent-workspaces/compare/v0.13.0...v0.13.1
 [0.8.0]: https://github.com/djock/agent-workspaces/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/djock/agent-workspaces/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/djock/agent-workspaces/compare/v0.6.4...v0.6.5

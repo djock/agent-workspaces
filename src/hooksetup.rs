@@ -4,8 +4,15 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use toml_edit::{Array, DocumentMut, Item, Table};
 
-pub const CODEX_STATUS_LINE: &[&str] =
-    &["model-with-reasoning", "git-branch", "context-used", "five-hour-limit", "weekly-limit"];
+pub const CODEX_STATUS_LINE: &[&str] = &[
+    "project-name",
+    "git-branch",
+    "model-with-reasoning",
+    "task-progress",
+    "context-used",
+    "five-hour-limit",
+    "weekly-limit",
+];
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct CodexStatuslineBackup {
@@ -1092,6 +1099,22 @@ mod tests {
         let backup: CodexStatuslineBackup = toml::from_str(&backup).unwrap();
         assert_eq!(backup.status_line, Some(vec!["model".into(), "current-dir".into()]));
         assert_eq!(backup.status_line_use_colors, Some(false));
+    }
+
+    #[test]
+    fn codex_statusline_includes_identity_progress_and_usage() {
+        assert_eq!(
+            CODEX_STATUS_LINE,
+            [
+                "project-name",
+                "git-branch",
+                "model-with-reasoning",
+                "task-progress",
+                "context-used",
+                "five-hour-limit",
+                "weekly-limit",
+            ]
+        );
     }
 
     #[test]

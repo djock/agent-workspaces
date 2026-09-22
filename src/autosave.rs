@@ -331,7 +331,10 @@ pub fn recovery_notice(root: &Path, conversation: Option<&str>) -> Option<String
             }
         }
     }
-    out.push_str("  discard:  git update-ref -d <ref>\n");
+    out.push_str(
+        "  discard:  git update-ref -d <ref>\n\
+         \n  Choosing `y` below resumes the previous conversation; it never restores this snapshot.\n",
+    );
     Some(out)
 }
 

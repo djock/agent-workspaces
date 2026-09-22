@@ -587,7 +587,7 @@ fn should_ask_new(has_prior: bool, fresh: bool, enabled: bool, tty: bool) -> boo
 }
 
 /// Ask whether to resume the previous conversation. Defaults to No — pressing
-/// Enter starts a fresh one, and only `y` resumes.
+/// Enter starts a fresh one, and pressing `y` resumes immediately.
 ///
 /// Asked in the positive ("resume?") rather than as "start a new conversation?",
 /// because the prompt should name the thing being *kept*: the previous
@@ -598,20 +598,51 @@ fn ask_resume(name: &str) -> bool {
     use std::io::Write;
     eprint!("Resume previous conversation in {name}? [y/N] ");
     let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    // A read that fails (closed stdin, EOF) is not a yes; it takes the default
-    // the prompt just advertised rather than quietly doing the other thing.
-    if std::io::stdin().read_line(&mut line).is_err() {
-        return false;
+    let answer = read_resume_key();
+    // Raw mode intentionally suppresses terminal echo. Print the accepted
+    // keystroke (and always finish the prompt's line) before handing the
+    // terminal to the agent.
+    if key_resumes(answer) {
+        eprintln!("y");
+        true
+    } else {
+        eprintln!();
+        false
     }
-    answer_resumes(&line)
 }
 
-/// Does this answer mean "resume"? Split out so the mapping is testable without
-/// a terminal — it is the one place the launch decides between continuing a
-/// conversation and starting over.
-fn answer_resumes(line: &str) -> bool {
-    matches!(line.trim(), "y" | "Y" | "yes" | "Yes")
+/// Read one key without requiring Enter. Errors deliberately choose the
+/// prompt's safe default (`None`): a failed terminal read must not resume a
+/// conversation the person did not select. Raw mode is restored on every path.
+fn read_resume_key() -> Option<char> {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+    if crossterm::terminal::enable_raw_mode().is_err() {
+        return None;
+    }
+    let answer = loop {
+        match crossterm::event::read() {
+            Ok(Event::Key(KeyEvent {
+                code: KeyCode::Char(c),
+                kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                ..
+            })) => break Some(c),
+            Ok(Event::Key(KeyEvent {
+                code: KeyCode::Enter | KeyCode::Esc,
+                kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                ..
+            })) => break None,
+            Ok(_) => continue,
+            Err(_) => break None,
+        }
+    };
+    let _ = crossterm::terminal::disable_raw_mode();
+    answer
+}
+
+/// Does one key mean "resume"? Kept pure so the decision is testable without a
+/// terminal; terminal reading belongs in `read_resume_key`.
+fn key_resumes(key: Option<char>) -> bool {
+    matches!(key, Some('y' | 'Y'))
 }
 
 pub fn archive(names: Vec<String>, archived: bool) -> Result<()> {
@@ -1658,17 +1689,17 @@ pub fn whoami() -> Result<()> {
 
 #[cfg(test)]
 mod resume_prompt_tests {
-    use super::{answer_resumes, should_ask_new};
+    use super::{key_resumes, should_ask_new};
 
-    /// The prompt reads `[y/N]`, so only an explicit yes resumes: Enter, an
-    /// unrecognised key and a stray blank line all start a fresh conversation.
+    /// The prompt reads `[y/N]`, so one `y` resumes immediately. Every other
+    /// key, including Enter's `None`, starts a fresh conversation.
     #[test]
-    fn only_an_explicit_yes_resumes() {
-        for yes in ["y\n", "Y\n", "yes\n", " y \n"] {
-            assert!(answer_resumes(yes), "{yes:?} should resume");
+    fn only_y_resumes() {
+        for yes in [Some('y'), Some('Y')] {
+            assert!(key_resumes(yes), "{yes:?} should resume");
         }
-        for no in ["\n", "n\n", "N\n", "no\n", "q\n", ""] {
-            assert!(!answer_resumes(no), "{no:?} should start fresh");
+        for no in [None, Some('n'), Some('N'), Some('q'), Some('\n')] {
+            assert!(!key_resumes(no), "{no:?} should start fresh");
         }
     }
 

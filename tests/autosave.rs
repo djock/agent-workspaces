@@ -132,7 +132,8 @@ fn a_launch_after_a_crash_reports_the_snapshot_and_how_to_restore_it() {
         .success()
         .stdout(predicate::str::contains("ended without closing cleanly"))
         .stdout(predicate::str::contains("refs/ws/session/conv-crashed"))
-        .stdout(predicate::str::contains("git checkout"));
+        .stdout(predicate::str::contains("git checkout"))
+        .stdout(predicate::str::contains("resumes the previous conversation; it never restores"));
 }
 
 /// A snapshot whose owner is still running belongs to a live session — a second
