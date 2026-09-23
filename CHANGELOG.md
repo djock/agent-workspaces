@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.2] — 2026-09-23
+
+### Changed
+
+- `ws -update` lists what the new releases bring before it installs them, with
+  the install progress underneath, instead of leaving the changelog for last.
+- `ws -update` shows what it installs as a card under the same `▌` bar as the
+  launch notice, with green ticks for each install step. Plain when piped or with
+  `NO_COLOR`.
+
 ## [0.13.1] — 2026-09-22
 
 ### Changed
@@ -984,7 +994,8 @@ Secret Service — so neither produced artifacts.
 - Provide an interactive terminal dashboard.
 - Add installation, update, uninstall, diagnostics, CI, and release packaging.
 
-[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.13.2...HEAD
+[0.13.2]: https://github.com/djock/agent-workspaces/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/djock/agent-workspaces/compare/v0.13.0...v0.13.1
 [0.8.0]: https://github.com/djock/agent-workspaces/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/djock/agent-workspaces/compare/v0.6.5...v0.7.0

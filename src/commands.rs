@@ -207,9 +207,11 @@ pub fn setup() -> Result<()> {
             crate::hooksetup::register_codex_statusline()?;
             "status line"
         };
-        println!("  ✓ {:<8}{nh} hooks, {np} prompts, {status}", agent.id());
+        let crate::update::Paint { green: g, yellow: y, dim: d, off: o, .. } =
+            crate::update::Paint::stdout();
+        println!("  {g}✓{o} {:<8}{nh} hooks, {np} prompts, {d}{status}{o}", agent.id());
         if let Some(note) = agent.hook_trust_note() {
-            println!("    ! {note}");
+            println!("    {y}!{o} {note}");
         }
     }
     Ok(())
