@@ -87,6 +87,29 @@ impl Agent for ClaudeAgent {
         format!("{base}.md")
     }
 
+    fn dispatch(
+        &self,
+        scratch: &std::path::Path,
+        dirs: &[std::path::PathBuf],
+        prompt: &str,
+        mode: Option<crate::agents::LaunchMode>,
+    ) -> anyhow::Result<Command> {
+        let mut cmd = Command::new(self.binary());
+        // Prompt first: `--add-dir` takes every following non-flag argument.
+        cmd.arg(prompt);
+        if !dirs.is_empty() {
+            cmd.arg("--add-dir").args(dirs);
+        }
+        if let Some(m) = mode {
+            cmd.args(self.mode_args(m));
+        }
+        cmd.current_dir(scratch);
+        for key in crate::agents::WORKSPACE_ENV {
+            cmd.env_remove(key);
+        }
+        Ok(cmd)
+    }
+
     fn launch(&self, ws: &Workspace, ctx: &LaunchCtx) -> anyhow::Result<Command> {
         let mut cmd = Command::new(self.binary());
         // Read the id once and branch on that single value. The previous
@@ -388,5 +411,34 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), spaced.to_string_lossy());
+    }
+
+    #[test]
+    fn dispatch_puts_the_prompt_first_and_grants_each_dir() {
+        let d = TempDir::new().unwrap();
+        let dirs = vec![d.path().join("api"), d.path().join("My App")];
+        let cmd = ClaudeAgent
+            .dispatch(d.path(), &dirs, "Work.", Some(crate::agents::LaunchMode::Sane))
+            .unwrap();
+        let args = args_of(&cmd);
+        // `--add-dir <directories...>` is variadic: a prompt after it would be
+        // read as one more directory.
+        assert_eq!(args[0], "Work.");
+        let i = args.iter().position(|a| a == "--add-dir").unwrap();
+        assert_eq!(args[i + 1], dirs[0].to_string_lossy());
+        assert_eq!(args[i + 2], dirs[1].to_string_lossy(), "a path with a space stays one argument");
+        assert!(args.contains(&"--permission-mode".to_string()));
+        assert!(!args.iter().any(|a| a == "--resume" || a == "--session-id"));
+        assert_eq!(cmd.get_current_dir(), Some(d.path()));
+    }
+
+    #[test]
+    fn dispatch_drops_an_inherited_workspace_identity() {
+        let d = TempDir::new().unwrap();
+        let cmd = ClaudeAgent.dispatch(d.path(), &[d.path().to_path_buf()], "Work.", None).unwrap();
+        for key in ["WS_WORKSPACE", "WS_DIR", "WS_AGENT", "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"] {
+            let removed = cmd.get_envs().any(|(k, v)| k == OsStr::new(key) && v.is_none());
+            assert!(removed, "{key} must be removed, or the dispatcher's hooks act as that workspace");
+        }
     }
 }

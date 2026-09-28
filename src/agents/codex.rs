@@ -134,6 +134,27 @@ impl Agent for CodexAgent {
     /// line saying so. That is the state when Codex's hooks have not been trusted
     /// via `/hooks` — `ws -doctor` says as much — and a wrong-session resume is a
     /// worse outcome than an honest fresh start.
+    fn dispatch(
+        &self,
+        scratch: &std::path::Path,
+        dirs: &[std::path::PathBuf],
+        prompt: &str,
+        mode: Option<crate::agents::LaunchMode>,
+    ) -> Result<Command> {
+        let mut cmd = Command::new(self.binary());
+        for d in dirs {
+            cmd.arg("--add-dir").arg(d);
+        }
+        if let Some(m) = mode {
+            cmd.args(self.mode_args(m));
+        }
+        cmd.arg(prompt).current_dir(scratch);
+        for key in crate::agents::WORKSPACE_ENV {
+            cmd.env_remove(key);
+        }
+        Ok(cmd)
+    }
+
     fn launch(&self, ws: &Workspace, ctx: &LaunchCtx) -> Result<Command> {
         let mut cmd = Command::new(self.binary());
         let prior = contract::read_session_id(&ws.state_toml(), self.id());
@@ -357,5 +378,22 @@ mod tests {
             note.contains("session ids") || note.contains("resuming"),
             "the note must say what breaks without trust: {note}"
         );
+    }
+
+    #[test]
+    fn dispatch_grants_each_dir_and_ends_with_the_prompt() {
+        let d = TempDir::new().unwrap();
+        let dirs = vec![d.path().join("api"), d.path().join("My App")];
+        let cmd = CodexAgent.dispatch(d.path(), &dirs, "Work.", None).unwrap();
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        let expected_dirs: Vec<String> = dirs
+            .iter()
+            .flat_map(|p| ["--add-dir".to_string(), p.to_string_lossy().to_string()])
+            .collect();
+        assert_eq!(&args[..4], expected_dirs.as_slice());
+        assert_eq!(args.last().unwrap(), "Work.");
+        assert!(!args.iter().any(|a| a == "resume"));
+        let removed = cmd.get_envs().any(|(k, v)| k == "WS_WORKSPACE" && v.is_none());
+        assert!(removed);
     }
 }

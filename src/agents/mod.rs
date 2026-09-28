@@ -49,6 +49,12 @@ impl LaunchMode {
     }
 }
 
+/// The environment a launch inside a workspace sets. A dispatch started from
+/// inside a ws session inherits it, and its hooks would then act as that
+/// workspace; every dispatch command removes it.
+pub(crate) const WORKSPACE_ENV: [&str; 4] =
+    ["WS_WORKSPACE", "WS_DIR", "WS_AGENT", "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"];
+
 pub trait Agent {
     fn id(&self) -> &'static str;
     fn binary(&self) -> String;
@@ -57,6 +63,20 @@ pub trait Agent {
     /// Build the launch Command, deciding fresh vs resume itself and persisting any
     /// per-agent launch state (e.g. Claude's session-id, Codex's "launched" marker).
     fn launch(&self, ws: &Workspace, ctx: &LaunchCtx) -> anyhow::Result<Command>;
+    /// A one-time session for `ws -dispatch`: started in `scratch`, granted
+    /// `dirs`, handed `prompt`. Always fresh, and records no session id — there
+    /// is no workspace to file it under.
+    ///
+    /// **No default**: each agent spells both the directory grant and the prompt
+    /// position differently (claude's `--add-dir` is variadic and would swallow a
+    /// trailing prompt).
+    fn dispatch(
+        &self,
+        scratch: &std::path::Path,
+        dirs: &[PathBuf],
+        prompt: &str,
+        mode: Option<LaunchMode>,
+    ) -> anyhow::Result<Command>;
     /// Where this agent's hooks config lives (a JSON file with a top-level `hooks` object).
     fn hooks_config_path(&self) -> PathBuf;
 
