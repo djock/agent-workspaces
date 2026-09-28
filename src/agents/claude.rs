@@ -426,7 +426,11 @@ mod tests {
         assert_eq!(args[0], "Work.");
         let i = args.iter().position(|a| a == "--add-dir").unwrap();
         assert_eq!(args[i + 1], dirs[0].to_string_lossy());
-        assert_eq!(args[i + 2], dirs[1].to_string_lossy(), "a path with a space stays one argument");
+        assert_eq!(
+            args[i + 2],
+            dirs[1].to_string_lossy(),
+            "a path with a space stays one argument"
+        );
         assert!(args.contains(&"--permission-mode".to_string()));
         assert!(!args.iter().any(|a| a == "--resume" || a == "--session-id"));
         assert_eq!(cmd.get_current_dir(), Some(d.path()));
@@ -438,7 +442,10 @@ mod tests {
         let cmd = ClaudeAgent.dispatch(d.path(), &[d.path().to_path_buf()], "Work.", None).unwrap();
         for key in ["WS_WORKSPACE", "WS_DIR", "WS_AGENT", "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"] {
             let removed = cmd.get_envs().any(|(k, v)| k == OsStr::new(key) && v.is_none());
-            assert!(removed, "{key} must be removed, or the dispatcher's hooks act as that workspace");
+            assert!(
+                removed,
+                "{key} must be removed, or the dispatcher's hooks act as that workspace"
+            );
         }
     }
 }

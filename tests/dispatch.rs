@@ -173,7 +173,11 @@ fn a_finished_rerun_says_so_and_launches_nothing() {
     let env = Env::new();
     let shim = env.fake_claude();
     let api = workspace(&env, "api");
-    let f = write(&env, "tasks.md", &format!("# Dispatch t\n\n## 1. api — {}\n- [x] done\n", api.display()));
+    let f = write(
+        &env,
+        "tasks.md",
+        &format!("# Dispatch t\n\n## 1. api — {}\n- [x] done\n", api.display()),
+    );
     let out =
         dispatch_cmd(&env, &shim).arg("-dispatch").arg(&f).assert().success().get_output().clone();
     assert!(String::from_utf8_lossy(&out.stdout).contains("nothing left to do"));
@@ -209,9 +213,14 @@ fn rerunning_a_plan_older_than_the_sweep_keeps_it() {
     let dir = env.home.path().join(".cache/ws/dispatch/2020-01-01T00-00-00Z");
     std::fs::create_dir_all(&dir).unwrap();
     let plan = dir.join("tasks.md");
-    std::fs::write(&plan, format!("# Dispatch t\n\n## 1. api — {}\n- [ ] open\n", api.display())).unwrap();
+    std::fs::write(&plan, format!("# Dispatch t\n\n## 1. api — {}\n- [ ] open\n", api.display()))
+        .unwrap();
     for p in [&plan, &dir] {
-        let ok = std::process::Command::new("touch").args(["-t", "202001010000"]).arg(p).status().unwrap();
+        let ok = std::process::Command::new("touch")
+            .args(["-t", "202001010000"])
+            .arg(p)
+            .status()
+            .unwrap();
         assert!(ok.success());
     }
     dispatch_cmd(&env, &shim).arg("-dispatch").arg(&plan).assert().success();

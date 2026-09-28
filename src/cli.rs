@@ -1320,7 +1320,10 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        assert!(matches!(parse(vec!["-dispatch".into()]).unwrap(), Cmd::Dispatch { file: None, .. }));
+        assert!(matches!(
+            parse(vec!["-dispatch".into()]).unwrap(),
+            Cmd::Dispatch { file: None, .. }
+        ));
     }
 
     #[test]

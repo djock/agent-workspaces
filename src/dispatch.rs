@@ -85,8 +85,9 @@ fn parse_plan(text: &str) -> Parsed {
         }
         if let Some(h) = line.strip_prefix("## ") {
             // `## N. name — path`
-            let numbered =
-                h.split_once(". ").filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+            let numbered = h
+                .split_once(". ")
+                .filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
             match numbered {
                 Some((_, rest)) => {
                     let name = rest.split(" — ").next().unwrap_or(rest).trim().to_string();
@@ -559,7 +560,8 @@ mod tests {
 
     #[test]
     fn splits_sections_in_order_and_keeps_the_preamble() {
-        let p = parse("notes for all\n\n@api\n- retry 429s\n* drop v1\n\n@web@redesign\n1. header\n");
+        let p =
+            parse("notes for all\n\n@api\n- retry 429s\n* drop v1\n\n@web@redesign\n1. header\n");
         assert_eq!(p.preamble.trim(), "notes for all");
         let names: Vec<_> = p.sections.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["api", "web@redesign"]);
@@ -601,7 +603,8 @@ mod tests {
 
     #[test]
     fn a_generated_plan_is_read_back_by_its_headings() {
-        let plan = "# Dispatch 2026-09-28T10:00:00Z\n\n## Protocol\n\n1. Work in order.\n- not a task\n\n\
+        let plan =
+            "# Dispatch 2026-09-28T10:00:00Z\n\n## Protocol\n\n1. Work in order.\n- not a task\n\n\
                     ## 1. api — /p/api\n- [x] done one\n- [ ] open one\n  ? which one?\n\n\
                     ## 2. web — /p/web\n- [x] all done\n\n\
                     ## Unassigned (do not act on; ask the user at the end)\n\nleftover\n";
@@ -670,7 +673,8 @@ mod tests {
 
     #[test]
     fn a_far_off_name_gets_no_suggestion() {
-        let errs = check(&parse("@zzzzzz\n- a\n"), &known_fixture, &all_fixture(), false).unwrap_err();
+        let errs =
+            check(&parse("@zzzzzz\n- a\n"), &known_fixture, &all_fixture(), false).unwrap_err();
         assert_eq!(errs[0], "no workspace 'zzzzzz'");
     }
 
@@ -729,7 +733,10 @@ mod tests {
         let s = render(&targets_fixture(), "stray\n", "t");
         let p = parse(&s);
         assert!(p.rerun);
-        assert_eq!(p.sections.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["api", "web@x"]);
+        assert_eq!(
+            p.sections.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(),
+            ["api", "web@x"]
+        );
         assert_eq!(p.sections[1].tasks[0].text, "header");
         assert_eq!(p.preamble.trim(), "stray");
     }
