@@ -342,8 +342,20 @@ pub fn run(
     mode: Option<crate::agents::LaunchMode>,
     force: bool,
 ) -> Result<()> {
+    // Before anything else: an editor session that ends in "claude is not
+    // installed" wastes the list, and a run that never started must leave no
+    // lock or timeline row behind.
+    let cfg = crate::config::load();
+    let agent = crate::agents::for_id(agent.as_deref().unwrap_or(&cfg.default_agent))?;
+    if !agent.is_installed() {
+        bail!(
+            "{} is not installed or not on PATH (looked for `{}`). Install it, or set WS_{}_BIN.",
+            agent.id(),
+            agent.binary(),
+            agent.id().to_uppercase()
+        );
+    }
     let root = dispatch_root();
-    sweep(&root);
 
     // A rerun of a generated plan reuses its own directory; anything else gets
     // a new one.
@@ -376,6 +388,10 @@ pub fn run(
             (text, scratch, Some(input))
         }
     };
+
+    // Swept only now, and never the directory in use: a rerun of a plan older
+    // than the sweep would otherwise delete the file it is about to read.
+    sweep(&root, &scratch);
 
     let parsed = parse(&text);
     let all: Vec<String> = crate::registry::all().into_iter().map(|(n, _)| n).collect();
@@ -417,8 +433,6 @@ pub fn run(
         );
     }
 
-    let cfg = crate::config::load();
-    let agent = crate::agents::for_id(agent.as_deref().unwrap_or(&cfg.default_agent))?;
     let dirs: Vec<PathBuf> = targets.iter().map(|t| t.path.clone()).collect();
     let (mode, note) = effective_mode(agent.id(), mode);
     if let Some(note) = note {
@@ -518,10 +532,15 @@ fn edit(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Remove dispatch directories untouched for a fortnight. Best effort.
-fn sweep(root: &Path) {
+/// Remove dispatch directories untouched for a fortnight, except `keep`.
+/// Best effort.
+fn sweep(root: &Path, keep: &Path) {
     let Ok(rd) = std::fs::read_dir(root) else { return };
+    let keep = keep.canonicalize().unwrap_or_else(|_| keep.to_path_buf());
     for e in rd.flatten() {
+        if e.path().canonicalize().is_ok_and(|p| p == keep) {
+            continue;
+        }
         let old = e
             .metadata()
             .and_then(|m| m.modified())
