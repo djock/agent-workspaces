@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-09-28
+
+### Added
+
+- `ws -dispatch` works one pasted task list across several workspaces, in one
+  session. Paste into `$EDITOR` (or pass a file) with `@name` starting each
+  workspace's section; every name is checked first, the projects are worked in
+  order, changes stay uncommitted, each workspace gets a notebook entry, and a
+  report comes at the end.
+
 ## [0.13.2] — 2026-09-23
 
 ### Changed

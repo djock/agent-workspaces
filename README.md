@@ -271,6 +271,7 @@ ws <base>@<feature>            Create a git worktree workspace, or open it
 ws <base>@<feature> --merge    Merge it back and remove it
 ws -search <text>              Search workspace content
 ws -adopt [<name>]             Adopt the current directory
+ws -dispatch [<tasks.md>]      Work several workspaces' tasks in one session
 ws -rm | -archive | -unarchive Remove or hide workspaces
 ws -tag | -status              Label a workspace
 ws -color <color>              Set its tab and status-bar color
@@ -440,6 +441,45 @@ Each message is its own file, staged and renamed into place, so two senders
 delivering at once cannot interleave. Mail lives in `.ws/local/mail/`, which is
 gitignored: a message is addressed to a running agent on this machine, not to
 whoever clones the repository next month.
+
+## Dispatching tasks to several workspaces
+
+```sh
+ws -dispatch            # opens $EDITOR: paste the list, save, close
+ws -dispatch tasks.md   # or read it from a file
+```
+
+```
+@api
+- retry 429s with backoff
+- drop the v1 client
+
+@web
+- fix the header on mobile
+```
+
+A line starting with `@name` begins that workspace's tasks, and every non-blank
+line under it is one task. The projects are worked in the order written, in
+**one** agent session started outside all of them, with each named workspace
+granted to it (`--add-dir`). Text above the first `@name` is not acted on; you
+are asked about it at the end.
+
+Every name is checked before anything starts. An unknown name (with a "did you
+mean"), a duplicate, an empty section, an archived workspace, or one open in
+another session (`--force` takes it over) refuses the whole run, and a list you
+typed in the editor is kept so you can fix it and rerun.
+
+The agent reads each workspace's `.ws/` notes and context files first, leaves
+its changes **uncommitted**, ticks tasks off in the plan, writes a question
+under any task it could not finish, and adds an entry to that workspace's
+notebook before moving on. The plan is kept at
+`~/.cache/ws/dispatch/<time>/tasks.md`; `ws -dispatch <that file>` reruns only
+the unticked tasks. Plans untouched for two weeks are removed.
+
+`-claude` / `-codex` and `-loco` / `-sane` apply to that run only. A Codex
+dispatch with neither posture runs `-sane`: Codex only writes to added
+directories under its `workspace-write` sandbox, and the dispatch directory
+would otherwise start `read-only`.
 
 ## Crash recovery
 
