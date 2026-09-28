@@ -1518,13 +1518,13 @@ pub fn launch(
 }
 
 #[cfg(unix)]
-fn exec(mut cmd: std::process::Command) -> Result<()> {
+pub(crate) fn exec(mut cmd: std::process::Command) -> Result<()> {
     use std::os::unix::process::CommandExt;
     Err(cmd.exec().into()) // exec only returns on failure
 }
 
 #[cfg(not(unix))]
-fn exec(mut cmd: std::process::Command) -> Result<()> {
+pub(crate) fn exec(mut cmd: std::process::Command) -> Result<()> {
     let status = cmd.status()?;
     std::process::exit(status.code().unwrap_or(0));
 }

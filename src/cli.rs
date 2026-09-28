@@ -19,6 +19,13 @@ pub enum Cmd {
     Adopt {
         name: Option<String>,
     },
+    /// `ws -dispatch [<file>]` — one session working several workspaces' tasks.
+    Dispatch {
+        file: Option<std::path::PathBuf>,
+        agent: Option<String>,
+        mode: Option<crate::agents::LaunchMode>,
+        force: bool,
+    },
     Rm {
         names: Vec<String>,
         force: bool,
@@ -204,6 +211,12 @@ pub fn help_text() -> &'static str {
          \x20 ws -tag add|rm|list [--workspace <n>] <tag>...\n\
          \x20 ws -status \"<text>\" | --clear\n\
          \x20 ws -color <color> | --clear  set the tab and status-line color\n\
+         \n\
+         Dispatch\n\
+         \x20 ws -dispatch [<tasks.md>]    work several workspaces' tasks in one session:\n\
+         \x20                                `@name` lines start each project's list; with\n\
+         \x20                                no file, $EDITOR opens for you to paste it\n\
+         \x20                                (-claude|-codex, -loco|-sane, --force)\n\
          \n\
          Worktrees\n\
          \x20 ws <base>@<feature>          create a git worktree workspace off <base>,\n\
@@ -522,6 +535,25 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             let query = query
                 .ok_or_else(|| anyhow::anyhow!("usage: ws -search <query> [--include-archived]"))?;
             Ok(Cmd::Search { query, include_archived })
+        }
+        "-dispatch" => {
+            let (mut file, mut agent, mut mode, mut force) = (None, None, None, false);
+            for a in it {
+                match a.as_str() {
+                    "-claude" => agent = Some("claude".to_string()),
+                    "-codex" => agent = Some("codex".to_string()),
+                    "-loco" | "--loco" => mode = Some(crate::agents::LaunchMode::Loco),
+                    "-sane" | "--sane" => mode = Some(crate::agents::LaunchMode::Sane),
+                    "--force" => force = true,
+                    other if other.starts_with('-') => bail!("unexpected argument: {other}"),
+                    other if file.is_none() => file = Some(std::path::PathBuf::from(other)),
+                    other => bail!(
+                        "usage: ws -dispatch [<tasks.md>] [-claude|-codex] [-loco|-sane] [--force] \
+                         (unexpected: {other})"
+                    ),
+                }
+            }
+            Ok(Cmd::Dispatch { file, agent, mode, force })
         }
         "-adopt" => {
             let name = it.next();
@@ -1274,6 +1306,27 @@ mod tests {
     #[test]
     fn unknown_dash() {
         assert!(parse(vec!["-nope".into()]).is_err());
+    }
+
+    #[test]
+    fn dispatch_parses_file_agent_mode_and_force() {
+        let args = ["-dispatch", "t.md", "-codex", "-loco", "--force"];
+        match parse(args.iter().map(|s| s.to_string()).collect()).unwrap() {
+            Cmd::Dispatch { file, agent, mode, force } => {
+                assert_eq!(file.as_deref(), Some(std::path::Path::new("t.md")));
+                assert_eq!(agent.as_deref(), Some("codex"));
+                assert_eq!(mode, Some(crate::agents::LaunchMode::Loco));
+                assert!(force);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(parse(vec!["-dispatch".into()]).unwrap(), Cmd::Dispatch { file: None, .. }));
+    }
+
+    #[test]
+    fn dispatch_rejects_two_files_and_unknown_flags() {
+        assert!(parse(vec!["-dispatch".into(), "a.md".into(), "b.md".into()]).is_err());
+        assert!(parse(vec!["-dispatch".into(), "--forec".into()]).is_err());
     }
 
     #[test]

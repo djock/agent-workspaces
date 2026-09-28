@@ -1,7 +1,8 @@
 //! `ws -dispatch`: one agent session that works tasks for several workspaces
 //! in order. See docs/superpowers/specs/2026-09-28-ws-dispatch-design.md.
 
-use std::path::PathBuf;
+use anyhow::{bail, Context, Result};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
@@ -312,6 +313,227 @@ pub fn render(targets: &[Target], unassigned: &str, stamp: &str) -> String {
     s
 }
 
+const TEMPLATE: &str = "\
+# One section per workspace, worked in this order. A line starting with @name
+# begins a section; every non-blank line under it is one task. Text above the
+# first @name is shown to you at the end, not acted on. Save and close to start;
+# leave this unchanged to cancel.
+
+";
+
+/// Dispatch directories untouched this long are removed on the next run — the
+/// same fortnight crash snapshots are kept.
+const SWEEP_AFTER: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 3600);
+
+/// `$XDG_CACHE_HOME/ws/dispatch`, else `~/.cache/ws/dispatch` — beside the
+/// update check's cache.
+fn dispatch_root() -> PathBuf {
+    let base = match std::env::var("XDG_CACHE_HOME") {
+        Ok(d) if !d.is_empty() => PathBuf::from(d),
+        _ => dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".cache"),
+    };
+    base.join("ws").join("dispatch")
+}
+
+/// `ws -dispatch [<file>]`.
+pub fn run(
+    file: Option<PathBuf>,
+    agent: Option<String>,
+    mode: Option<crate::agents::LaunchMode>,
+    force: bool,
+) -> Result<()> {
+    let root = dispatch_root();
+    sweep(&root);
+
+    // A rerun of a generated plan reuses its own directory; anything else gets
+    // a new one.
+    let (text, scratch, input) = match &file {
+        Some(f) => {
+            let text = std::fs::read_to_string(f)
+                .with_context(|| format!("cannot read {}", f.display()))?;
+            let scratch = if text.starts_with(PLAN_TITLE) {
+                f.canonicalize()?
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .context("the plan has no parent directory")?
+            } else {
+                new_scratch(&root)?
+            };
+            (text, scratch, None)
+        }
+        None => {
+            let scratch = new_scratch(&root)?;
+            let input = scratch.join("input.md");
+            std::fs::write(&input, TEMPLATE)?;
+            edit(&input)?;
+            let text = std::fs::read_to_string(&input)?;
+            let text = strip_template(&text);
+            if text.trim().is_empty() {
+                let _ = std::fs::remove_dir_all(&scratch);
+                println!("nothing to dispatch");
+                return Ok(());
+            }
+            (text, scratch, Some(input))
+        }
+    };
+
+    let parsed = parse(&text);
+    let all: Vec<String> = crate::registry::all().into_iter().map(|(n, _)| n).collect();
+    let targets = match check(&parsed, &known, &all, force) {
+        Ok(t) => t,
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("ws: {e}");
+            }
+            if let Some(input) = &input {
+                eprintln!("  your list is saved at {}", input.display());
+                eprintln!("  fix it and run: ws -dispatch {}", input.display());
+            }
+            bail!("nothing dispatched ({} problem(s))", errs.len());
+        }
+    };
+    if targets.is_empty() {
+        println!("nothing left to do");
+        return Ok(());
+    }
+
+    // Lock every target before the agent starts, so opening one elsewhere during
+    // the run reports it busy. On a partial failure the guards already taken
+    // drop, removing their files, as `?` returns.
+    let mut guards = Vec::new();
+    for t in &targets {
+        guards.push(crate::lock::acquire(&lock_file(&t.path), force)?);
+    }
+
+    let plan = scratch.join("tasks.md");
+    std::fs::write(&plan, render(&targets, &parsed.preamble, &crate::now_iso()))?;
+    let actor = crate::actors::actor_slug();
+    for t in &targets {
+        let _ = crate::timeline::record(
+            &t.path.join(".ws").join("timeline.jsonl"),
+            "dispatched",
+            &actor,
+            serde_json::json!({ "dispatch": scratch.display().to_string(), "tasks": t.tasks.len() }),
+        );
+    }
+
+    let cfg = crate::config::load();
+    let agent = crate::agents::for_id(agent.as_deref().unwrap_or(&cfg.default_agent))?;
+    let dirs: Vec<PathBuf> = targets.iter().map(|t| t.path.clone()).collect();
+    let (mode, note) = effective_mode(agent.id(), mode);
+    if let Some(note) = note {
+        eprintln!("{note}");
+    }
+    let cmd = agent.dispatch(&scratch, &dirs, PROMPT, mode)?;
+    println!("dispatching {} project(s) — plan at {}", targets.len(), plan.display());
+
+    // The agent inherits this pid, so the locks stay held until it exits and
+    // are stale from then on — exactly how `ws <name>` hands its lock over.
+    for g in guards {
+        g.keep();
+    }
+    if std::env::var_os("WS_NO_EXEC").is_some() {
+        let mut cmd = cmd;
+        let status = cmd.status()?;
+        std::process::exit(status.code().unwrap_or(0));
+    }
+    crate::commands::exec(cmd)
+}
+
+/// The posture a dispatch actually runs with, and a line saying so when it is
+/// not the one asked for.
+///
+/// Codex's `--add-dir` only makes a directory writable under the
+/// `workspace-write` sandbox, and a dispatch starts in an untrusted scratch
+/// directory where Codex defaults to `read-only` (seen on Codex CLI 0.156.1:
+/// `sandbox: read-only`). With no posture given, that session could read every
+/// project and edit none, so it runs `-sane` instead.
+fn effective_mode(
+    agent: &str,
+    mode: Option<crate::agents::LaunchMode>,
+) -> (Option<crate::agents::LaunchMode>, Option<&'static str>) {
+    match (agent, mode) {
+        ("codex", None) => (
+            Some(crate::agents::LaunchMode::Sane),
+            Some("ws: codex dispatch runs -sane so it can write to the granted directories"),
+        ),
+        (_, m) => (m, None),
+    }
+}
+
+fn lock_file(root: &Path) -> PathBuf {
+    root.join(".ws").join("local").join("lock")
+}
+
+/// Registry + meta + lock, for `check`.
+fn known(name: &str) -> Option<Known> {
+    let path = crate::registry::lookup(name)?;
+    if !path.join(".ws").is_dir() {
+        return None;
+    }
+    let archived = crate::meta::read(&path.join(".ws").join("workspace.toml")).archived;
+    let held_by = crate::lock::live_pid_checked(&lock_file(&path)).ok().flatten();
+    Some(Known { path, archived, held_by })
+}
+
+/// Drop the template's own comment lines, wherever the paste left them. Only
+/// those exact lines: a `# heading` the user pasted is theirs.
+fn strip_template(text: &str) -> String {
+    let ours: Vec<&str> = TEMPLATE.lines().filter(|l| !l.trim().is_empty()).collect();
+    text.replace("\r\n", "\n")
+        .lines()
+        .filter(|l| !ours.contains(l))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+fn new_scratch(root: &Path) -> Result<PathBuf> {
+    let stamp = crate::now_iso().replace(':', "-");
+    let mut dir = root.join(&stamp);
+    if dir.exists() {
+        dir = root.join(format!("{stamp}-{}", std::process::id()));
+    }
+    crate::atomic::create_private_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// `$VISUAL`, else `$EDITOR`, else `vi`, through `sh -c` so an editor with its
+/// own arguments (`code -w`) works. The file is a positional parameter, never
+/// spliced into the command string.
+fn edit(path: &Path) -> Result<()> {
+    let editor = ["VISUAL", "EDITOR"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
+        .unwrap_or_else(|| "vi".to_string());
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$1\""))
+        .arg("sh")
+        .arg(path)
+        .status()
+        .with_context(|| format!("could not run the editor ({editor})"))?;
+    if !status.success() {
+        bail!("the editor exited with {status}; your list is saved at {}", path.display());
+    }
+    Ok(())
+}
+
+/// Remove dispatch directories untouched for a fortnight. Best effort.
+fn sweep(root: &Path) {
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    for e in rd.flatten() {
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > SWEEP_AFTER);
+        if old && e.path().is_dir() {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,5 +713,15 @@ mod tests {
         assert_eq!(p.sections.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["api", "web@x"]);
         assert_eq!(p.sections[1].tasks[0].text, "header");
         assert_eq!(p.preamble.trim(), "stray");
+    }
+
+    #[test]
+    fn codex_without_a_posture_runs_sane_and_says_so() {
+        use crate::agents::LaunchMode;
+        let (mode, note) = effective_mode("codex", None);
+        assert_eq!(mode, Some(LaunchMode::Sane));
+        assert!(note.unwrap().contains("-sane"));
+        assert_eq!(effective_mode("codex", Some(LaunchMode::Loco)), (Some(LaunchMode::Loco), None));
+        assert_eq!(effective_mode("claude", None), (None, None));
     }
 }

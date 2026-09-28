@@ -65,6 +65,7 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
         Cmd::Color { name, color } => commands::color(name, color)?,
         Cmd::Archive { names, archived } => commands::archive(names, archived)?,
         Cmd::Adopt { name } => commands::adopt(name)?,
+        Cmd::Dispatch { file, agent, mode, force } => dispatch::run(file, agent, mode, force)?,
         Cmd::Rm { names, force } => commands::rm(names, force)?,
         Cmd::Launch { name, agent, mode, fresh, force, handoff } => {
             commands::launch(name, agent, mode, fresh, force, handoff)?
