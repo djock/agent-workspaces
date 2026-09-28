@@ -1,6 +1,8 @@
 //! `ws -dispatch`: one agent session that works tasks for several workspaces
 //! in order. See docs/superpowers/specs/2026-09-28-ws-dispatch-design.md.
 
+use std::path::PathBuf;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub text: String,
@@ -146,6 +148,123 @@ fn item(line: &str) -> Item {
     Item { text: s.trim().to_string(), done }
 }
 
+/// What the registry and the workspace itself say about a name.
+pub struct Known {
+    pub path: PathBuf,
+    pub archived: bool,
+    /// A live process holding the workspace's lock.
+    pub held_by: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Target {
+    pub name: String,
+    pub path: PathBuf,
+    pub tasks: Vec<Item>,
+}
+
+/// Every reason the run cannot start, all at once — a list that fails on its
+/// first error costs one rerun per typo.
+///
+/// A rerun (`p.rerun`) is empty when nothing is left, which the caller reports
+/// as "nothing left to do" rather than as an error.
+pub fn check(
+    p: &Parsed,
+    known: &dyn Fn(&str) -> Option<Known>,
+    all: &[String],
+    force: bool,
+) -> Result<Vec<Target>, Vec<String>> {
+    let sections: Vec<Section> = if p.rerun {
+        p.sections
+            .iter()
+            .map(|s| Section {
+                tasks: s.tasks.iter().filter(|t| !t.done).cloned().collect(),
+                ..s.clone()
+            })
+            .filter(|s| !s.tasks.is_empty())
+            .collect()
+    } else {
+        p.sections.clone()
+    };
+    if sections.is_empty() {
+        return if p.rerun { Ok(Vec::new()) } else { Err(vec!["no @name sections found".into()]) };
+    }
+
+    let mut errs = Vec::new();
+    let mut targets = Vec::new();
+    let mut seen: Vec<(&str, usize)> = Vec::new();
+    for s in &sections {
+        if let Some((_, first)) = seen.iter().find(|(n, _)| *n == s.name) {
+            errs.push(format!(
+                "'{}' appears twice (lines {first} and {}); merge the sections",
+                s.name, s.line
+            ));
+            continue;
+        }
+        seen.push((&s.name, s.line));
+        if s.tasks.is_empty() {
+            errs.push(format!("'@{}' has no tasks", s.name));
+            continue;
+        }
+        if let Err(e) = crate::workspace::validate_name(&s.name) {
+            errs.push(format!("line {}: {e}", s.line));
+            continue;
+        }
+        let Some(k) = known(&s.name) else {
+            errs.push(match suggest(&s.name, all) {
+                Some(m) => format!("no workspace '{}' — did you mean '{m}'?", s.name),
+                None => format!("no workspace '{}'", s.name),
+            });
+            continue;
+        };
+        if k.archived {
+            errs.push(format!("'{0}' is archived; ws -unarchive {0} first", s.name));
+            continue;
+        }
+        if let (Some(pid), false) = (k.held_by, force) {
+            errs.push(format!(
+                "'{}' is open in another session (pid {pid}); close it or pass --force",
+                s.name
+            ));
+            continue;
+        }
+        targets.push(Target { name: s.name.clone(), path: k.path, tasks: s.tasks.clone() });
+    }
+    if errs.is_empty() {
+        Ok(targets)
+    } else {
+        Err(errs)
+    }
+}
+
+/// The one registered name within edit distance 2, compared case-insensitively
+/// so `@API` finds `api`. None when zero or several are that close — a guess
+/// between two is worse than no guess.
+fn suggest(name: &str, all: &[String]) -> Option<String> {
+    let lower = name.to_lowercase();
+    let close: Vec<&String> =
+        all.iter().filter(|c| distance(&lower, &c.to_lowercase()) <= 2).collect();
+    match close.as_slice() {
+        [one] => Some((*one).clone()),
+        _ => None,
+    }
+}
+
+/// Levenshtein distance over chars.
+fn distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ca != *cb);
+            cur.push(sub.min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +330,74 @@ mod tests {
     fn empty_and_marker_free_input_has_no_sections() {
         assert!(parse("").sections.is_empty());
         assert!(parse("just words\n").sections.is_empty());
+    }
+
+    fn known_fixture(name: &str) -> Option<Known> {
+        match name {
+            "api" => Some(Known { path: "/p/api".into(), archived: false, held_by: None }),
+            "old" => Some(Known { path: "/p/old".into(), archived: true, held_by: None }),
+            "busy" => Some(Known { path: "/p/busy".into(), archived: false, held_by: Some(4312) }),
+            _ => None,
+        }
+    }
+
+    fn all_fixture() -> Vec<String> {
+        ["api", "old", "busy"].iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_clean_list_becomes_targets_in_order() {
+        let p = parse("@busy\n- a\n@api\n- b\n");
+        let t = check(&p, &known_fixture, &all_fixture(), true).unwrap();
+        assert_eq!(t.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["busy", "api"]);
+        assert_eq!(t[1].path, std::path::PathBuf::from("/p/api"));
+    }
+
+    #[test]
+    fn every_problem_is_reported_together() {
+        let p = parse(
+            "@apii\n- a\n@api\n- b\n@api\n- c\n@old\n- d\n@busy\n- e\n@empty\n@bad;name\n- f\n",
+        );
+        let errs = check(&p, &known_fixture, &all_fixture(), false).unwrap_err();
+        let all = errs.join("\n");
+        assert!(all.contains("no workspace 'apii' — did you mean 'api'?"), "{all}");
+        assert!(all.contains("'api' appears twice (lines 3 and 5)"), "{all}");
+        assert!(all.contains("'old' is archived"), "{all}");
+        assert!(all.contains("'busy' is open in another session (pid 4312)"), "{all}");
+        assert!(all.contains("'@empty' has no tasks"), "{all}");
+        assert!(all.contains("invalid workspace name"), "{all}");
+    }
+
+    #[test]
+    fn no_sections_is_an_error() {
+        let errs = check(&parse("words\n"), &known_fixture, &all_fixture(), false).unwrap_err();
+        assert_eq!(errs, ["no @name sections found"]);
+    }
+
+    #[test]
+    fn case_differences_are_suggested_not_folded() {
+        let errs = check(&parse("@API\n- a\n"), &known_fixture, &all_fixture(), false).unwrap_err();
+        assert!(errs[0].contains("did you mean 'api'?"), "{errs:?}");
+    }
+
+    #[test]
+    fn a_far_off_name_gets_no_suggestion() {
+        let errs = check(&parse("@zzzzzz\n- a\n"), &known_fixture, &all_fixture(), false).unwrap_err();
+        assert_eq!(errs[0], "no workspace 'zzzzzz'");
+    }
+
+    #[test]
+    fn a_rerun_drops_finished_projects_and_tasks() {
+        let plan = "# Dispatch x\n\n## 1. api — /p/api\n- [x] one\n- [ ] two\n\n## 2. busy — /p/busy\n- [x] all\n";
+        let t = check(&parse(plan), &known_fixture, &all_fixture(), false).unwrap();
+        assert_eq!(t.len(), 1, "busy is finished, so its lock is irrelevant");
+        assert_eq!(t[0].tasks.len(), 1);
+        assert_eq!(t[0].tasks[0].text, "two");
+    }
+
+    #[test]
+    fn a_finished_rerun_has_no_targets() {
+        let plan = "# Dispatch x\n\n## 1. api — /p/api\n- [x] one\n";
+        assert!(check(&parse(plan), &known_fixture, &all_fixture(), false).unwrap().is_empty());
     }
 }
