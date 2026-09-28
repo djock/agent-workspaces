@@ -265,6 +265,53 @@ fn distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// The first prompt the agent is launched with. The plan itself stays in the
+/// file, so it survives a `/compact`.
+pub const PROMPT: &str = "Work through tasks.md in this directory.";
+
+const PROTOCOL: &str = "\
+1. Work the projects below in the order listed. Before starting one, read its
+   `.ws/README.md`, `.ws/conventions.md` if present, its `.ws/notebook/` files,
+   and its root `CLAUDE.md` / `AGENTS.md` if present, and follow them. They do
+   not load on their own because you were started outside that project.
+2. Change files only inside the current project's directory. Do not commit, push, or switch branches.
+3. Tick `[x]` in this file as each task is finished.
+4. If a task is blocked or needs the user's decision, write the question on the
+   line under that task, starting with `?`, leave it unticked, and continue.
+   Do not stop to ask.
+5. Before moving on, append an entry to your notebook in that workspace
+   (`.ws/notebook/notebook.<actor>.md`; `ws -whoami` prints the actor): what was
+   done, what was not, and why.
+6. When every project is done, print one report block per project:
+       api  (2/2 done)
+         ✓ retry 429s with backoff — src/client.rs
+         changed: 3 files (uncommitted)
+         ? a question you left under a task
+   Then list the questions again, then show the Unassigned text (if any) and ask
+   the user what to do with it. Never act on the Unassigned text before that.
+";
+
+/// The plan file the agent works from. `parse` reads it back for a rerun.
+pub fn render(targets: &[Target], unassigned: &str, stamp: &str) -> String {
+    let mut s = format!("{PLAN_TITLE}{stamp}\n\n## Protocol\n\n{PROTOCOL}\n");
+    for (i, t) in targets.iter().enumerate() {
+        s.push_str(&format!("## {}. {} — {}\n", i + 1, t.name, t.path.display()));
+        for task in &t.tasks {
+            // A rerun's task can carry a `? question` note on its next line;
+            // `text` already holds it indented, so it comes back out that way.
+            s.push_str(&format!("- [ ] {}\n", task.text));
+        }
+        s.push('\n');
+    }
+    let unassigned = unassigned.trim();
+    if !unassigned.is_empty() {
+        s.push_str(&format!(
+            "{UNASSIGNED_HEADING} (do not act on; ask the user at the end)\n\n{unassigned}\n"
+        ));
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,5 +446,50 @@ mod tests {
     fn a_finished_rerun_has_no_targets() {
         let plan = "# Dispatch x\n\n## 1. api — /p/api\n- [x] one\n";
         assert!(check(&parse(plan), &known_fixture, &all_fixture(), false).unwrap().is_empty());
+    }
+
+    fn targets_fixture() -> Vec<Target> {
+        vec![
+            Target {
+                name: "api".into(),
+                path: "/p/api".into(),
+                tasks: vec![Item { text: "retry".into(), done: false }],
+            },
+            Target {
+                name: "web@x".into(),
+                path: "/p/My App".into(),
+                tasks: vec![Item { text: "header".into(), done: false }],
+            },
+        ]
+    }
+
+    #[test]
+    fn render_lists_projects_in_order_with_paths_and_protocol() {
+        let s = render(&targets_fixture(), "", "2026-09-28T10:00:00Z");
+        assert!(s.starts_with("# Dispatch 2026-09-28T10:00:00Z\n"));
+        assert!(s.contains("## Protocol"));
+        assert!(s.contains("Do not commit, push, or switch branches"));
+        let a = s.find("## 1. api — /p/api\n- [ ] retry").unwrap();
+        let b = s.find("## 2. web@x — /p/My App\n- [ ] header").unwrap();
+        assert!(a < b);
+        assert!(!s.contains("## Unassigned"), "no unassigned text, no section");
+    }
+
+    #[test]
+    fn render_carries_unassigned_text_last() {
+        let s = render(&targets_fixture(), "stray note\n", "t");
+        assert!(s
+            .trim_end()
+            .ends_with("## Unassigned (do not act on; ask the user at the end)\n\nstray note"));
+    }
+
+    #[test]
+    fn a_rendered_plan_parses_back_to_the_same_targets() {
+        let s = render(&targets_fixture(), "stray\n", "t");
+        let p = parse(&s);
+        assert!(p.rerun);
+        assert_eq!(p.sections.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["api", "web@x"]);
+        assert_eq!(p.sections[1].tasks[0].text, "header");
+        assert_eq!(p.preamble.trim(), "stray");
     }
 }
