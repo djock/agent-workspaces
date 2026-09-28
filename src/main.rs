@@ -11,6 +11,7 @@ mod context;
 mod contract;
 mod conversations;
 mod detail;
+mod dispatch;
 mod done;
 mod git;
 mod handoff;
