@@ -30,6 +30,7 @@ mod queue;
 mod readme;
 mod registry;
 mod rewrite;
+mod rotation;
 mod rows;
 mod search;
 mod secrets;

@@ -115,3 +115,25 @@ fn statusline_survives_garbage_stdin() {
     env.cmd().env("NO_COLOR", "1").arg("statusline").write_stdin("not json").assert().success();
     // never errors
 }
+
+#[test]
+fn statusline_stamps_the_context_reading_for_its_session() {
+    let env = Env::new();
+    let proj = env.home.path().join("ctx");
+    std::fs::create_dir_all(&proj).unwrap();
+    env.cmd().current_dir(&proj).args(["-adopt", "ctx"]).assert().success();
+
+    env.cmd()
+        .env("WS_WORKSPACE", "ctx")
+        .env("WS_DIR", &proj)
+        .env("NO_COLOR", "1")
+        .arg("statusline")
+        .write_stdin(r#"{"session_id":"sess-1","context_window":{"used_percentage":71.2}}"#)
+        .assert()
+        .success();
+
+    let raw = std::fs::read_to_string(proj.join(".ws/local/context.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(v["session_id"], "sess-1");
+    assert_eq!(v["pct"], 71);
+}

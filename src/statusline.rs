@@ -52,6 +52,8 @@ pub struct StatuslineInput {
     pub workspace: WorkspaceInfo,
     #[serde(default)]
     pub cwd: String,
+    #[serde(default)]
+    pub session_id: String,
 }
 
 pub fn to_snapshot(input: &StatuslineInput) -> LimitsSnapshot {
@@ -308,6 +310,11 @@ pub fn run() {
     let _ = limits::write(&limits::global_path(), &snap);
     let chip = crate::internal::current_ws().map(|ws| {
         let _ = limits::write(&ws.local_dir().join("limits.json"), &snap);
+        let _ = crate::rotation::write_reading(
+            &ws,
+            &input.session_id,
+            input.context_window.used_percentage,
+        );
         Chip {
             unread: crate::mail::unread_count(&ws.root),
             name: ws.name.clone(),
@@ -344,6 +351,7 @@ mod tests {
             },
             workspace: WorkspaceInfo::default(),
             cwd: String::new(),
+            session_id: String::new(),
         }
     }
 
