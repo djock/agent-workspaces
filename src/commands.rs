@@ -1602,7 +1602,23 @@ pub fn rotate(name: Option<String>) -> Result<()> {
     let path = dir.join(format!("{stamp}-{actor}.md"));
 
     let body = format!(
-        "# Handoff — {n}\n\n         - **Written:** {ts}\n         - **By:** {actor}\n         - **Agent:** {agent}\n         - **Session:** {session}\n         - **Objective:** {objective}\n\n         ## What is done\n\n         <!-- what actually landed, not what was attempted -->\n\n         ## What is next\n\n         <!-- the single next action, and anything that would block it -->\n\n         ## Watch out for\n\n         <!-- anything that would mislead someone reading only the code -->\n"
+        "# Handoff — {n}\n\n\
+         - **Written:** {ts}\n\
+         - **By:** {actor}\n\
+         - **Agent:** {agent}\n\
+         - **Session:** {session}\n\
+         - **Objective:** {objective}\n\n\
+         ## Next step\n\n\
+         <!-- the first action, with every fact it needs: command, path, branch -->\n\n\
+         ## Conversation-only facts\n\n\
+         <!-- exact readings, ids, counts, event order, the user's own words; \
+         anything that exists nowhere but in the conversation being replaced -->\n\n\
+         ## Where things stand\n\n\
+         <!-- done / in progress / blocked; label each claim measured or assumed -->\n\n\
+         ## Rejected alternatives\n\n\
+         <!-- what was tried or considered and why it lost -->\n\n\
+         ## Watch out for\n\n\
+         <!-- anything that would mislead someone reading only the code -->\n"
     );
     crate::atomic::atomic_write(&path, body)?;
     let _ = crate::timeline::record(
@@ -1611,8 +1627,10 @@ pub fn rotate(name: Option<String>) -> Result<()> {
         &actor,
         serde_json::json!({ "file": path.file_name().and_then(|f| f.to_str()) }),
     );
+    crate::handoff::arm(&ws, &path)?;
     println!("wrote {}", path.display());
-    println!("`ws {n} --handoff` will point the next session at it.");
+    println!("armed: the next fresh conversation (/clear, or a new `ws {n}`) continues from it.");
+    println!("`ws {n} --handoff` also points a launch at it.");
     Ok(())
 }
 

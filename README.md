@@ -21,8 +21,11 @@ Most importantly, the same workspace works with both Claude Code and Codex. If y
   workspace timeline (`-who`).
 - Captures tasks without interrupting the agent — `ws -task add`, or `/ws:task`
   from inside a session.
-- Writes handoffs for the next session with `ws -rotate`, and shows conversation
-  lineage with `ws -conversations`.
+- Rotates a conversation without leaving the agent: `/ws:rotate` writes and arms
+  a handoff through `ws -rotate`, and `/clear` continues from it in a fresh
+  conversation. On Claude, the end-of-turn hook asks once per conversation when
+  context passes `rotate_nudge` (default 65%; `ws config set rotate_nudge 0`
+  turns it off). Conversation lineage is in `ws -conversations`.
 - Lets you define **your own hooks** in one file that apply to both agents
   (`hooks.toml`; see [User-defined hooks](#user-defined-hooks)).
 - Stores secrets in your keyring or an encrypted file, and redacts
@@ -277,7 +280,7 @@ ws -tag | -status              Label a workspace
 ws -color <color>              Set its tab and status-bar color
 ws -whoami | -who [<name>]     Your actor slug; who did what, from the timeline
 ws -conversations [<name>]     Conversation lineage: rotations and agent switches
-ws -rotate [<name>]            Write a handoff skeleton for the next session
+ws -rotate [<name>]            Write and arm a handoff for the next session
 ws -task add|list|rm           Capture tasks without interrupting the agent
                                (the agent is asked about them when a turn ends)
 ws -secrets set|get|list|...   Manage workspace secrets (`ws -secrets help`)

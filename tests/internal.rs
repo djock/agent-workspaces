@@ -409,3 +409,161 @@ fn the_task_prompt_can_be_turned_off() {
     let s = String::from_utf8(out).unwrap();
     assert!(!s.contains("ignored"), "task_prompt=false must stay silent: {s}");
 }
+
+fn write_reading(proj: &std::path::Path, session: &str, pct: u8) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    std::fs::create_dir_all(proj.join(".ws/local")).unwrap();
+    std::fs::write(
+        proj.join(".ws/local/context.json"),
+        format!(r#"{{"session_id":"{session}","pct":{pct},"stamped_at":{now}}}"#),
+    )
+    .unwrap();
+}
+
+fn stop(env: &Env, name: &str, proj: &std::path::Path, session: &str) -> String {
+    let out = env
+        .cmd()
+        .env("WS_WORKSPACE", name)
+        .env("WS_DIR", proj)
+        .env("WS_AGENT", "claude")
+        .args(["internal", "stop"])
+        .write_stdin(format!(r#"{{"session_id":"{session}"}}"#))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn stop_nudges_rotation_once_per_conversation_past_the_threshold() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "rot");
+    write_reading(&proj, "s1", 70);
+
+    let first = stop(&env, "rot", &proj, "s1");
+    assert!(first.contains("\"decision\":\"block\""), "{first}");
+    assert!(first.contains("70%"), "names the reading: {first}");
+    assert!(first.contains("/clear"), "tells the user the step: {first}");
+
+    let second = stop(&env, "rot", &proj, "s1");
+    assert!(!second.contains("70%"), "once per conversation: {second}");
+
+    // A fresh conversation after /clear gets its own nudge.
+    write_reading(&proj, "s2", 70);
+    assert!(stop(&env, "rot", &proj, "s2").contains("70%"));
+}
+
+#[test]
+fn stop_ignores_another_conversations_reading() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "rot2");
+    write_reading(&proj, "teammate", 95);
+    assert!(!stop(&env, "rot2", &proj, "lead").contains("95%"));
+}
+
+#[test]
+fn stop_stays_quiet_below_the_threshold_and_when_turned_off() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "rot3");
+    write_reading(&proj, "s1", 64);
+    assert!(!stop(&env, "rot3", &proj, "s1").contains("64%"));
+
+    env.cmd().args(["config", "set", "rotate_nudge", "0"]).assert().success();
+    write_reading(&proj, "s1", 99);
+    assert!(!stop(&env, "rot3", &proj, "s1").contains("99%"));
+}
+
+fn arm(proj: &std::path::Path, name: &str) {
+    std::fs::create_dir_all(proj.join(".ws/handoffs")).unwrap();
+    std::fs::write(proj.join(".ws/handoffs").join(name), "# Handoff").unwrap();
+    std::fs::create_dir_all(proj.join(".ws/local")).unwrap();
+    std::fs::write(proj.join(".ws/local/pending-handoff"), name).unwrap();
+}
+
+fn session_start(env: &Env, name: &str, proj: &std::path::Path, source: &str) -> String {
+    let out = env
+        .cmd()
+        .env("WS_WORKSPACE", name)
+        .env("WS_DIR", proj)
+        .args(["internal", "session-start"])
+        .write_stdin(format!(r#"{{"source":"{source}","session_id":"n1"}}"#))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn clear_continues_from_the_armed_handoff_once() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "h1");
+    arm(&proj, "2026-09-30T120000Z-me.md");
+
+    let out = session_start(&env, "h1", &proj, "clear");
+    assert!(out.contains(".ws/handoffs/2026-09-30T120000Z-me.md"), "{out}");
+    assert!(out.contains("Successor report"), "{out}");
+    assert!(!proj.join(".ws/local/pending-handoff").exists());
+
+    let tl = std::fs::read_to_string(proj.join(".ws/timeline.jsonl")).unwrap();
+    assert!(tl.contains("handoff-consumed"), "{tl}");
+
+    let again = session_start(&env, "h1", &proj, "clear");
+    assert!(!again.contains("2026-09-30T120000Z-me.md"), "only once: {again}");
+}
+
+#[test]
+fn compact_and_resume_leave_the_marker_armed() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "h2");
+    arm(&proj, "a.md");
+    for source in ["compact", "resume"] {
+        let out = session_start(&env, "h2", &proj, source);
+        assert!(!out.contains("a.md"), "{source}: {out}");
+        assert!(proj.join(".ws/local/pending-handoff").exists(), "{source} consumed it");
+    }
+    assert!(session_start(&env, "h2", &proj, "startup").contains(".ws/handoffs/a.md"));
+}
+
+#[test]
+fn two_conversations_over_the_threshold_are_each_nudged_once() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "rot4");
+    write_reading(&proj, "a", 70);
+    assert!(stop(&env, "rot4", &proj, "a").contains("70%"));
+    write_reading(&proj, "b", 71);
+    assert!(stop(&env, "rot4", &proj, "b").contains("71%"));
+    write_reading(&proj, "a", 72);
+    assert!(!stop(&env, "rot4", &proj, "a").contains("72%"), "a was already nudged");
+}
+
+/// Codex has only ever been seen reporting `startup`, so a resumed Codex
+/// conversation may too. It keeps its session id; a fresh one never does.
+#[test]
+fn a_start_that_keeps_the_recorded_session_id_does_not_take_the_marker() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "h3");
+    let start = |id: &str| {
+        let out = env
+            .cmd()
+            .env("WS_WORKSPACE", "h3")
+            .env("WS_DIR", &proj)
+            .env("WS_AGENT", "codex")
+            .args(["internal", "session-start"])
+            .write_stdin(format!(r#"{{"source":"startup","session_id":"{id}"}}"#))
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap()
+    };
+    start("x1"); // records x1 as codex's session
+    arm(&proj, "c.md");
+    assert!(!start("x1").contains("c.md"), "the resumed conversation must not take it");
+    assert!(proj.join(".ws/local/pending-handoff").exists());
+    assert!(start("x2").contains(".ws/handoffs/c.md"), "a new conversation does");
+}

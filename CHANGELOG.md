@@ -6,12 +6,31 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-09-30
+
+### Added
+
+- Rotation without leaving the agent. `/ws:rotate` writes the handoff through
+  `ws -rotate`, which now arms it; type `/clear` and the fresh conversation
+  starts from it, then appends a successor report. A marker older than 6 hours
+  is dropped, and a resumed conversation never takes it.
+- The Stop hook asks once per conversation to rotate when context passes
+  `rotate_nudge` (default 65%; `ws config set rotate_nudge 0` turns it off).
+  Claude only: the reading comes from the status line.
+
 ### Changed
 
 - `ws -update` output is plain text in the shape `cs -update` uses: the version
   change, one `Installed … → path` line per thing
   installed, then what is new and a link to the release notes. `ws setup`
   prints the same `Installed` lines.
+- The handoff template leads with the next step and adds Conversation-only
+  facts and Rejected alternatives.
+
+### Fixed
+
+- Handoff skeletons no longer indent every line by nine spaces, which rendered
+  them as a code block.
 
 ## [0.14.0] — 2026-09-28
 
@@ -1011,7 +1030,9 @@ Secret Service — so neither produced artifacts.
 - Provide an interactive terminal dashboard.
 - Add installation, update, uninstall, diagnostics, CI, and release packaging.
 
-[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/djock/agent-workspaces/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/djock/agent-workspaces/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/djock/agent-workspaces/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/djock/agent-workspaces/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/djock/agent-workspaces/compare/v0.13.0...v0.13.1
 [0.8.0]: https://github.com/djock/agent-workspaces/compare/v0.7.0...v0.8.0

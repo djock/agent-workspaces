@@ -223,9 +223,22 @@ fn rotate_writes_a_handoff_skeleton_that_handoff_then_finds() {
     assert_eq!(files.len(), 1, "one handoff: {files:?}");
 
     let body = std::fs::read_to_string(dir.join(&files[0])).unwrap();
-    for heading in ["# Handoff", "What is done", "What is next", "Watch out for"] {
+    for heading in [
+        "# Handoff",
+        "## Next step",
+        "## Conversation-only facts",
+        "## Where things stand",
+        "## Rejected alternatives",
+        "## Watch out for",
+    ] {
         assert!(body.contains(heading), "missing {heading:?} in:\n{body}");
     }
+    let next = body.find("## Next step").unwrap();
+    let rest = body.find("## Where things stand").unwrap();
+    assert!(next < rest, "the next step comes first: a successor reads top-down");
+    // The old literal carried 9 spaces into every line, and 4+ leading spaces
+    // make markdown render the whole handoff as a code block.
+    assert!(body.lines().all(|l| !l.starts_with("    ")), "no indented lines:\n{body}");
     assert!(body.contains("**Agent:**"), "the agent is recorded: {body}");
     assert!(body.contains("**By:**"), "and the actor: {body}");
 }
@@ -308,4 +321,26 @@ fn who_falls_back_when_there_is_no_timeline_yet() {
     assert!(out.status.success(), "must not fail just because nothing happened yet");
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("no timeline yet") || text.contains("no recorded activity"), "{text}");
+}
+
+#[test]
+fn rotate_arms_the_handoff_it_writes() {
+    let env = Env::new();
+    let p = adopt(&env, "proj");
+    env.cmd().env("WS_WORKSPACE", "proj").current_dir(&p).arg("-rotate").assert().success();
+    let armed = std::fs::read_to_string(p.join(".ws/local/pending-handoff")).unwrap();
+    assert!(p.join(".ws/handoffs").join(armed.trim()).is_file(), "armed: {armed}");
+}
+
+#[test]
+fn the_rotate_prompt_arms_via_ws_rotate_and_names_the_clear_step() {
+    let env = Env::new();
+    let claude = env.fake_claude();
+    env.cmd().env("WS_CLAUDE_BIN", &claude).arg("setup").assert().success();
+    let body =
+        std::fs::read_to_string(env.home.path().join(".claude/commands/ws/rotate.md")).unwrap();
+    assert!(body.contains("ws -rotate"), "writes through the command that arms: {body}");
+    assert!(body.contains("Conversation-only facts"), "{body}");
+    assert!(body.contains("measured") && body.contains("assumed"), "{body}");
+    assert!(body.contains("Type /clear to continue"), "tells the agent the user's step: {body}");
 }
