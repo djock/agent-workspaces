@@ -6,6 +6,26 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Rotation without leaving the agent. `/ws:rotate` writes the handoff through
+  `ws -rotate`, which now arms it; type `/clear` and the fresh conversation
+  starts from it, then appends a successor report. A marker older than 6 hours
+  is dropped.
+- The Stop hook asks once per conversation to rotate when context passes
+  `rotate_nudge` (default 65%; `ws config set rotate_nudge 0` turns it off).
+  Claude only: the reading comes from the status line.
+
+### Changed
+
+- The handoff template leads with the next step and adds Conversation-only
+  facts and Rejected alternatives.
+
+### Fixed
+
+- Handoff skeletons no longer indent every line by nine spaces, which rendered
+  them as a code block.
+
 ## [0.14.0] — 2026-09-28
 
 ### Added
