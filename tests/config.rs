@@ -34,12 +34,9 @@ fn statusline_false_stops_setup_registering_a_status_line() {
     let env = Env::new();
     let shim = env.fake_claude();
     env.cmd().args(["config", "set", "statusline", "false"]).assert().success();
-    env.cmd()
-        .env("WS_CLAUDE_BIN", &shim)
-        .arg("setup")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("status line skipped (config statusline = false)"));
+    env.cmd().env("WS_CLAUDE_BIN", &shim).arg("setup").assert().success().stdout(
+        predicates::str::contains("Skipped claude status line (config statusline = false)"),
+    );
 
     let settings = env.home.path().join(".claude/settings.json");
     let body = std::fs::read_to_string(&settings).unwrap_or_default();

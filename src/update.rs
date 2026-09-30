@@ -27,28 +27,20 @@ const SUMMARY_WIDTH: usize = 68;
 /// Stands in for a version on the "and N earlier" tail line.
 const MORE: &str = "+";
 
-/// ANSI styling for update output, empty when stdout is not a terminal or
+/// ANSI styling for the launch notice, empty when stdout is not a terminal or
 /// `NO_COLOR` is set, so piped and logged output stays plain.
-pub(crate) struct Paint {
-    pub green: &'static str,
-    pub yellow: &'static str,
-    pub dim: &'static str,
-    pub bold: &'static str,
-    pub off: &'static str,
+struct Paint {
+    yellow: &'static str,
+    dim: &'static str,
+    off: &'static str,
 }
 
 impl Paint {
-    pub(crate) fn stdout() -> Self {
+    fn stdout() -> Self {
         if std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal() {
-            Paint {
-                green: "\x1b[32m",
-                yellow: "\x1b[33m",
-                dim: "\x1b[2m",
-                bold: "\x1b[1m",
-                off: "\x1b[0m",
-            }
+            Paint { yellow: "\x1b[33m", dim: "\x1b[2m", off: "\x1b[0m" }
         } else {
-            Paint { green: "", yellow: "", dim: "", bold: "", off: "" }
+            Paint { yellow: "", dim: "", off: "" }
         }
     }
 }
@@ -61,22 +53,22 @@ pub fn run(check: bool, force: bool) -> Result<()> {
     let latest_version = latest.strip_prefix('v').unwrap_or(&latest);
 
     validate_version(latest_version)?;
-    let Paint { green: g, dim: d, bold: b, off: o, .. } = Paint::stdout();
     // An explicit check is the freshest answer there is; record it so the next
     // launch reports the same thing rather than asking again.
     write_cache(latest_version);
 
     if check {
         if latest_version == current {
-            println!("{g}✓{o} ws {b}{current}{o} is up to date");
+            println!("ws {current} is up to date");
         } else {
-            print_card(latest_version, current, &format!("you have {current} — run ws -update"));
+            println!("Update available: ws {current} → {latest_version} (run ws -update)");
+            print_whats_new(latest_version, current);
         }
         return Ok(());
     }
 
     if latest_version == current && !force {
-        println!("{g}✓{o} ws {b}{current}{o} is already up to date");
+        println!("ws {current} is already up to date");
         return Ok(());
     }
 
@@ -87,11 +79,13 @@ pub fn run(check: bool, force: bool) -> Result<()> {
     let temp = TempDir::new()?;
     let installer = temp.path().join("install.sh");
 
-    // What you are getting comes first; the install steps narrate underneath it.
+    // Plain text throughout, in the shape `cs -update` uses: what is changing,
+    // each thing installed, then what is new.
+    println!();
     if latest_version == current {
-        print_card(latest_version, current, "reinstalling");
+        println!("  Reinstalling ws {current}");
     } else {
-        print_card(latest_version, current, &format!("you have {current}"));
+        println!("  Updating ws from {current} → {latest_version}");
     }
     println!();
 
@@ -129,10 +123,8 @@ pub fn run(check: bool, force: bool) -> Result<()> {
     if !status.success() {
         bail!("release installer exited with {status}");
     }
-    println!(
-        "  {g}✓{o} installed {} {d}(checksum OK){o}",
-        crate::picker::home_relative(&current_exe)
-    );
+    println!("  agent-workspaces\n");
+    println!("  Installed ws → {}", crate::picker::home_relative(&current_exe));
 
     let status = Command::new(&current_exe)
         .arg("setup")
@@ -142,22 +134,32 @@ pub fn run(check: bool, force: bool) -> Result<()> {
         bail!("updated ws, but `ws setup` exited with {status}");
     }
 
-    println!("  {g}✓{o} {b}updated{o}");
+    println!("\n  ✓ Installation complete ({latest_version})");
+    if latest_version != current {
+        println!();
+        print_whats_new(latest_version, current);
+    }
     Ok(())
 }
 
-/// The release being installed and its pending headlines, under the same `▌`
-/// bar as the launch notice so the two read as one thing.
-fn print_card(latest: &str, installed: &str, aside: &str) {
-    let Paint { yellow: y, dim: d, bold: b, off: o, .. } = Paint::stdout();
-    println!("{y}▌{o} {y}{b}ws {latest}{o} {d}({aside}){o}");
-    for (version, summary) in notes(latest, installed) {
-        if version == MORE {
-            println!("{y}▌{o}   {d}{summary}{o}");
-        } else {
-            println!("{y}▌{o}   {y}{version}{o}  {summary}");
+/// The headlines of every release between `installed` and `latest`, then where
+/// the full notes live. Prints only the link when the changelog is unavailable.
+fn print_whats_new(latest: &str, installed: &str) {
+    let notes = notes(latest, installed);
+    if !notes.is_empty() {
+        println!("  What's new:");
+        for (version, summary) in notes {
+            if version == MORE {
+                println!("    {summary}");
+            } else {
+                println!("    {version:<8}{summary}");
+            }
         }
+        println!();
     }
+    let repository =
+        std::env::var("WS_REPOSITORY").unwrap_or_else(|_| DEFAULT_REPOSITORY.to_string());
+    println!("  See https://github.com/{repository}/releases for the full notes.");
 }
 
 /// Print "there is a newer ws" on launch, the way `cs` does on session open.
@@ -193,7 +195,7 @@ pub fn notify() {
     if !version_greater(&latest, current) {
         return;
     }
-    let Paint { yellow: y, dim, off, .. } = Paint::stdout();
+    let Paint { yellow: y, dim, off } = Paint::stdout();
     println!(
         "{y}▌{off} {y}Update available:{off} {current} {dim}→{off} {latest} {dim}(ws -update){off}"
     );

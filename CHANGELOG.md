@@ -6,6 +6,13 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `ws -update` output is plain text in the shape `cs -update` uses: the version
+  change, one `Installed … → path` line per thing
+  installed, then what is new and a link to the release notes. `ws setup`
+  prints the same `Installed` lines.
+
 ## [0.14.0] — 2026-09-28
 
 ### Added

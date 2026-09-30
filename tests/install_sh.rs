@@ -312,7 +312,7 @@ fn sign(release: &Release, keys: &Path) {
 }
 
 /// The path every release takes once a key is published: signed, verified,
-/// installed — and in quiet mode, with no warning at all.
+/// installed — and in quiet mode, with nothing printed at all.
 #[test]
 fn a_correctly_signed_release_installs_without_a_warning() {
     let keys = tempfile::TempDir::new().unwrap();
@@ -322,7 +322,7 @@ fn a_correctly_signed_release_installs_without_a_warning() {
     let run = install_env(&release, Some(&pubkey), &[], &[("WS_INSTALL_QUIET", "1")]);
     let out = String::from_utf8_lossy(&run.output.stdout).to_string();
     assert!(run.installed(), "{}", run.stderr());
-    assert!(out.contains("signature verified"), "{out}");
+    assert!(!out.contains("verified"), "a clean install stays quiet: {out}");
     assert!(!run.stderr().contains("NOT checked"), "{}", run.stderr());
 }
 

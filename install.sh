@@ -198,11 +198,7 @@ else
                     echo "Do not install this. Report it: the assets do not match the release key." >&2
                     exit 1
                 }
-                if [ "$QUIET" = 1 ]; then
-                    echo "  ✓ signature verified"
-                else
-                    echo "install.sh: signature verified."
-                fi
+                [ "$QUIET" = 1 ] || echo "install.sh: signature verified."
             elif [ "$ALLOW_UNSIGNED" -eq 1 ]; then
                 echo "install.sh: WARNING: minisign is not installed, signature NOT checked (--allow-unsigned)." >&2
             else

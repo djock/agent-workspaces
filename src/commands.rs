@@ -198,20 +198,24 @@ pub fn setup() -> Result<()> {
             agent.as_ref(),
         )?;
         let np = crate::prompts::install_for(&agent.prompts_dir(), |b| agent.prompt_filename(b))?;
-        let status = if !statusline {
-            "status line skipped (config statusline = false)"
-        } else if id == "claude" {
-            crate::hooksetup::register_statuslines(&ws_bin)?;
-            "status line"
+        let hooks = crate::picker::home_relative(&agent.hooks_config_path());
+        let prompts = crate::picker::home_relative(&agent.prompts_dir());
+        println!("  Installed {id} hooks ({nh}) → {hooks}");
+        println!("  Installed {id} prompts ({np}) → {prompts}/");
+        if !statusline {
+            println!("  Skipped {id} status line (config statusline = false)");
         } else {
-            crate::hooksetup::register_codex_statusline()?;
-            "status line"
-        };
-        let crate::update::Paint { green: g, yellow: y, dim: d, off: o, .. } =
-            crate::update::Paint::stdout();
-        println!("  {g}✓{o} {:<8}{nh} hooks, {np} prompts, {d}{status}{o}", agent.id());
+            let config = if id == "claude" {
+                crate::hooksetup::register_statuslines(&ws_bin)?;
+                crate::hooksetup::claude_settings_path()
+            } else {
+                crate::hooksetup::register_codex_statusline()?;
+                crate::hooksetup::codex_config_path()
+            };
+            println!("  Installed {id} status line → {}", crate::picker::home_relative(&config));
+        }
         if let Some(note) = agent.hook_trust_note() {
-            println!("    {y}!{o} {note}");
+            println!("    ! {note}");
         }
     }
     Ok(())
