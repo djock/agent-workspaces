@@ -72,6 +72,26 @@ fn session_start() {
     record_session_identity(&ws, &h);
 
     let mut ctx = build_context(&ws);
+    // A rotation armed by `ws -rotate` continues here. Only on a fresh start: a
+    // compaction or a resume is the same conversation, and consuming the marker
+    // there would spend a rotation the user has not made yet.
+    if h.source == "startup" || h.source == "clear" {
+        if let Some(path) = crate::handoff::take(&ws) {
+            let name = path.file_name().and_then(|f| f.to_str()).unwrap_or_default();
+            ctx.push_str(&format!(
+                "\n\nThis conversation continues a rotation. Read .ws/handoffs/{name} before \
+                 anything else and take its Next step as your first action. When that step \
+                 is done, append a `## Successor report` to the handoff: what you had to \
+                 look up again, re-derive, or found wrong — or `none`."
+            ));
+            let _ = timeline::record(
+                &ws.timeline(),
+                "handoff-consumed",
+                &actors::actor_slug(),
+                serde_json::json!({ "file": name, "source": h.source }),
+            );
+        }
+    }
     // `/clear` is where the user says "this task is finished". Only then does ws
     // raise the finished-worktree question — never at startup or resume, when
     // nothing has just finished.

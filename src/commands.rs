@@ -1607,8 +1607,10 @@ pub fn rotate(name: Option<String>) -> Result<()> {
         &actor,
         serde_json::json!({ "file": path.file_name().and_then(|f| f.to_str()) }),
     );
+    crate::handoff::arm(&ws, &path)?;
     println!("wrote {}", path.display());
-    println!("`ws {n} --handoff` will point the next session at it.");
+    println!("armed: the next fresh conversation (/clear, or a new `ws {n}`) continues from it.");
+    println!("`ws {n} --handoff` also points a launch at it.");
     Ok(())
 }
 

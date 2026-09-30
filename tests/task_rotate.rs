@@ -309,3 +309,12 @@ fn who_falls_back_when_there_is_no_timeline_yet() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("no timeline yet") || text.contains("no recorded activity"), "{text}");
 }
+
+#[test]
+fn rotate_arms_the_handoff_it_writes() {
+    let env = Env::new();
+    let p = adopt(&env, "proj");
+    env.cmd().env("WS_WORKSPACE", "proj").current_dir(&p).arg("-rotate").assert().success();
+    let armed = std::fs::read_to_string(p.join(".ws/local/pending-handoff")).unwrap();
+    assert!(p.join(".ws/handoffs").join(armed.trim()).is_file(), "armed: {armed}");
+}

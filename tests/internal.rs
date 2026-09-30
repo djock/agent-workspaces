@@ -474,3 +474,56 @@ fn stop_stays_quiet_below_the_threshold_and_when_turned_off() {
     write_reading(&proj, "s1", 99);
     assert!(!stop(&env, "rot3", &proj, "s1").contains("99%"));
 }
+
+fn arm(proj: &std::path::Path, name: &str) {
+    std::fs::create_dir_all(proj.join(".ws/handoffs")).unwrap();
+    std::fs::write(proj.join(".ws/handoffs").join(name), "# Handoff").unwrap();
+    std::fs::create_dir_all(proj.join(".ws/local")).unwrap();
+    std::fs::write(proj.join(".ws/local/pending-handoff"), name).unwrap();
+}
+
+fn session_start(env: &Env, name: &str, proj: &std::path::Path, source: &str) -> String {
+    let out = env
+        .cmd()
+        .env("WS_WORKSPACE", name)
+        .env("WS_DIR", proj)
+        .args(["internal", "session-start"])
+        .write_stdin(format!(r#"{{"source":"{source}","session_id":"n1"}}"#))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn clear_continues_from_the_armed_handoff_once() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "h1");
+    arm(&proj, "2026-09-30T120000Z-me.md");
+
+    let out = session_start(&env, "h1", &proj, "clear");
+    assert!(out.contains(".ws/handoffs/2026-09-30T120000Z-me.md"), "{out}");
+    assert!(out.contains("Successor report"), "{out}");
+    assert!(!proj.join(".ws/local/pending-handoff").exists());
+
+    let tl = std::fs::read_to_string(proj.join(".ws/timeline.jsonl")).unwrap();
+    assert!(tl.contains("handoff-consumed"), "{tl}");
+
+    let again = session_start(&env, "h1", &proj, "clear");
+    assert!(!again.contains("2026-09-30T120000Z-me.md"), "only once: {again}");
+}
+
+#[test]
+fn compact_and_resume_leave_the_marker_armed() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "h2");
+    arm(&proj, "a.md");
+    for source in ["compact", "resume"] {
+        let out = session_start(&env, "h2", &proj, source);
+        assert!(!out.contains("a.md"), "{source}: {out}");
+        assert!(proj.join(".ws/local/pending-handoff").exists(), "{source} consumed it");
+    }
+    assert!(session_start(&env, "h2", &proj, "startup").contains(".ws/handoffs/a.md"));
+}
