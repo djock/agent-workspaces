@@ -527,3 +527,43 @@ fn compact_and_resume_leave_the_marker_armed() {
     }
     assert!(session_start(&env, "h2", &proj, "startup").contains(".ws/handoffs/a.md"));
 }
+
+#[test]
+fn two_conversations_over_the_threshold_are_each_nudged_once() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "rot4");
+    write_reading(&proj, "a", 70);
+    assert!(stop(&env, "rot4", &proj, "a").contains("70%"));
+    write_reading(&proj, "b", 71);
+    assert!(stop(&env, "rot4", &proj, "b").contains("71%"));
+    write_reading(&proj, "a", 72);
+    assert!(!stop(&env, "rot4", &proj, "a").contains("72%"), "a was already nudged");
+}
+
+/// Codex has only ever been seen reporting `startup`, so a resumed Codex
+/// conversation may too. It keeps its session id; a fresh one never does.
+#[test]
+fn a_start_that_keeps_the_recorded_session_id_does_not_take_the_marker() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "h3");
+    let start = |id: &str| {
+        let out = env
+            .cmd()
+            .env("WS_WORKSPACE", "h3")
+            .env("WS_DIR", &proj)
+            .env("WS_AGENT", "codex")
+            .args(["internal", "session-start"])
+            .write_stdin(format!(r#"{{"source":"startup","session_id":"{id}"}}"#))
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap()
+    };
+    start("x1"); // records x1 as codex's session
+    arm(&proj, "c.md");
+    assert!(!start("x1").contains("c.md"), "the resumed conversation must not take it");
+    assert!(proj.join(".ws/local/pending-handoff").exists());
+    assert!(start("x2").contains(".ws/handoffs/c.md"), "a new conversation does");
+}

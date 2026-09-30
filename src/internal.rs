@@ -69,14 +69,26 @@ fn session_start() {
     // This is the only place either agent's real session id is observable:
     // Claude mints its own at launch, but Codex assigns one itself, and the
     // hook payload is where it surfaces. See `record_session_identity`.
+    // Read the prior id first: recording overwrites it.
+    let prior_session = std::env::var("WS_AGENT")
+        .ok()
+        .filter(|a| !a.is_empty())
+        .and_then(|a| contract::read_session_id(&ws.state_toml(), &a));
     record_session_identity(&ws, &h);
 
     let mut ctx = build_context(&ws);
     // A rotation armed by `ws -rotate` continues here. Only on a fresh start: a
     // compaction or a resume is the same conversation, and consuming the marker
-    // there would spend a rotation the user has not made yet.
-    if h.source == "startup" || h.source == "clear" {
+    // there would spend a rotation the user has not made yet. The session id
+    // is the second check: Codex has only been seen reporting `startup`, so a
+    // resumed Codex conversation may too, but it keeps its id and a fresh one
+    // never does.
+    let fresh_start = (h.source == "startup" || h.source == "clear")
+        && prior_session.as_deref() != Some(h.session_id.as_str());
+    let mut rotated = false;
+    if fresh_start {
         if let Some(path) = crate::handoff::take(&ws) {
+            rotated = true;
             let name = path.file_name().and_then(|f| f.to_str()).unwrap_or_default();
             ctx.push_str(&format!(
                 "\n\nThis conversation continues a rotation. Read .ws/handoffs/{name} before \
@@ -94,8 +106,10 @@ fn session_start() {
     }
     // `/clear` is where the user says "this task is finished". Only then does ws
     // raise the finished-worktree question — never at startup or resume, when
-    // nothing has just finished.
-    if h.source == "clear" {
+    // nothing has just finished. A rotation `/clear` is the exception: it is
+    // mid-work by definition, and asking there invites marking an unfinished
+    // feature done.
+    if h.source == "clear" && !rotated {
         if let Some(note) = crate::done::clear_note(&ws.name, &ws.root) {
             ctx.push_str("\n\n");
             ctx.push_str(&note);
@@ -300,10 +314,14 @@ fn notebook_check(ws: &Workspace) -> Option<String> {
 }
 
 /// Returns Some(directive) once per conversation when its context reading has
-/// passed `rotate_nudge`. The stamp holds the session id already nudged: a
-/// `/compact` keeps the id and lowers the reading, and must not re-arm it; a
-/// `/clear` brings a new id, which gets its own nudge.
+/// passed `rotate_nudge`. The stamp holds the session ids already nudged, one
+/// per line: a `/compact` keeps the id and lowers the reading, and must not
+/// re-arm it; a `/clear` brings a new id, which gets its own nudge. It is a list
+/// rather than one id so two conversations in one checkout do not take turns
+/// re-arming each other.
 fn rotate_check(ws: &Workspace, h: &hookio::HookInput) -> Option<String> {
+    /// Enough for every conversation a checkout plausibly has open at once.
+    const KEEP: usize = 20;
     let threshold = crate::config::load().rotate_nudge;
     if threshold == 0 {
         return None;
@@ -312,12 +330,17 @@ fn rotate_check(ws: &Workspace, h: &hookio::HookInput) -> Option<String> {
     if pct < threshold {
         return None;
     }
+    let id = h.session_id.trim();
     let stamp = ws.local_dir().join("rotate-nudge.stamp");
-    if std::fs::read_to_string(&stamp).is_ok_and(|s| s.trim() == h.session_id.trim()) {
+    let raw = std::fs::read_to_string(&stamp).unwrap_or_default();
+    let mut nudged: Vec<&str> = raw.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if nudged.contains(&id) {
         return None;
     }
+    nudged.push(id);
+    let start = nudged.len().saturating_sub(KEEP);
     let _ = std::fs::create_dir_all(ws.local_dir());
-    let _ = std::fs::write(&stamp, h.session_id.trim());
+    let _ = std::fs::write(&stamp, nudged[start..].join("\n") + "\n");
     Some(format!(
         "Context check: this conversation is at {pct}% of its context window. Finish \
          only the step you are on and start nothing new. Then rotate: run /ws:rotate \

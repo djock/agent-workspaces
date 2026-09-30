@@ -675,3 +675,43 @@ fn a_modified_timeline_plus_another_dirty_file_in_the_worktree_still_refuses() {
         .failure()
         .stderr(predicates::str::contains("uncommitted changes"));
 }
+
+/// A rotation `/clear` is mid-work by definition: asking "is this feature done?"
+/// on it invites marking an unfinished feature done.
+#[test]
+fn a_rotation_clear_in_a_worktree_does_not_ask_whether_the_feature_is_done() {
+    let env = Env::new();
+    base_workspace(&env, "api");
+    env.cmd().arg("api@f").assert().success();
+    let f = env.root.join("api@f");
+    commit_in(&f, "a.txt");
+    std::fs::create_dir_all(f.join(".ws/handoffs")).unwrap();
+    std::fs::write(f.join(".ws/handoffs/h.md"), "# Handoff").unwrap();
+    // The rotate prompt's advice when the next step needs a clean tree.
+    git(&f, &["add", "-f", ".ws/handoffs/h.md"]);
+    git(&f, &["commit", "-q", "-m", "handoff"]);
+
+    let hook = || {
+        String::from_utf8_lossy(
+            &env.cmd()
+                .env("WS_WORKSPACE", "api@f")
+                .env("WS_DIR", &f)
+                .args(["internal", "session-start"])
+                .write_stdin(r#"{"source":"clear"}"#)
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone(),
+        )
+        .to_string()
+    };
+    // Anchor: with the handoff on disk but not armed, the question still fires,
+    // so its absence below is the rotation's doing, not a dirty tree.
+    assert!(hook().contains("mark this feature done"));
+
+    std::fs::write(f.join(".ws/local/pending-handoff"), "h.md").unwrap();
+    let out = hook();
+    assert!(out.contains(".ws/handoffs/h.md"), "{out}");
+    assert!(!out.contains("mark this feature done"), "{out}");
+}
