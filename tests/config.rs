@@ -85,3 +85,29 @@ fn config_set_preserves_other_keys() {
         .success()
         .stdout(predicates::str::diff("dark\n"));
 }
+
+#[test]
+fn rotate_nudge_defaults_to_65_and_accepts_0_to_turn_it_off() {
+    let env = Env::new();
+    env.cmd()
+        .args(["config", "get", "rotate_nudge"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("65\n"));
+    env.cmd().args(["config", "set", "rotate_nudge", "0"]).assert().success();
+    env.cmd()
+        .args(["config", "get", "rotate_nudge"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("0\n"));
+}
+
+#[test]
+fn rotate_nudge_refuses_a_percentage_over_100() {
+    let env = Env::new();
+    env.cmd()
+        .args(["config", "set", "rotate_nudge", "101"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("0 and 100"));
+}

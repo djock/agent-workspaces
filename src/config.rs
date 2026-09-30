@@ -37,6 +37,10 @@ pub struct Config {
     /// workspace notebook. Rate-limited to once per cooldown, and skipped
     /// entirely on continuation stops; set it false to never be reminded.
     pub notebook_prompt: bool,
+    /// Context % at which the Stop hook asks the agent to rotate (write a
+    /// handoff, then have the user `/clear`). Once per conversation. 0 turns
+    /// it off. Claude only: Codex has no status line to read it from.
+    pub rotate_nudge: u8,
     /// Whether `ws <name>` asks before resuming a previous conversation.
     /// The prompt defaults to No, so pressing Enter resumes.
     pub resume_prompt: bool,
@@ -64,6 +68,7 @@ impl Default for Config {
             task_prompt: true,
             done_prompt: true,
             notebook_prompt: true,
+            rotate_nudge: 65,
             resume_prompt: true,
             rewrite: false,
         }
@@ -146,6 +151,7 @@ pub fn list(cfg: &Config) -> Vec<(String, String)> {
         ("task_prompt".into(), cfg.task_prompt.to_string()),
         ("done_prompt".into(), cfg.done_prompt.to_string()),
         ("notebook_prompt".into(), cfg.notebook_prompt.to_string()),
+        ("rotate_nudge".into(), cfg.rotate_nudge.to_string()),
         ("resume_prompt".into(), cfg.resume_prompt.to_string()),
         ("rewrite".into(), cfg.rewrite.to_string()),
     ]
@@ -203,6 +209,13 @@ fn set_locked(path: &std::path::Path, key: &str, value: &str) -> Result<()> {
         "task_prompt" => cfg.task_prompt = parse_bool(value)?,
         "done_prompt" => cfg.done_prompt = parse_bool(value)?,
         "notebook_prompt" => cfg.notebook_prompt = parse_bool(value)?,
+        "rotate_nudge" => {
+            let v: u8 = value.parse()?;
+            if v > 100 {
+                bail!("rotate_nudge must be between 0 and 100 (0 turns it off)");
+            }
+            cfg.rotate_nudge = v;
+        }
         "resume_prompt" => cfg.resume_prompt = parse_bool(value)?,
         "rewrite" => cfg.rewrite = parse_bool(value)?,
         // C3: `sessions_root` is the base of `remove_one`'s "is this a
