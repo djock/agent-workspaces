@@ -43,7 +43,6 @@ pub fn write_reading(ws: &Workspace, session_id: &str, used_pct: f64) -> Result<
     crate::atomic::atomic_write(&reading_path(ws), serde_json::to_string(&r)?)
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // read by the Stop hook (Task 3)
 pub fn reading_for(ws: &Workspace, session_id: &str, now: i64) -> Option<u8> {
     let session_id = session_id.trim();
     if session_id.is_empty() {

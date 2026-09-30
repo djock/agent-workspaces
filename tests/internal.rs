@@ -409,3 +409,68 @@ fn the_task_prompt_can_be_turned_off() {
     let s = String::from_utf8(out).unwrap();
     assert!(!s.contains("ignored"), "task_prompt=false must stay silent: {s}");
 }
+
+fn write_reading(proj: &std::path::Path, session: &str, pct: u8) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    std::fs::create_dir_all(proj.join(".ws/local")).unwrap();
+    std::fs::write(
+        proj.join(".ws/local/context.json"),
+        format!(r#"{{"session_id":"{session}","pct":{pct},"stamped_at":{now}}}"#),
+    )
+    .unwrap();
+}
+
+fn stop(env: &Env, name: &str, proj: &std::path::Path, session: &str) -> String {
+    let out = env
+        .cmd()
+        .env("WS_WORKSPACE", name)
+        .env("WS_DIR", proj)
+        .env("WS_AGENT", "claude")
+        .args(["internal", "stop"])
+        .write_stdin(format!(r#"{{"session_id":"{session}"}}"#))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn stop_nudges_rotation_once_per_conversation_past_the_threshold() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "rot");
+    write_reading(&proj, "s1", 70);
+
+    let first = stop(&env, "rot", &proj, "s1");
+    assert!(first.contains("\"decision\":\"block\""), "{first}");
+    assert!(first.contains("70%"), "names the reading: {first}");
+    assert!(first.contains("/clear"), "tells the user the step: {first}");
+
+    let second = stop(&env, "rot", &proj, "s1");
+    assert!(!second.contains("70%"), "once per conversation: {second}");
+
+    // A fresh conversation after /clear gets its own nudge.
+    write_reading(&proj, "s2", 70);
+    assert!(stop(&env, "rot", &proj, "s2").contains("70%"));
+}
+
+#[test]
+fn stop_ignores_another_conversations_reading() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "rot2");
+    write_reading(&proj, "teammate", 95);
+    assert!(!stop(&env, "rot2", &proj, "lead").contains("95%"));
+}
+
+#[test]
+fn stop_stays_quiet_below_the_threshold_and_when_turned_off() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "rot3");
+    write_reading(&proj, "s1", 64);
+    assert!(!stop(&env, "rot3", &proj, "s1").contains("64%"));
+
+    env.cmd().args(["config", "set", "rotate_nudge", "0"]).assert().success();
+    write_reading(&proj, "s1", 99);
+    assert!(!stop(&env, "rot3", &proj, "s1").contains("99%"));
+}

@@ -203,6 +203,13 @@ fn stop() {
         return;
     }
 
+    // Context before the notebook: the rotation directive asks for the
+    // notebook update itself, so both firing on one stop would ask twice.
+    if let Some(directive) = rotate_check(&ws, &h) {
+        println!("{}", hookio::decision_block(&directive));
+        return;
+    }
+
     if let Some(reason) = notebook_check(&ws) {
         println!("{}", hookio::decision_block(&reason));
         return;
@@ -270,6 +277,34 @@ fn notebook_check(ws: &Workspace) -> Option<String> {
         work, correct it. If nothing needs changing, say so in one line and stop."
             .to_string(),
     )
+}
+
+/// Returns Some(directive) once per conversation when its context reading has
+/// passed `rotate_nudge`. The stamp holds the session id already nudged: a
+/// `/compact` keeps the id and lowers the reading, and must not re-arm it; a
+/// `/clear` brings a new id, which gets its own nudge.
+fn rotate_check(ws: &Workspace, h: &hookio::HookInput) -> Option<String> {
+    let threshold = crate::config::load().rotate_nudge;
+    if threshold == 0 {
+        return None;
+    }
+    let pct = crate::rotation::reading_for(ws, &h.session_id, limits::now_epoch())?;
+    if pct < threshold {
+        return None;
+    }
+    let stamp = ws.local_dir().join("rotate-nudge.stamp");
+    if std::fs::read_to_string(&stamp).is_ok_and(|s| s.trim() == h.session_id.trim()) {
+        return None;
+    }
+    let _ = std::fs::create_dir_all(ws.local_dir());
+    let _ = std::fs::write(&stamp, h.session_id.trim());
+    Some(format!(
+        "Context check: this conversation is at {pct}% of its context window. Finish \
+         only the step you are on and start nothing new. Then rotate: run /ws:rotate \
+         (it writes and arms a handoff), and tell the user to type /clear, which \
+         continues from the handoff in a fresh conversation. If the work has reached \
+         a natural end, say that in one line instead and stop."
+    ))
 }
 
 /// Returns Some(directive) when the Stop hook should surface captured tasks.
