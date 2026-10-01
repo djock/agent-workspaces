@@ -6,6 +6,20 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-10-01
+
+### Fixed
+
+- A session that inherited a workspace's environment but started outside its
+  folder no longer records itself as that workspace's session. VS Code opened
+  from a shell inside `ws hunger` carried hunger's environment into every
+  window, so a Codex session on another project was saved as hunger's, and the
+  next `ws hunger -codex` resumed the wrong conversation. Such a session is now
+  ignored and logged.
+- Notebook updates no longer bury the answer. The protocol asks agents to write
+  the notebook before their final reply, not after it, and the end-of-turn
+  reminder asks for a single append with at most one line after it.
+
 ## [0.15.0] — 2026-09-30
 
 ### Added
