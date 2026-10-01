@@ -51,6 +51,16 @@ fn session_start() {
         Some(w) => w,
         None => return, // not a ws launch → no context, exit 0
     };
+    if started_outside(&ws, &h) {
+        let _ = append_log(
+            &ws,
+            &format!(
+                "ignored a session started outside the workspace (cwd {}, session {})",
+                h.cwd, h.session_id
+            ),
+        );
+        return;
+    }
 
     // audit log
     let _ = append_log(&ws, &format!("session started (source: {})", h.source));
@@ -116,6 +126,25 @@ fn session_start() {
         }
     }
     println!("{}", hookio::additional_context("SessionStart", &ctx));
+}
+
+/// Whether a session that carries this workspace's env actually started somewhere
+/// else. The env is inherited, so it reaches sessions ws never launched: VS Code
+/// opened from a shell inside `ws hunger` hands `WS_WORKSPACE=hunger` to every
+/// window, and a Codex session opened there on keystone recorded its id into
+/// hunger — the next `ws hunger -codex` resumed the keystone conversation.
+///
+/// Only a cwd that resolves outside the root counts. A payload with no cwd, or
+/// one that cannot be resolved, is given the benefit of the doubt, so a launch
+/// ws made itself is never turned away.
+fn started_outside(ws: &Workspace, h: &hookio::HookInput) -> bool {
+    if h.cwd.trim().is_empty() {
+        return false;
+    }
+    match (std::fs::canonicalize(&ws.root), std::fs::canonicalize(&h.cwd)) {
+        (Ok(root), Ok(cwd)) => !cwd.starts_with(root),
+        _ => false,
+    }
 }
 
 /// Record which agent session this workspace is now on, and the lineage if it
@@ -308,7 +337,10 @@ fn notebook_check(ws: &Workspace) -> Option<String> {
         "Notebook check. Append any new findings to your own notebook \
         (.ws/notebook/notebook.<actor>.md — run `ws -whoami` if unsure which actor \
         you are; never edit a teammate's). If a prior note was disproven by your recent \
-        work, correct it. If nothing needs changing, say so in one line and stop."
+        work, correct it. Keep it to one append and add at most one line afterwards: \
+        your previous message is the answer the user is reading, and the edit already \
+        pushes it up. Next time, write the notebook before your final reply. If nothing \
+        needs changing, say so in one line and stop."
             .to_string(),
     )
 }
@@ -550,7 +582,8 @@ fn build_context(ws: &Workspace) -> String {
 
     s.push_str(
         "Protocol: read .ws/README.md and .ws/notebook/ on start; append findings to \
-         your own notebook (ws -whoami for your actor); write a handoff to .ws/handoffs/ \
+         your own notebook (ws -whoami for your actor) before your final reply, never \
+         after it; write a handoff to .ws/handoffs/ \
          on rotate or agent switch; store secrets via ws -secrets, never in files.",
     );
     s

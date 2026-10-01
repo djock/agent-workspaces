@@ -378,6 +378,60 @@ fn the_hook_records_nothing_without_an_agent() {
     assert!(!after.contains("orphan-id"));
 }
 
+/// A session whose cwd is outside the workspace is not this workspace's, even
+/// when it inherited the workspace's env. Seen live: VS Code launched from a
+/// shell inside `ws hunger` carried `WS_WORKSPACE=hunger` into every window, so a
+/// Codex session opened on keystone recorded its id into hunger, and the next
+/// `ws hunger -codex` resumed the keystone conversation.
+#[test]
+fn a_session_started_outside_the_workspace_is_not_recorded() {
+    let env = Env::new();
+    let shim = env.fake_codex();
+    env.cmd()
+        .env("WS_CODEX_BIN", &shim)
+        .env("WS_NO_EXEC", "1")
+        .args(["homeproj", "--agent", "codex"])
+        .assert()
+        .success();
+    let root = env.root.join("homeproj");
+    let elsewhere = env.root.join("other-project");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let before = std::fs::read_to_string(root.join(".ws/local/state.toml")).unwrap_or_default();
+
+    let payload = serde_json::json!({
+        "session_id": "foreign-id",
+        "source": "startup",
+        "cwd": elsewhere,
+    });
+    env.cmd()
+        .env("WS_WORKSPACE", "homeproj")
+        .env("WS_DIR", &root)
+        .env("WS_AGENT", "codex")
+        .args(["internal", "session-start"])
+        .write_stdin(payload.to_string())
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty());
+
+    let after = std::fs::read_to_string(root.join(".ws/local/state.toml")).unwrap_or_default();
+    assert_eq!(before, after, "a foreign session must not be recorded");
+
+    // The same payload from inside the root (a subdirectory counts) is recorded.
+    let sub = root.join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+    let payload = serde_json::json!({ "session_id": "home-id", "source": "startup", "cwd": sub });
+    env.cmd()
+        .env("WS_WORKSPACE", "homeproj")
+        .env("WS_DIR", &root)
+        .env("WS_AGENT", "codex")
+        .args(["internal", "session-start"])
+        .write_stdin(payload.to_string())
+        .assert()
+        .success();
+    let after = std::fs::read_to_string(root.join(".ws/local/state.toml")).unwrap();
+    assert!(after.contains("home-id"), "{after}");
+}
+
 #[test]
 fn switching_agents_clears_guard_and_records_default() {
     let env = Env::new();
