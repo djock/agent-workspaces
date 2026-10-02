@@ -6,6 +6,28 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-10-02
+
+### Changed
+
+- The picker states usage once, in a title line, per agent:
+  `ws 0.16.0 · 24 workspaces   claude 5h 49% wk 54%`. The per-row % column is
+  gone. It showed the account's usage at whatever time each workspace was last
+  open, so two rows differed only in when they were opened.
+- The picker has dim column headers, a selection bar that runs the full
+  terminal width, a green `●` for running agents, dimmed agent and age columns,
+  a name column sized to the names on screen, and a faint rule between
+  workspaces used today and older ones. Under `NO_COLOR` the `>` and `*`
+  markers stay.
+- Missing workspaces are dimmed; a corrupt one is red, and an agent waiting on
+  you is yellow.
+
+### Fixed
+
+- Usage from a window that has already reset is no longer shown. A workspace
+  last opened 51 days ago displayed `88%` from a five-hour window long over.
+  The picker's info page applies the same check.
+
 ## [0.15.1] — 2026-10-01
 
 ### Fixed
