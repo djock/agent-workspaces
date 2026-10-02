@@ -365,11 +365,10 @@ pub fn register_statuslines(ws_bin: &Path) -> Result<()> {
     let mut backup = serde_json::Map::new();
     let ws_prefix = format!("{} ", ws_bin.display());
     let quoted_ws_prefix = format!("{} ", shell_command(ws_bin));
-    for key in ["statusLine"] {
-        if let Some(cmd) = root.get(key).and_then(|v| v.get("command")).and_then(|c| c.as_str()) {
-            if !cmd.starts_with(&ws_prefix) && !cmd.starts_with(&quoted_ws_prefix) {
-                backup.insert(key.to_string(), json!(cmd));
-            }
+    let key = "statusLine";
+    if let Some(cmd) = root.get(key).and_then(|v| v.get("command")).and_then(|c| c.as_str()) {
+        if !cmd.starts_with(&ws_prefix) && !cmd.starts_with(&quoted_ws_prefix) {
+            backup.insert(key.to_string(), json!(cmd));
         }
     }
     // merge into any existing backup so a prior original is never lost
