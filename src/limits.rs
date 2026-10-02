@@ -144,6 +144,23 @@ pub fn is_stale(snap: &LimitsSnapshot, now: i64) -> bool {
     }
 }
 
+pub const FIVE_HOUR_SECS: i64 = 5 * 3600;
+pub const WEEK_SECS: i64 = 7 * 86_400;
+
+/// A window's percentage, rounded, while it still describes the window you are
+/// in — `None` once that window has reset. The picker used to print a reading
+/// from a workspace last opened 51 days ago next to one from four minutes ago,
+/// in the same format. With no reset time recorded, the snapshot's age decides,
+/// measured against the window's own length.
+pub fn current_pct(w: &Window, stamped_at: i64, span_secs: i64, now: i64) -> Option<i64> {
+    let live = if w.resets_at > 0 {
+        w.resets_at > now
+    } else {
+        stamped_at > 0 && now >= stamped_at && now - stamped_at < span_secs
+    };
+    live.then(|| w.used_pct.round() as i64)
+}
+
 /// "3h20m" / "2d4h" for display next to a stale reading.
 pub fn humanize_age(secs: i64) -> String {
     if secs < 60 {
@@ -290,5 +307,21 @@ mod tests {
         assert_eq!(humanize_age(90), "1m");
         assert_eq!(humanize_age(3 * 3600 + 20 * 60), "3h20m");
         assert_eq!(humanize_age(2 * 86_400 + 4 * 3600), "2d4h");
+    }
+
+    #[test]
+    fn a_window_that_has_reset_has_no_current_figure() {
+        let w = Window { used_pct: 88.4, resets_at: 1_000 };
+        assert_eq!(current_pct(&w, 500, FIVE_HOUR_SECS, 999), Some(88));
+        assert_eq!(current_pct(&w, 500, FIVE_HOUR_SECS, 1_000), None, "reset at the boundary");
+        assert_eq!(current_pct(&w, 500, FIVE_HOUR_SECS, 51 * 86_400), None);
+    }
+
+    #[test]
+    fn with_no_reset_time_the_snapshot_age_decides() {
+        let w = Window { used_pct: 30.0, resets_at: 0 };
+        assert_eq!(current_pct(&w, 10_000, FIVE_HOUR_SECS, 10_000 + 60), Some(30));
+        assert_eq!(current_pct(&w, 10_000, FIVE_HOUR_SECS, 10_000 + FIVE_HOUR_SECS), None);
+        assert_eq!(current_pct(&w, 0, WEEK_SECS, 10), None, "an unknown age is not fresh");
     }
 }

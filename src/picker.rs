@@ -152,6 +152,11 @@ impl State {
         self.visible.iter().map(|&i| &self.all[i]).collect()
     }
 
+    /// Every loaded row, filter or not: what the title counts and summarises.
+    pub fn all_rows(&self) -> &[WorkspaceRow] {
+        &self.all
+    }
+
     pub fn selected_row(&self) -> Option<&WorkspaceRow> {
         self.visible.get(self.selected).map(|&i| &self.all[i])
     }
@@ -355,11 +360,24 @@ impl State {
 /// `now` is passed in rather than read, so the relative-activity column is
 /// assertable — a test that has to wait for wall-clock time to change is a test
 /// that eventually fails on someone else's machine.
-pub fn render_row(r: &WorkspaceRow, selected: bool, now: i64) -> String {
-    let marker = if selected { '>' } else { ' ' };
-    let live = if r.live_pid.is_some() { '*' } else { ' ' };
+pub fn render_row(
+    r: &WorkspaceRow,
+    selected: bool,
+    now: i64,
+    theme: &Theme,
+    cols: &Columns,
+) -> String {
+    // Reverse video already says which row is selected, so the `>` is only
+    // drawn where there is no reverse video to say it.
+    let marker = if selected && theme.plain { '>' } else { ' ' };
+    let live = match (r.live_pid.is_some(), theme.plain) {
+        (false, _) => " ",
+        (true, true) => "*",
+        (true, false) => "●",
+    };
+    let broken = !matches!(r.state, RowState::Ok);
     let state = match &r.state {
-        RowState::Ok if r.archived => "[archived]".to_string(),
+        RowState::Ok if r.archived => "archived".to_string(),
         // What the agent says it is doing beats the status text the user set
         // last week: three live workspaces used to render as three identical
         // rows, and this column is the only thing that tells them apart.
@@ -367,26 +385,150 @@ pub fn render_row(r: &WorkspaceRow, selected: bool, now: i64) -> String {
             Some(s) => s.label(),
             None => r.status.clone().unwrap_or_default(),
         },
-        RowState::Missing => "(missing)".to_string(),
-        RowState::Corrupt(_) => "(corrupt)".to_string(),
+        RowState::Missing => "missing".to_string(),
+        RowState::Corrupt(_) => "corrupt".to_string(),
     };
     let tags = if r.tags.is_empty() { String::new() } else { format!("#{}", r.tags.join(" #")) };
     // "-" for never-touched rather than blank: an empty column reads as a
     // rendering bug, a dash reads as an answer.
     let when = r.last_activity.map(|t| crate::rows::ago(t, now)).unwrap_or_else(|| "-".into());
-    // The 5h usage figure, when the status line has captured one for this
-    // workspace. Absent is "", not "0%", which would be a lie.
-    let usage = r
-        .limits
-        .as_ref()
-        .map(|l| format!("{}%", l.five_hour.used_pct.round() as i64))
-        .unwrap_or_default();
-    format!(
-        "{marker}{live} {:<22} {:<7} {:>5} {:>5}  {:<18} {}",
-        r.name, r.agent, when, usage, state, tags
-    )
-    .trim_end()
-    .to_string()
+    let name = format!("{:<w$}", r.name, w = cols.name);
+    let agent = format!("{:<w$}", r.agent, w = cols.agent);
+    let when = format!("{when:>4}");
+
+    if selected && !theme.plain {
+        // One bar the full width of the terminal. Inner colours are dropped:
+        // each one ends in a reset, which would cut the reverse video short.
+        let line = format!("{marker}{live} {name}  {agent}  {when}  {state:<18} {tags}");
+        let line = line.trim_end();
+        let w = cols.width.max(line.chars().count());
+        return theme.selected(&format!("{line:<w$}"));
+    }
+
+    let (name, agent, when, state) = if broken {
+        // A row that cannot be opened should not look like one that can.
+        // Corrupt is red because it wants fixing; missing is just gone.
+        let state = match r.state {
+            RowState::Corrupt(_) => theme.bad(&state),
+            _ => theme.dim(&state),
+        };
+        (theme.dim(&name), theme.dim(&agent), theme.dim(&when), state)
+    } else {
+        let state = match &r.agent_state {
+            Some(s) if s.status == "waiting" => theme.warn(&state),
+            _ if r.archived => theme.dim(&state),
+            _ => state.clone(),
+        };
+        (name, theme.dim(&agent), theme.dim(&when), state)
+    };
+    // Pad by the plain text's width: the escape codes are invisible but counted.
+    let pad = " ".repeat(18usize.saturating_sub(state_width(r)));
+    let live = if r.live_pid.is_some() { theme.ok(live) } else { live.to_string() };
+    format!("{marker}{live} {name}  {agent}  {when}  {state}{pad} {}", theme.dim(&tags))
+        .trim_end()
+        .to_string()
+}
+
+/// The visible width of a row's state text, for padding a styled copy of it.
+fn state_width(r: &WorkspaceRow) -> usize {
+    match &r.state {
+        RowState::Ok if r.archived => "archived".len(),
+        RowState::Ok => match &r.agent_state {
+            Some(s) => s.label().chars().count(),
+            None => r.status.as_deref().map(|s| s.chars().count()).unwrap_or(0),
+        },
+        RowState::Missing => "missing".len(),
+        RowState::Corrupt(_) => "corrupt".len(),
+    }
+}
+
+/// Column widths for one frame, sized to the rows actually on screen so a list
+/// of short names does not push everything right of a fixed 22-column gutter.
+pub struct Columns {
+    pub name: usize,
+    pub agent: usize,
+    /// Whether any row has a status to show; a heading over an empty column
+    /// reads as missing data.
+    pub status: bool,
+    /// The terminal width, less one: printing into the last column makes some
+    /// terminals wrap, and a wrapped line breaks the erase arithmetic.
+    pub width: usize,
+}
+
+impl Columns {
+    pub fn fit(rows: &[&WorkspaceRow], width: u16) -> Self {
+        let longest = |f: fn(&WorkspaceRow) -> usize, floor: usize| {
+            rows.iter().map(|r| f(r)).max().unwrap_or(0).max(floor)
+        };
+        Columns {
+            // Floors are the header labels; the cap keeps one long name from
+            // pushing every other column off a narrow terminal.
+            name: longest(|r| r.name.chars().count(), "NAME".len()).min(28),
+            agent: longest(|r| r.agent.chars().count(), "AGENT".len()),
+            status: rows.iter().any(|r| state_width(r) > 0),
+            width: (width as usize).saturating_sub(1),
+        }
+    }
+
+    fn header(&self) -> String {
+        let status = if self.status { "  STATUS" } else { "" };
+        format!(
+            "   {:<n$}  {:<a$}  {:>4}{status}",
+            "NAME",
+            "AGENT",
+            "LAST",
+            n = self.name,
+            a = self.agent
+        )
+    }
+}
+
+/// Recently used: running now, or touched within the last day. The list draws a
+/// divider where this stops being true, since the sort puts these first.
+fn is_recent(r: &WorkspaceRow, now: i64) -> bool {
+    r.live_pid.is_some() || r.last_activity.is_some_and(|t| now - t < 86_400)
+}
+
+/// `claude 5h 34% wk 61% · codex 5h 92%` — usage once per agent, from the
+/// freshest reading any workspace holds.
+///
+/// It used to be a per-row column, but the figure belongs to the account, not
+/// the workspace: two rows only differed by when each was last open. Windows that
+/// have since reset are left out, and an agent with nothing current is omitted.
+fn usage_summary(rows: &[WorkspaceRow], now: i64, theme: &Theme) -> Option<String> {
+    let mut freshest: std::collections::BTreeMap<&str, &crate::limits::LimitsSnapshot> =
+        Default::default();
+    for r in rows {
+        if let Some(l) = &r.limits {
+            let agent = if l.agent.is_empty() { r.agent.as_str() } else { l.agent.as_str() };
+            if freshest.get(agent).is_none_or(|f| l.stamped_at > f.stamped_at) {
+                freshest.insert(agent, l);
+            }
+        }
+    }
+    let pct = |p: i64| {
+        let s = format!("{p}%");
+        match p {
+            90.. => theme.bad(&s),
+            70..=89 => theme.warn(&s),
+            _ => s,
+        }
+    };
+    let parts: Vec<String> = freshest
+        .into_iter()
+        .filter_map(|(agent, l)| {
+            use crate::limits::{current_pct, FIVE_HOUR_SECS, WEEK_SECS};
+            let mut windows = Vec::new();
+            if let Some(p) = current_pct(&l.five_hour, l.stamped_at, FIVE_HOUR_SECS, now) {
+                windows.push(format!("5h {}", pct(p)));
+            }
+            if let Some(p) = current_pct(&l.seven_day, l.stamped_at, WEEK_SECS, now) {
+                windows.push(format!("wk {}", pct(p)));
+            }
+            (!windows.is_empty()).then(|| format!("{agent} {}", windows.join(" ")))
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(&theme.dim(" · ")))
 }
 
 /// How much of a notebook and a timeline the info page shows. Capped so the
@@ -482,11 +624,15 @@ pub fn render_info(
         r.limits
             .as_ref()
             .map(|l| {
-                format!(
-                    "5h {}%  ·  week {}%",
-                    l.five_hour.used_pct.round() as i64,
-                    l.seven_day.used_pct.round() as i64
-                )
+                use crate::limits::{current_pct, FIVE_HOUR_SECS, WEEK_SECS};
+                let mut w = Vec::new();
+                if let Some(p) = current_pct(&l.five_hour, l.stamped_at, FIVE_HOUR_SECS, now) {
+                    w.push(format!("5h {p}%"));
+                }
+                if let Some(p) = current_pct(&l.seven_day, l.stamped_at, WEEK_SECS, now) {
+                    w.push(format!("week {p}%"));
+                }
+                w.join("  ·  ")
             })
             .unwrap_or_default(),
     );
@@ -567,11 +713,35 @@ fn draw(
     }
 
     let rows = state.visible_rows();
+    let total = state.all_rows().len();
+    let count = if rows.len() == total {
+        format!("{total} workspaces")
+    } else {
+        format!("{} of {total} workspaces", rows.len())
+    };
+    let mut title = format!("  ws {} · {count}", env!("CARGO_PKG_VERSION"));
+    if let Some(usage) = usage_summary(state.all_rows(), now, theme) {
+        title = format!("{}{}{usage}", theme.dim(&title), theme.dim("   "));
+    } else {
+        title = theme.dim(&title);
+    }
+    writeln!(out, "{title}\r")?;
+    lines += 1;
+
+    let cols = Columns::fit(&rows, width);
+    if !rows.is_empty() {
+        writeln!(out, "{}\r", theme.dim(&clip(&cols.header(), width)))?;
+        lines += 1;
+    }
     for (i, r) in rows.iter().enumerate() {
+        // One rule where "used today" ends, drawn only when there is something
+        // on both sides of it.
+        if i > 0 && is_recent(rows[i - 1], now) && !is_recent(r, now) {
+            writeln!(out, "{}\r", theme.dim(&format!("   {}", "┄".repeat(cols.name))))?;
+            lines += 1;
+        }
         let sel = i == state.selected_index();
-        let line = render_row(r, sel, now);
-        let line = if sel { theme.selected(&line) } else { line };
-        writeln!(out, "{line}\r")?;
+        writeln!(out, "{}\r", render_row(r, sel, now, theme, &cols))?;
         lines += 1;
     }
     if rows.is_empty() {
@@ -812,7 +982,7 @@ mod tests {
             }),
             ..row("api")
         };
-        assert!(render_row(&r, false, 0).contains("busy"), "{}", render_row(&r, false, 0));
+        assert!(line(&r, false).contains("busy"), "{}", line(&r, false));
     }
 
     /// The agent's own answer beats the status text the user set last week: one
@@ -828,7 +998,7 @@ mod tests {
             }),
             ..row("api")
         };
-        let line = render_row(&r, false, 0);
+        let line = line(&r, false);
         assert!(line.contains("waiting (input needed)"), "{line}");
         assert!(!line.contains("mid-refactor"), "{line}");
     }
@@ -838,7 +1008,7 @@ mod tests {
     #[test]
     fn a_row_with_no_agent_state_still_shows_the_status_the_user_set() {
         let r = WorkspaceRow { status: Some("mid-refactor".into()), ..row("api") };
-        assert!(render_row(&r, false, 0).contains("mid-refactor"));
+        assert!(line(&r, false).contains("mid-refactor"));
     }
 
     fn archived(name: &str) -> WorkspaceRow {
@@ -854,6 +1024,15 @@ mod tests {
             "dark",
             &crate::theme::ThemeEnv { no_color: true, ..Default::default() },
         )
+    }
+
+    /// A row as the NO_COLOR picker draws it.
+    fn line(r: &WorkspaceRow, selected: bool) -> String {
+        render_row(r, selected, 0, &plain(), &Columns::fit(&[r], 100))
+    }
+
+    fn colour() -> Theme {
+        crate::theme::resolve("dark", &crate::theme::ThemeEnv::default())
     }
 
     fn three() -> State {
@@ -1159,8 +1338,8 @@ mod tests {
 
     #[test]
     fn the_selected_row_is_marked_and_others_are_not() {
-        let sel = render_row(&row("alpha"), true, 0);
-        let un = render_row(&row("alpha"), false, 0);
+        let sel = line(&row("alpha"), true);
+        let un = line(&row("alpha"), false);
         assert!(sel.starts_with('>'), "{sel:?}");
         assert!(!un.starts_with('>'), "{un:?}");
         assert!(sel.contains("alpha") && un.contains("alpha"));
@@ -1169,15 +1348,15 @@ mod tests {
     #[test]
     fn a_live_workspace_is_marked() {
         let r = WorkspaceRow { live_pid: Some(1234), ..row("busy") };
-        assert!(render_row(&r, false, 0).contains('*'));
+        assert!(line(&r, false).contains('*'));
     }
 
     #[test]
     fn broken_states_are_labelled_rather_than_hidden() {
-        assert!(render_row(&missing("gone"), false, 0).contains("(missing)"));
+        assert!(line(&missing("gone"), false).contains("missing"));
         let c = WorkspaceRow { state: RowState::Corrupt("bad toml".into()), ..row("weird") };
-        assert!(render_row(&c, false, 0).contains("(corrupt)"));
-        assert!(render_row(&archived("old"), false, 0).contains("[archived]"));
+        assert!(line(&c, false).contains("corrupt"));
+        assert!(line(&archived("old"), false).contains("archived"));
     }
 
     #[test]
@@ -1187,7 +1366,7 @@ mod tests {
             status: Some("mid refactor".into()),
             ..row("proj")
         };
-        let line = render_row(&r, false, 0);
+        let line = line(&r, false);
         assert!(line.contains("#rust #cli"), "{line}");
         assert!(line.contains("mid refactor"), "{line}");
     }
@@ -1201,8 +1380,8 @@ mod tests {
         let lines = draw(&s, &plain(), 0, (100, 40), &mut buf).unwrap();
         let text = String::from_utf8(buf).unwrap();
 
-        assert_eq!(lines, 4, "three rows plus the hint line");
-        assert_eq!(text.lines().count(), 4);
+        assert_eq!(lines, 6, "title, column header, three rows, the hint");
+        assert_eq!(text.lines().count(), 6);
         assert!(text.contains("alpha") && text.contains("gamma"));
         assert!(text.contains("↑↓ move"), "the hint tells you the keys: {text}");
         assert!(!text.contains("\x1b[2J"), "must never clear the screen");
@@ -1227,7 +1406,7 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         let lines = draw(&s, &plain(), 0, (100, 40), &mut buf).unwrap();
         let text = String::from_utf8(buf).unwrap();
-        assert_eq!(lines, 2, "the empty notice plus the hint");
+        assert_eq!(lines, 3, "the title, the empty notice, the hint");
         assert!(text.contains("no workspaces match"), "{text}");
     }
 
@@ -1263,7 +1442,7 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         let lines = draw(&s, &plain(), 0, (100, 40), &mut buf).unwrap();
         let text = String::from_utf8(buf).unwrap();
-        assert_eq!(lines, 5, "three rows, the notice, the hint");
+        assert_eq!(lines, 7, "title, column header, three rows, the notice, the hint");
         assert!(text.contains("removed gamma"), "{text}");
     }
 
@@ -1372,5 +1551,93 @@ mod tests {
         assert!(text.contains("esc back"), "{text}");
         assert!(!text.contains("\x1b[2J") && !text.contains("\x1b[?1049h"), "no takeover: {text}");
         assert!(!text.contains("↑↓ move"), "the list hint belongs to the list: {text}");
+    }
+
+    /// With colour, reverse video marks the selection, and it runs the full
+    /// width rather than stopping wherever the row's text happens to end.
+    #[test]
+    fn the_coloured_selection_is_one_full_width_bar_without_a_marker() {
+        let r = row("alpha");
+        let sel = render_row(&r, true, 0, &colour(), &Columns::fit(&[&r], 80));
+        assert!(sel.starts_with("\x1b[7m"), "{sel:?}");
+        assert!(!sel.contains('>'), "reverse video already says it: {sel:?}");
+        let inner = sel.trim_start_matches("\x1b[7m").trim_end_matches("\x1b[0m");
+        assert_eq!(inner.chars().count(), 79, "padded to the width, less one column: {sel:?}");
+        assert!(!inner.contains('\x1b'), "no inner reset may cut the bar short: {sel:?}");
+    }
+
+    #[test]
+    fn a_live_workspace_is_a_green_dot_in_colour() {
+        let r = WorkspaceRow { live_pid: Some(1), ..row("busy") };
+        let l = render_row(&r, false, 0, &colour(), &Columns::fit(&[&r], 80));
+        assert!(l.contains("\x1b[32m●"), "{l:?}");
+    }
+
+    #[test]
+    fn columns_fit_the_longest_name_on_screen() {
+        let a = row("ab");
+        let b = row("a-much-longer-name");
+        assert_eq!(Columns::fit(&[&a], 80).name, 4, "never narrower than its heading");
+        assert_eq!(Columns::fit(&[&a, &b], 80).name, 18);
+    }
+
+    fn snap(
+        agent: &str,
+        five: f64,
+        resets_at: i64,
+        stamped_at: i64,
+    ) -> crate::limits::LimitsSnapshot {
+        crate::limits::LimitsSnapshot {
+            agent: agent.into(),
+            five_hour: crate::limits::Window { used_pct: five, resets_at },
+            seven_day: crate::limits::Window { used_pct: 10.0, resets_at },
+            stamped_at,
+        }
+    }
+
+    /// Usage is the account's, so it is stated once, from the freshest reading
+    /// — not once per row from whenever each workspace was last open.
+    #[test]
+    fn the_title_states_usage_once_from_the_freshest_reading() {
+        let now = 100_000;
+        let rows = vec![
+            WorkspaceRow { limits: Some(snap("claude", 34.0, now + 600, now - 60)), ..row("new") },
+            WorkspaceRow {
+                limits: Some(snap("claude", 88.0, now + 600, now - 3000)),
+                ..row("old")
+            },
+        ];
+        let u = usage_summary(&rows, now, &plain()).unwrap();
+        assert!(u.contains("claude 5h 34%"), "{u}");
+        assert!(!u.contains("88%"), "{u}");
+    }
+
+    #[test]
+    fn usage_from_a_window_that_has_reset_is_not_shown() {
+        let now = 100_000;
+        let rows = vec![WorkspaceRow {
+            limits: Some(snap("claude", 88.0, now - 1, now - 51 * 86_400)),
+            ..row("invest")
+        }];
+        assert_eq!(usage_summary(&rows, now, &plain()), None);
+    }
+
+    #[test]
+    fn a_rule_separates_today_from_older() {
+        let now = 1_000_000;
+        let s = State::new(
+            vec![
+                WorkspaceRow { last_activity: Some(now - 60), ..row("fresh") },
+                WorkspaceRow { last_activity: Some(now - 5 * 86_400), ..row("stale") },
+            ],
+            false,
+        );
+        let mut buf: Vec<u8> = Vec::new();
+        let lines = draw(&s, &plain(), now, (100, 40), &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert_eq!(lines, 6, "title, header, row, rule, row, hint: {text}");
+        let rule = text.lines().position(|l| l.contains('┄')).expect("a rule");
+        let stale = text.lines().position(|l| l.contains("stale")).unwrap();
+        assert_eq!(rule + 1, stale, "{text}");
     }
 }

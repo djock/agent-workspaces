@@ -69,10 +69,31 @@ impl Theme {
 
     /// De-emphasise secondary text (hints, timestamps).
     pub fn dim(&self, s: &str) -> String {
-        if self.plain {
+        self.sgr("2", s)
+    }
+
+    /// Something good and current: a running agent.
+    pub fn ok(&self, s: &str) -> String {
+        self.sgr("32", s)
+    }
+
+    /// Worth a look: an agent waiting on you, usage getting high.
+    pub fn warn(&self, s: &str) -> String {
+        self.sgr("33", s)
+    }
+
+    /// About to stop you: usage at the limit, a workspace that will not open.
+    pub fn bad(&self, s: &str) -> String {
+        self.sgr("31", s)
+    }
+
+    /// The basic eight colours only, so the terminal's own palette decides the
+    /// exact shade — which is what keeps them readable on light and dark alike.
+    fn sgr(&self, code: &str, s: &str) -> String {
+        if self.plain || s.is_empty() {
             s.to_string()
         } else {
-            format!("\x1b[2m{s}\x1b[0m")
+            format!("\x1b[{code}m{s}\x1b[0m")
         }
     }
 }
