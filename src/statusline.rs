@@ -186,8 +186,8 @@ impl Seg {
 }
 
 /// Rounded pills, one space apart. The caps are drawn in the pill's color on the
-/// terminal's own background, which is what makes the ends look round. No padding
-/// inside a pill: the caps already give the text room.
+/// terminal's own background, which is what makes the ends look round. One space
+/// of padding inside each cap, so the text does not touch the curve.
 fn draw(segs: &[Seg]) -> String {
     // Lead with a reset: residual SGR state from whatever drew last must not
     // bleed into the first pill.
@@ -199,7 +199,7 @@ fn draw(segs: &[Seg]) -> String {
         let (r, g, b) = seg.bg;
         let (tr, tg, tb) = seg.fg.unwrap_or_else(|| ink_for(seg.bg));
         out.push_str(&format!("\x1b[49m\x1b[38;2;{r};{g};{b}m{CAP_LEFT}"));
-        out.push_str(&format!("\x1b[48;2;{r};{g};{b}m\x1b[38;2;{tr};{tg};{tb}m{}", seg.text));
+        out.push_str(&format!("\x1b[48;2;{r};{g};{b}m\x1b[38;2;{tr};{tg};{tb}m {} ", seg.text));
         out.push_str(&format!("\x1b[49m\x1b[38;2;{r};{g};{b}m{CAP_RIGHT}\x1b[0m"));
     }
     out
@@ -424,7 +424,7 @@ mod tests {
         i.effort = EffortInfo { level: "xhigh".into() };
         assert_eq!(model_seg(&render(&i, None, PLAIN)), "Sonnet 5 (xhigh)");
         // In the bar the block boundary separates them, so the parentheses go.
-        assert!(text_of(&render(&i, None, BAR)).contains("\u{e0b6}Sonnet 5 xhigh\u{e0b4}"));
+        assert!(text_of(&render(&i, None, BAR)).contains("\u{e0b6} Sonnet 5 xhigh \u{e0b4}"));
     }
 
     #[test]
@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn a_warning_block_takes_dark_text() {
         let s = render(&input("m", 55.0, 0.0, 0.0), None, BAR);
-        let at = s.find("ctx 55%").unwrap();
+        let at = s.find(" ctx 55%").unwrap();
         assert!(s[..at].ends_with(&format!("\x1b[38;2;{};{};{}m", INK.0, INK.1, INK.2)), "{s:?}");
     }
 
@@ -550,7 +550,7 @@ mod tests {
         let s = text_of(&render(&input("Opus", 1.0, 1.0, 1.0), Some(&chip(Some("green"))), BAR));
         assert_eq!(
             s,
-            "\u{e0b6}ws-ui\u{e0b4} \u{e0b6}Opus\u{e0b4} \u{e0b6}ctx 1%\u{e0b4} \u{e0b6}5h 1%\u{e0b4} \u{e0b6}wk 1%\u{e0b4}"
+            "\u{e0b6} ws-ui \u{e0b4} \u{e0b6} Opus \u{e0b4} \u{e0b6} ctx 1% \u{e0b4} \u{e0b6} 5h 1% \u{e0b4} \u{e0b6} wk 1% \u{e0b4}"
         );
     }
 
@@ -561,7 +561,7 @@ mod tests {
         let (r, g, b) = TINT;
         let (tr, tg, tb) = TINT_TEXT;
         assert!(
-            s.contains(&format!("\x1b[48;2;{r};{g};{b}m\x1b[38;2;{tr};{tg};{tb}mctx 1%")),
+            s.contains(&format!("\x1b[48;2;{r};{g};{b}m\x1b[38;2;{tr};{tg};{tb}m ctx 1%")),
             "{s:?}"
         );
         assert!(!s.contains("48;2;212;212;212"), "no grey slab: {s:?}");
@@ -593,7 +593,7 @@ mod tests {
             s.starts_with(&format!("\x1b[0m\x1b[49m\x1b[38;2;{r};{g};{b}m\u{e0b6}")),
             "chip first: {s:?}"
         );
-        assert!(text_of(&s).starts_with("\u{e0b6}ws-ui\u{e0b4}"), "{s:?}");
+        assert!(text_of(&s).starts_with("\u{e0b6} ws-ui \u{e0b4}"), "{s:?}");
         assert!(text_of(&s).contains("Sonnet 5"), "the rest of the bar survives: {s:?}");
     }
 
@@ -604,7 +604,7 @@ mod tests {
     fn a_workspace_without_a_color_still_shows_its_name() {
         let s = render(&input("m", 0.0, 0.0, 0.0), Some(&chip(None)), BAR);
         let (r, g, b) = TINT;
-        assert!(text_of(&s).starts_with("\u{e0b6}ws-ui\u{e0b4}"), "{s:?}");
+        assert!(text_of(&s).starts_with("\u{e0b6} ws-ui \u{e0b4}"), "{s:?}");
         assert!(s.contains(&format!("\x1b[48;2;{r};{g};{b}m")), "falls back to quiet: {s:?}");
     }
 
@@ -621,7 +621,7 @@ mod tests {
         let bare = render(&input("Sonnet 5", 1.0, 2.0, 3.0), None, PLAIN);
         assert!(bare.starts_with("Sonnet 5"), "{bare:?}");
         assert!(text_of(&render(&input("Sonnet 5", 1.0, 2.0, 3.0), None, BAR))
-            .starts_with("\u{e0b6}Sonnet 5"));
+            .starts_with("\u{e0b6} Sonnet 5"));
     }
 
     #[test]

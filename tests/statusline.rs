@@ -85,7 +85,7 @@ fn the_status_line_leads_with_a_colored_workspace_chip() {
         colored.starts_with("\x1b[0m\x1b[49m\x1b[38;2;22;163;74m\u{e0b6}"),
         "chip leads: {colored:?}"
     );
-    assert!(colored.contains("\x1b[48;2;22;163;74m\x1b[38;2;240;242;255msl\x1b"), "{colored:?}");
+    assert!(colored.contains("\x1b[48;2;22;163;74m\x1b[38;2;240;242;255m sl \x1b"), "{colored:?}");
 
     let plain = render(true);
     assert!(plain.starts_with("sl \u{b7} "), "NO_COLOR keeps the name: {plain:?}");
@@ -109,7 +109,7 @@ fn the_chip_is_absent_outside_a_workspace() {
     let statusline = String::from_utf8(out).unwrap();
     // First pill is the model, not a workspace name.
     assert!(statusline.starts_with("\x1b[0m\x1b[49m\x1b[38;2;138;134;236m"), "{statusline:?}");
-    assert!(statusline.contains("mOpus 4.8 high\x1b"), "{statusline:?}");
+    assert!(statusline.contains("m Opus 4.8 high \x1b"), "{statusline:?}");
     assert!(!statusline.contains("sl"), "no workspace name to show: {statusline:?}");
 }
 
