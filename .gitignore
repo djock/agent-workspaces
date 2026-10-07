@@ -38,3 +38,6 @@ minisign.key
 .cs/local/
 .cs/archives/
 .cs/.narrative-reminder-cooldown
+
+# Claude Code lays a mod's API types beside it on load; they are per build.
+plugins/*/.claude-plugin/types/

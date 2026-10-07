@@ -6,6 +6,14 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `ws-quiet-notes`, an optional Claude Code mod in `plugins/` with a
+  marketplace at the repo root. It replaces diffs of `.ws/` and `.cs/` files in
+  the transcript with one dim line, counts the session's notes above the
+  prompt, and reads them back in a pane (**Read** button or `/notes`). Install:
+  `/plugin install ws-quiet-notes --marketplace djock/agent-workspaces`.
+
 ## [0.17.0] — 2026-10-07
 
 ### Changed

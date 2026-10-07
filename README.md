@@ -513,6 +513,28 @@ A snapshot whose recording process is still running belongs to a live session
 and is never reported as a crash. Snapshots left by dead sessions are swept after
 a fortnight. Only changed trees are written, so an idle turn costs nothing.
 
+## Quiet notes in Claude Code (optional mod)
+
+Agents append to `.ws/notebook/` all session, and Claude Code shows each append
+as a full diff, which pushes the answer out of view. The `ws-quiet-notes` mod
+(Claude Code 2.1.292 or later) cuts that back:
+
+- in the transcript, a diff of a file under `.ws/` or `.cs/` becomes one dim
+  line, `.ws/notebook/notebook.me.md updated (+2 -0)`; the command's own output
+  and other files' diffs still show;
+- above the prompt, `✎ 3 notes · 1 new [ Read ]` counts this session's notes;
+- **Read** (or `n` once the band has focus) and `/notes` open a pane with the
+  notes, newest first; `j` and `k` page through older and newer ones.
+
+Install it once from a terminal:
+
+```
+/plugin install ws-quiet-notes --marketplace djock/agent-workspaces
+```
+
+Answer `y` to add the marketplace, then pick the user scope. It is Claude-only:
+Codex sessions keep showing full diffs. The source is in `plugins/ws-quiet-notes/`.
+
 ## Update and uninstall
 
 ```sh

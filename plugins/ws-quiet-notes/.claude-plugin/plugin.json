@@ -1,0 +1,7 @@
+{
+  "name": "ws-quiet-notes",
+  "version": "0.1.0",
+  "description": "Hides the diffs of workspace notes (.ws/, .cs/) in the transcript, counts them above the prompt, and reads them back with /notes.",
+  "author": { "name": "Ionut Mocanu" },
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "agent-workspaces",
+  "description": "Claude Code mods for ws workspaces.",
+  "owner": {
+    "name": "Ionut Mocanu"
+  },
+  "plugins": [
+    {
+      "name": "ws-quiet-notes",
+      "source": "./plugins/ws-quiet-notes",
+      "description": "Hides workspace-note diffs (.ws/, .cs/) in the transcript, counts them above the prompt, and reads them back with /notes."
+    }
+  ]
+}
