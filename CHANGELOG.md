@@ -6,6 +6,18 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-10-07
+
+### Changed
+
+- The status line draws each segment as a rounded pill, one space apart.
+  ctx, 5h and wk sit on a dark tint instead of a light-grey block, and still
+  turn amber and then red as each window fills. Critical red is a touch
+  softer (`#f05252`).
+- The rounded ends are Powerline glyphs (U+E0B6, U+E0B4). They need a Nerd
+  Font, or in iTerm: Settings › Profiles › Text › Use built-in Powerline
+  glyphs. Without either they show as missing-character boxes.
+
 ## [0.16.0] — 2026-10-02
 
 ### Changed
