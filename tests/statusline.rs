@@ -78,10 +78,14 @@ fn the_status_line_leads_with_a_colored_workspace_chip() {
     };
 
     // green is 22,163,74 — the same RGB the iTerm2 tab background is set to. The
-    // bar leads with a reset so no residual SGR state bleeds into the first block.
+    // bar leads with a reset so no residual SGR state bleeds into the first pill,
+    // whose rounded left cap is drawn in the chip's color.
     let colored = render(false);
-    assert!(colored.starts_with("\x1b[0m\x1b[48;2;22;163;74m"), "chip leads: {colored:?}");
-    assert!(colored.contains(" sl "), "{colored:?}");
+    assert!(
+        colored.starts_with("\x1b[0m\x1b[49m\x1b[38;2;22;163;74m\u{e0b6}"),
+        "chip leads: {colored:?}"
+    );
+    assert!(colored.contains("\x1b[48;2;22;163;74m\x1b[38;2;240;242;255msl\x1b"), "{colored:?}");
 
     let plain = render(true);
     assert!(plain.starts_with("sl \u{b7} "), "NO_COLOR keeps the name: {plain:?}");
@@ -103,9 +107,9 @@ fn the_chip_is_absent_outside_a_workspace() {
         .stdout
         .clone();
     let statusline = String::from_utf8(out).unwrap();
-    // First block is the model, not a workspace name.
-    assert!(statusline.starts_with("\x1b[0m\x1b[48;2;138;134;236m"), "{statusline:?}");
-    assert!(statusline.contains(" Opus 4.8 high "), "{statusline:?}");
+    // First pill is the model, not a workspace name.
+    assert!(statusline.starts_with("\x1b[0m\x1b[49m\x1b[38;2;138;134;236m"), "{statusline:?}");
+    assert!(statusline.contains("mOpus 4.8 high\x1b"), "{statusline:?}");
     assert!(!statusline.contains("sl"), "no workspace name to show: {statusline:?}");
 }
 

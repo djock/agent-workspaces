@@ -103,9 +103,6 @@ pub struct Style {
     /// `NO_COLOR`: emit no escape codes at all, so the terminal's palette shows
     /// through. Falls back to the middot-separated text line.
     pub plain: bool,
-    /// A dark terminal. Only shifts the quiet `surface` shade; every other color
-    /// holds on both.
-    pub dark: bool,
 }
 
 // --- the bar's palette -------------------------------------------------------
@@ -118,33 +115,20 @@ const INK: (u8, u8, u8) = (30, 30, 30);
 const PERIWINKLE: (u8, u8, u8) = (138, 134, 236); // model
 const SLATE: (u8, u8, u8) = (79, 91, 140); // git branch
 const AMBER: (u8, u8, u8) = (255, 183, 77); // a gauge at its warning threshold
-const RED: (u8, u8, u8) = (220, 38, 38); // a gauge past critical
-/// The divider between two blocks that share a background. Without it, three
-/// healthy gauges in a row merge into one long slab and stop reading as three
-/// numbers. It has to read against whichever background it lands on, so it is
-/// derived per block rather than fixed: the block's own ink, softened.
-fn hairline_for(bg: (u8, u8, u8)) -> (u8, u8, u8) {
-    let (r, g, b) = bg;
-    let (ir, ig, ib) = ink_for(bg);
-    // Halfway between the block and its text: present as a seam, not as a stripe.
-    (
-        (r as u16 + ir as u16) as u8 / 2,
-        (g as u16 + ig as u16) as u8 / 2,
-        (b as u16 + ib as u16) as u8 / 2,
-    )
-}
+const RED: (u8, u8, u8) = (240, 82, 82); // a gauge past critical
+/// The backing for a gauge with headroom and for a workspace without a color: a
+/// dark slate a step above the terminal, so the pill reads as a shape without
+/// the light-grey slab the old bar put behind every number.
+const TINT: (u8, u8, u8) = (38, 43, 54);
+/// Text on `TINT`: a soft grey, quieter than the near-white on the accents, so a
+/// healthy number does not compete with the model and the branch.
+const TINT_TEXT: (u8, u8, u8) = (199, 205, 216);
 
-/// The quiet backing for a gauge with headroom: a neutral light grey, a shade
-/// deeper on a light terminal so the block still reads as a block rather than
-/// dissolving into the background. Both shades are light enough to take dark ink,
-/// which `ink_for` works out rather than being told.
-fn surface(dark: bool) -> (u8, u8, u8) {
-    if dark {
-        (212, 212, 212)
-    } else {
-        (190, 190, 190)
-    }
-}
+/// The rounded ends of a pill: Powerline's half-circles (U+E0B6, U+E0B4). They
+/// live in the Private Use Area, so they need a Nerd Font or a terminal that draws
+/// Powerline glyphs itself (iTerm: Profiles › Text › Use built-in Powerline glyphs).
+const CAP_LEFT: char = '\u{e0b6}';
+const CAP_RIGHT: char = '\u{e0b4}';
 
 /// Text color for a block, chosen by how light its background is.
 ///
@@ -176,46 +160,48 @@ fn reset_suffix(resets_at: i64, now: i64) -> String {
     format!(" \u{25f7} {}", limits::countdown(resets_at, now))
 }
 
-/// A gauge's backing, escalating on its own value.
-fn gauge(pct: i64, warn: i64, crit: i64, dark: bool) -> (u8, u8, u8) {
+/// A gauge's pill, escalating on its own value.
+fn gauge(text: String, pct: i64, warn: i64, crit: i64) -> Seg {
     if pct >= crit {
-        RED
+        Seg::new(text, RED)
     } else if pct >= warn {
-        AMBER
+        Seg::new(text, AMBER)
     } else {
-        surface(dark)
+        Seg { text, bg: TINT, fg: Some(TINT_TEXT) }
     }
 }
 
-/// One filled block.
+/// One pill.
 struct Seg {
     text: String,
     bg: (u8, u8, u8),
+    /// Text color when `ink_for` would be too loud for the pill's role.
+    fg: Option<(u8, u8, u8)>,
 }
 
 impl Seg {
     fn new(text: impl Into<String>, bg: (u8, u8, u8)) -> Self {
-        Seg { text: text.into(), bg }
+        Seg { text: text.into(), bg, fg: None }
     }
 }
 
-/// Squared blocks that abut: the change of background *is* the separator, which
-/// is the most discreet one available. Neighbours sharing a background get a
-/// one-eighth bar (U+258F) in the shared color so the boundary does not vanish.
+/// Rounded pills, one space apart. The caps are drawn in the pill's color on the
+/// terminal's own background, which is what makes the ends look round. No padding
+/// inside a pill: the caps already give the text room.
 fn draw(segs: &[Seg]) -> String {
     // Lead with a reset: residual SGR state from whatever drew last must not
-    // bleed into the first block.
+    // bleed into the first pill.
     let mut out = String::from("\x1b[0m");
     for (i, seg) in segs.iter().enumerate() {
-        let (r, g, b) = seg.bg;
-        if i > 0 && segs[i - 1].bg == seg.bg {
-            let (hr, hg, hb) = hairline_for(seg.bg);
-            out.push_str(&format!("\x1b[48;2;{r};{g};{b}m\x1b[38;2;{hr};{hg};{hb}m\u{258f}"));
+        if i > 0 {
+            out.push(' ');
         }
-        let (tr, tg, tb) = ink_for(seg.bg);
-        out.push_str(&format!("\x1b[48;2;{r};{g};{b}m\x1b[38;2;{tr};{tg};{tb}m {} ", seg.text));
+        let (r, g, b) = seg.bg;
+        let (tr, tg, tb) = seg.fg.unwrap_or_else(|| ink_for(seg.bg));
+        out.push_str(&format!("\x1b[49m\x1b[38;2;{r};{g};{b}m{CAP_LEFT}"));
+        out.push_str(&format!("\x1b[48;2;{r};{g};{b}m\x1b[38;2;{tr};{tg};{tb}m{}", seg.text));
+        out.push_str(&format!("\x1b[49m\x1b[38;2;{r};{g};{b}m{CAP_RIGHT}\x1b[0m"));
     }
-    out.push_str("\x1b[0m");
     out
 }
 
@@ -225,7 +211,6 @@ pub fn render(input: &StatuslineInput, chip: Option<&Chip>, style: Style) -> Str
     } else {
         input.cwd.as_str()
     };
-    let dark = style.dark;
 
     let branch = git_branch(cwd);
     let ctx = input.context_window.used_percentage.round() as i64;
@@ -266,7 +251,7 @@ pub fn render(input: &StatuslineInput, chip: Option<&Chip>, style: Style) -> Str
     if let Some(c) = chip {
         // An unknown or absent color falls back to the quiet backing: the
         // workspace name is the point, its color is the decoration.
-        let bg = c.color.as_deref().and_then(crate::term::rgb).unwrap_or(surface(dark));
+        let bg = c.color.as_deref().and_then(crate::term::rgb).unwrap_or(TINT);
         segs.push(Seg::new(&c.name, bg));
         // Amber, beside the workspace it belongs to, and only when there is
         // something to read: a badge that is always present is one nobody sees.
@@ -292,12 +277,12 @@ pub fn render(input: &StatuslineInput, chip: Option<&Chip>, style: Style) -> Str
     }
     // Context pressure is worth seeing early because it is actionable — compact
     // or rotate — so it warns at half full.
-    segs.push(Seg::new(format!("ctx {ctx}%"), gauge(ctx, 50, 80, dark)));
-    segs.push(Seg::new(format!("5h {five}%{five_cd}"), gauge(five, 70, 90, dark)));
+    segs.push(gauge(format!("ctx {ctx}%"), ctx, 50, 80));
+    segs.push(gauge(format!("5h {five}%{five_cd}"), five, 70, 90));
     // The weekly window warns far later than the 5-hour one. A weekly figure
     // climbing through 70% is normal mid-week; warning there would leave the
     // block amber for days and teach you to ignore it.
-    segs.push(Seg::new(format!("wk {week}%{week_cd}"), gauge(week, 90, 95, dark)));
+    segs.push(gauge(format!("wk {week}%{week_cd}"), week, 90, 95));
     draw(&segs)
 }
 
@@ -323,16 +308,7 @@ pub fn run() {
         }
     });
 
-    // Theme detection without `ThemeEnv::detect()`: that shells out to
-    // `defaults read` on macOS, and this line repaints once a second. COLORFGBG
-    // is a plain env var, and a dark terminal is the right guess when it is absent.
-    let env = crate::theme::ThemeEnv {
-        no_color: std::env::var_os("NO_COLOR").is_some(),
-        colorfgbg: std::env::var("COLORFGBG").ok(),
-        os_dark: None,
-    };
-    let theme = crate::theme::resolve("auto", &env);
-    let style = Style { plain: theme.plain, dark: theme.dark };
+    let style = Style { plain: std::env::var_os("NO_COLOR").is_some() };
     let _ = writeln!(std::io::stdout(), "{}", render(&input, chip.as_ref(), style));
 }
 
@@ -355,8 +331,8 @@ mod tests {
         }
     }
 
-    const PLAIN: Style = Style { plain: true, dark: true };
-    const BAR: Style = Style { plain: false, dark: true };
+    const PLAIN: Style = Style { plain: true };
+    const BAR: Style = Style { plain: false };
 
     fn chip(color: Option<&str>) -> Chip {
         Chip { name: "ws-ui".into(), color: color.map(str::to_string), unread: 0, done: 0 }
@@ -448,7 +424,7 @@ mod tests {
         i.effort = EffortInfo { level: "xhigh".into() };
         assert_eq!(model_seg(&render(&i, None, PLAIN)), "Sonnet 5 (xhigh)");
         // In the bar the block boundary separates them, so the parentheses go.
-        assert!(text_of(&render(&i, None, BAR)).contains(" Sonnet 5 xhigh "));
+        assert!(text_of(&render(&i, None, BAR)).contains("\u{e0b6}Sonnet 5 xhigh\u{e0b4}"));
     }
 
     #[test]
@@ -479,10 +455,7 @@ mod tests {
         };
         let amber = format!("\x1b[48;2;{};{};{}", AMBER.0, AMBER.1, AMBER.2);
         let red = format!("\x1b[48;2;{};{};{}", RED.0, RED.1, RED.2);
-        let quiet = {
-            let (r, g, b) = surface(true);
-            format!("\x1b[48;2;{r};{g};{b}")
-        };
+        let quiet = format!("\x1b[48;2;{};{};{}", TINT.0, TINT.1, TINT.2);
 
         // ctx warns at 50, 5h at 70, wk not until 90.
         let s = render(&input("m", 55.0, 75.0, 75.0), None, BAR);
@@ -507,9 +480,10 @@ mod tests {
         let s = render(&input("m", 0.0, 75.0, 75.0), None, BAR);
         let five_at = s.find("5h 75%").unwrap();
         let week_at = s.find("wk 75%").unwrap();
-        assert!(s[..five_at].contains(&format!("{};{};{}", AMBER.0, AMBER.1, AMBER.2)));
+        let amber_bg = format!("48;2;{};{};{}", AMBER.0, AMBER.1, AMBER.2);
+        assert!(s[..five_at].contains(&amber_bg));
         assert!(
-            !s[five_at..week_at].contains(&format!("{};{};{}", AMBER.0, AMBER.1, AMBER.2)),
+            !s[five_at..week_at].contains(&amber_bg),
             "the same value must not warn in both windows: {s:?}"
         );
     }
@@ -521,8 +495,7 @@ mod tests {
     #[test]
     fn every_background_gets_readable_text() {
         for (bg, want, what) in [
-            (surface(true), INK, "grey surface, dark terminal"),
-            (surface(false), INK, "grey surface, light terminal"),
+            (TINT, CHIPTEXT, "dark tint"),
             (AMBER, INK, "amber"),
             (PERIWINKLE, CHIPTEXT, "periwinkle"),
             (SLATE, CHIPTEXT, "slate"),
@@ -539,17 +512,6 @@ mod tests {
         // `white` is accepted from a hand-written workspace.toml, and is the one
         // color that would be unreadable if this rule were a fixed list.
         assert_eq!(ink_for(crate::term::rgb("white").unwrap()), INK);
-    }
-
-    /// The seam must contrast whichever block it sits on. A single fixed hairline
-    /// color vanished against some backgrounds and glared against others.
-    #[test]
-    fn the_hairline_contrasts_the_block_it_sits_on() {
-        for bg in [surface(true), AMBER, RED] {
-            let h = hairline_for(bg);
-            assert_ne!(h, bg, "a seam the color of its block is not a seam");
-            assert_ne!(h, ink_for(bg), "a seam as strong as the text reads as a stripe");
-        }
     }
 
     /// A clock with a countdown, and nothing at all when there is no reset to
@@ -578,18 +540,40 @@ mod tests {
     fn a_warning_block_takes_dark_text() {
         let s = render(&input("m", 55.0, 0.0, 0.0), None, BAR);
         let at = s.find("ctx 55%").unwrap();
-        assert!(s[..at].ends_with(&format!("\x1b[38;2;{};{};{}m ", INK.0, INK.1, INK.2)), "{s:?}");
+        assert!(s[..at].ends_with(&format!("\x1b[38;2;{};{};{}m", INK.0, INK.1, INK.2)), "{s:?}");
     }
 
-    /// Three healthy gauges share the quiet backing; without a divider they merge
-    /// into one slab and stop reading as three separate numbers.
+    /// Every pill is closed by its own rounded caps and set one space from the
+    /// next, so neighbours that share the tint still read as separate numbers.
     #[test]
-    fn same_colored_neighbours_get_a_hairline_between_them() {
+    fn every_segment_is_a_rounded_pill_one_space_apart() {
+        let s = text_of(&render(&input("Opus", 1.0, 1.0, 1.0), Some(&chip(Some("green"))), BAR));
+        assert_eq!(
+            s,
+            "\u{e0b6}ws-ui\u{e0b4} \u{e0b6}Opus\u{e0b4} \u{e0b6}ctx 1%\u{e0b4} \u{e0b6}5h 1%\u{e0b4} \u{e0b6}wk 1%\u{e0b4}"
+        );
+    }
+
+    /// A healthy gauge keeps its numbers quiet; the old light-grey slab is gone.
+    #[test]
+    fn a_healthy_gauge_sits_on_the_dark_tint_with_soft_text() {
         let s = render(&input("m", 1.0, 1.0, 1.0), None, BAR);
-        assert_eq!(s.matches('\u{258f}').count(), 2, "ctx|5h and 5h|wk: {s:?}");
-        // Differing backgrounds need no divider — the color change is the divider.
-        let s = render(&input("m", 55.0, 1.0, 1.0), None, BAR);
-        assert_eq!(s.matches('\u{258f}').count(), 1, "only 5h|wk still share: {s:?}");
+        let (r, g, b) = TINT;
+        let (tr, tg, tb) = TINT_TEXT;
+        assert!(
+            s.contains(&format!("\x1b[48;2;{r};{g};{b}m\x1b[38;2;{tr};{tg};{tb}mctx 1%")),
+            "{s:?}"
+        );
+        assert!(!s.contains("48;2;212;212;212"), "no grey slab: {s:?}");
+    }
+
+    /// The caps sit on the terminal's own background, or the pill would show
+    /// square corners in the bar's color.
+    #[test]
+    fn the_caps_are_drawn_on_the_terminal_background() {
+        let s = render(&input("m", 1.0, 1.0, 1.0), None, BAR);
+        assert_eq!(s.matches("\x1b[49m").count(), 2 * s.matches('\u{e0b6}').count(), "{s:?}");
+        assert!(s.ends_with("\x1b[0m"), "the line closes with a reset: {s:?}");
     }
 
     #[test]
@@ -605,8 +589,11 @@ mod tests {
     fn the_workspace_chip_leads_the_line() {
         let s = render(&input("Sonnet 5", 0.0, 0.0, 0.0), Some(&chip(Some("green"))), BAR);
         let (r, g, b) = crate::term::rgb("green").unwrap();
-        assert!(s.starts_with(&format!("\x1b[0m\x1b[48;2;{r};{g};{b}m")), "chip first: {s:?}");
-        assert!(s.contains(" ws-ui "), "{s:?}");
+        assert!(
+            s.starts_with(&format!("\x1b[0m\x1b[49m\x1b[38;2;{r};{g};{b}m\u{e0b6}")),
+            "chip first: {s:?}"
+        );
+        assert!(text_of(&s).starts_with("\u{e0b6}ws-ui\u{e0b4}"), "{s:?}");
         assert!(text_of(&s).contains("Sonnet 5"), "the rest of the bar survives: {s:?}");
     }
 
@@ -616,8 +603,8 @@ mod tests {
     #[test]
     fn a_workspace_without_a_color_still_shows_its_name() {
         let s = render(&input("m", 0.0, 0.0, 0.0), Some(&chip(None)), BAR);
-        let (r, g, b) = surface(true);
-        assert!(text_of(&s).starts_with(" ws-ui "), "{s:?}");
+        let (r, g, b) = TINT;
+        assert!(text_of(&s).starts_with("\u{e0b6}ws-ui\u{e0b4}"), "{s:?}");
         assert!(s.contains(&format!("\x1b[48;2;{r};{g};{b}m")), "falls back to quiet: {s:?}");
     }
 
@@ -633,9 +620,8 @@ mod tests {
     fn no_workspace_means_no_prefix_at_all() {
         let bare = render(&input("Sonnet 5", 1.0, 2.0, 3.0), None, PLAIN);
         assert!(bare.starts_with("Sonnet 5"), "{bare:?}");
-        assert!(
-            text_of(&render(&input("Sonnet 5", 1.0, 2.0, 3.0), None, BAR)).starts_with(" Sonnet 5")
-        );
+        assert!(text_of(&render(&input("Sonnet 5", 1.0, 2.0, 3.0), None, BAR))
+            .starts_with("\u{e0b6}Sonnet 5"));
     }
 
     #[test]
