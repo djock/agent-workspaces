@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-10-09
+
 ### Added
 
 - A new conversation (startup or `/clear`) prints a one-line terminal banner
@@ -17,6 +19,11 @@ The project follows [Semantic Versioning](https://semver.org/).
   the transcript with one dim line, counts the session's notes above the
   prompt, and reads them back in a pane (**Read** button or `/notes`). Install:
   `/plugin install ws-quiet-notes --marketplace djock/agent-workspaces`.
+
+### Changed
+
+- Each status line pill has one space of padding inside its rounded caps, so
+  the text no longer touches them.
 
 ## [0.17.0] — 2026-10-07
 
