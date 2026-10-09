@@ -96,8 +96,11 @@ fn session_start() {
     let fresh_start = (h.source == "startup" || h.source == "clear")
         && prior_session.as_deref() != Some(h.session_id.as_str());
     let mut rotated = false;
+    let mut banner = None;
     if fresh_start {
-        if let Some(path) = crate::handoff::take(&ws) {
+        let taken = crate::handoff::take(&ws);
+        banner = crate::handoff::notice(&ws, taken.as_deref());
+        if let Some(path) = taken {
             rotated = true;
             let name = path.file_name().and_then(|f| f.to_str()).unwrap_or_default();
             ctx.push_str(&format!(
@@ -125,7 +128,11 @@ fn session_start() {
             ctx.push_str(&note);
         }
     }
-    println!("{}", hookio::additional_context("SessionStart", &ctx));
+    let out = match banner {
+        Some(b) => hookio::additional_context_with_message("SessionStart", &ctx, &b),
+        None => hookio::additional_context("SessionStart", &ctx),
+    };
+    println!("{out}");
 }
 
 /// Whether a session that carries this workspace's env actually started somewhere

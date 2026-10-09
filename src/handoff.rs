@@ -58,6 +58,33 @@ pub fn take(ws: &Workspace) -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
+/// The one-line terminal banner for a fresh conversation: the rotation it is
+/// continuing (`consumed`), or else the newest handoff not yet announced. Each
+/// handoff is announced once — the stamp holds its name — so ignoring it is a
+/// durable "no". The banner goes out as `systemMessage`, which the user sees
+/// and the model never does: telling the user costs no tokens, and the handoff
+/// is read only if they ask for it.
+pub fn notice(ws: &Workspace, consumed: Option<&std::path::Path>) -> Option<String> {
+    let stamp = ws.local_dir().join("handoff-notice.stamp");
+    let path = match consumed {
+        Some(p) => p.to_path_buf(),
+        None => latest_handoff(ws)?,
+    };
+    let name = path.file_name()?.to_str()?.to_string();
+    if consumed.is_none() && std::fs::read_to_string(&stamp).is_ok_and(|s| s.trim() == name) {
+        return None;
+    }
+    let _ = std::fs::create_dir_all(ws.local_dir());
+    let _ = std::fs::write(&stamp, &name);
+    Some(match consumed {
+        Some(_) => format!("ws: Continuing from handoff .ws/handoffs/{name}"),
+        None => format!(
+            "ws: handoff waiting: .ws/handoffs/{name}. To pick it up, ask the agent to \
+             continue from it. Otherwise ignore this; it won't be shown again."
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +149,43 @@ mod tests {
         f.set_modified(old).unwrap();
         assert_eq!(take(&w), None);
         assert!(!w.local_dir().join("pending-handoff").exists());
+    }
+
+    #[test]
+    fn a_waiting_handoff_is_announced_once() {
+        let td = TempDir::new().unwrap();
+        let w = ws(&td);
+        handoff(&w, "a.md");
+        let n = notice(&w, None).expect("first open announces it");
+        assert!(n.contains(".ws/handoffs/a.md"), "{n}");
+        assert_eq!(notice(&w, None), None, "already announced");
+    }
+
+    #[test]
+    fn a_newer_handoff_is_announced_after_an_older_one() {
+        let td = TempDir::new().unwrap();
+        let w = ws(&td);
+        let a = handoff(&w, "a.md");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&a).unwrap().set_modified(old).unwrap();
+        notice(&w, None).unwrap();
+        handoff(&w, "b.md");
+        assert!(notice(&w, None).unwrap().contains("b.md"));
+    }
+
+    #[test]
+    fn no_handoffs_means_no_notice() {
+        let td = TempDir::new().unwrap();
+        assert_eq!(notice(&ws(&td), None), None);
+    }
+
+    #[test]
+    fn a_consumed_handoff_says_it_continues_and_is_not_announced_again() {
+        let td = TempDir::new().unwrap();
+        let w = ws(&td);
+        let h = handoff(&w, "r.md");
+        let n = notice(&w, Some(&h)).unwrap();
+        assert!(n.contains("Continuing") && n.contains("r.md"), "{n}");
+        assert_eq!(notice(&w, None), None, "the rotation already used it");
     }
 }

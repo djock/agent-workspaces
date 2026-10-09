@@ -8,6 +8,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A new conversation (startup or `/clear`) prints a one-line terminal banner
+  naming the newest handoff in `.ws/handoffs/`, once per handoff, or the
+  rotation it is continuing. The banner is a hook `systemMessage`, so the model
+  never sees it and it costs no tokens.
 - `ws-quiet-notes`, an optional Claude Code mod in `plugins/` with a
   marketplace at the repo root. It replaces diffs of `.ws/` and `.cs/` files in
   the transcript with one dim line, counts the session's notes above the

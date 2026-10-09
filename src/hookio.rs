@@ -65,6 +65,19 @@ pub fn additional_context(event: &str, context: &str) -> String {
     .to_string()
 }
 
+/// `additional_context` plus a `systemMessage`: shown to the user in the
+/// terminal, never sent to the model. Both Claude and Codex (0.161.0) accept it.
+pub fn additional_context_with_message(event: &str, context: &str, message: &str) -> String {
+    json!({
+        "systemMessage": message,
+        "hookSpecificOutput": {
+            "hookEventName": event,
+            "additionalContext": context,
+        }
+    })
+    .to_string()
+}
+
 pub fn decision_block(reason: &str) -> String {
     json!({ "decision": "block", "reason": reason }).to_string()
 }
