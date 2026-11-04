@@ -13,6 +13,10 @@ pub struct LaunchCtx {
     /// agent's own default alone — which is what every launch did before the
     /// modes existed, and what a workspace that has never been told still gets.
     pub mode: Option<LaunchMode>,
+    /// A first message the agent submits on its own, as if the user had typed
+    /// it. Set when the user accepts a waiting handoff at launch, so the agent
+    /// starts on it instead of sitting at an empty prompt.
+    pub initial_prompt: Option<String>,
 }
 
 /// How much the agent is allowed to do without asking.

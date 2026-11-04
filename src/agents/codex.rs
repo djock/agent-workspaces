@@ -175,6 +175,10 @@ impl Agent for CodexAgent {
         if let Some(mode) = ctx.mode {
             cmd.args(self.mode_args(mode));
         }
+        // Last: both CLIs take the opening prompt as a trailing positional.
+        if let Some(p) = &ctx.initial_prompt {
+            cmd.arg(p);
+        }
         cmd.current_dir(&ws.root)
             .env("WS_WORKSPACE", &ws.name)
             .env("WS_DIR", &ws.root)
@@ -211,7 +215,12 @@ mod tests {
     }
 
     fn ctx(fresh: bool) -> LaunchCtx {
-        LaunchCtx { fresh, sessions_root: std::path::PathBuf::from("/tmp/ws-root"), mode: None }
+        LaunchCtx {
+            fresh,
+            sessions_root: std::path::PathBuf::from("/tmp/ws-root"),
+            mode: None,
+            initial_prompt: None,
+        }
     }
 
     #[test]
@@ -302,6 +311,7 @@ mod tests {
                     fresh: false,
                     sessions_root: "/tmp/ws-root".into(),
                     mode: Some(LaunchMode::Sane),
+                    initial_prompt: None,
                 },
             )
             .unwrap();
@@ -317,6 +327,7 @@ mod tests {
                     fresh: true,
                     sessions_root: "/tmp/ws-root".into(),
                     mode: Some(LaunchMode::Loco),
+                    initial_prompt: None,
                 },
             )
             .unwrap();
@@ -395,5 +406,16 @@ mod tests {
         assert!(!args.iter().any(|a| a == "resume"));
         let removed = cmd.get_envs().any(|(k, v)| k == "WS_WORKSPACE" && v.is_none());
         assert!(removed);
+    }
+
+    #[test]
+    fn an_opening_prompt_is_the_last_argument() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let td = TempDir::new().unwrap();
+        let ws = Workspace { name: "p".into(), root: td.path().to_path_buf() };
+        let ctx = LaunchCtx { initial_prompt: Some("go".into()), ..ctx(true) };
+        let cmd = CodexAgent.launch(&ws, &ctx).unwrap();
+        let a: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert_eq!(a, vec!["go"]);
     }
 }

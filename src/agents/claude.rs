@@ -182,6 +182,10 @@ impl Agent for ClaudeAgent {
         if let Some(mode) = ctx.mode {
             cmd.args(self.mode_args(mode));
         }
+        // Last: both CLIs take the opening prompt as a trailing positional.
+        if let Some(p) = &ctx.initial_prompt {
+            cmd.arg(p);
+        }
         cmd.current_dir(&ws.root)
             .env("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", ws.memory_dir())
             .env("WS_WORKSPACE", &ws.name)
@@ -222,7 +226,12 @@ mod tests {
     fn fresh_uses_session_id_and_records_it() {
         let d = TempDir::new().unwrap();
         let ws = ws_at(d.path());
-        let ctx = LaunchCtx { fresh: true, sessions_root: "/root".into(), mode: None };
+        let ctx = LaunchCtx {
+            fresh: true,
+            sessions_root: "/root".into(),
+            mode: None,
+            initial_prompt: None,
+        };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         let a = args_of(&cmd);
         assert_eq!(a[0], "--session-id");
@@ -238,7 +247,12 @@ mod tests {
         let d = TempDir::new().unwrap();
         let ws = ws_at(d.path());
         crate::contract::write_session_id(&ws.state_toml(), "claude", "uuid-xyz").unwrap();
-        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into(), mode: None };
+        let ctx = LaunchCtx {
+            fresh: false,
+            sessions_root: "/root".into(),
+            mode: None,
+            initial_prompt: None,
+        };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         assert_eq!(args_of(&cmd), vec!["--resume", "uuid-xyz"]);
     }
@@ -260,7 +274,12 @@ mod tests {
         let d = TempDir::new().unwrap();
         let ws = ws_at(d.path());
         std::fs::write(ws.state_toml(), "not toml {{{").unwrap();
-        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into(), mode: None };
+        let ctx = LaunchCtx {
+            fresh: false,
+            sessions_root: "/root".into(),
+            mode: None,
+            initial_prompt: None,
+        };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         let a = args_of(&cmd);
         assert_eq!(
@@ -276,7 +295,12 @@ mod tests {
     fn absent_state_toml_with_fresh_false_still_launches_fresh() {
         let d = TempDir::new().unwrap();
         let ws = ws_at(d.path());
-        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into(), mode: None };
+        let ctx = LaunchCtx {
+            fresh: false,
+            sessions_root: "/root".into(),
+            mode: None,
+            initial_prompt: None,
+        };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         let a = args_of(&cmd);
         assert_eq!(
@@ -296,7 +320,12 @@ mod tests {
         let ws = ws_at(d.path());
         std::fs::write(ws.state_toml(), "[claude]\nsession_id = \"abc\"\n").unwrap();
         std::fs::set_permissions(ws.state_toml(), std::fs::Permissions::from_mode(0o000)).unwrap();
-        let ctx = LaunchCtx { fresh: false, sessions_root: "/root".into(), mode: None };
+        let ctx = LaunchCtx {
+            fresh: false,
+            sessions_root: "/root".into(),
+            mode: None,
+            initial_prompt: None,
+        };
         let result = ClaudeAgent.launch(&ws, &ctx);
         // Restore permissions unconditionally so TempDir cleanup can remove the file.
         std::fs::set_permissions(ws.state_toml(), std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -311,7 +340,12 @@ mod tests {
     fn sets_memory_redirect_and_ws_env() {
         let d = TempDir::new().unwrap();
         let ws = ws_at(d.path());
-        let ctx = LaunchCtx { fresh: true, sessions_root: "/root".into(), mode: None };
+        let ctx = LaunchCtx {
+            fresh: true,
+            sessions_root: "/root".into(),
+            mode: None,
+            initial_prompt: None,
+        };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         assert_eq!(
             env_of(&cmd, "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"),
@@ -339,6 +373,7 @@ mod tests {
                     fresh: false,
                     sessions_root: "/r".into(),
                     mode: Some(LaunchMode::Loco),
+                    initial_prompt: None,
                 },
             )
             .unwrap();
@@ -354,6 +389,7 @@ mod tests {
                     fresh: true,
                     sessions_root: "/r".into(),
                     mode: Some(LaunchMode::Sane),
+                    initial_prompt: None,
                 },
             )
             .unwrap();
@@ -369,7 +405,15 @@ mod tests {
         let d = TempDir::new().unwrap();
         let ws = ws_at(d.path());
         let cmd = ClaudeAgent
-            .launch(&ws, &LaunchCtx { fresh: true, sessions_root: "/r".into(), mode: None })
+            .launch(
+                &ws,
+                &LaunchCtx {
+                    fresh: true,
+                    sessions_root: "/r".into(),
+                    mode: None,
+                    initial_prompt: None,
+                },
+            )
             .unwrap();
         let a = args_of(&cmd);
         assert_eq!(a.len(), 2, "only the session args: {a:?}");
@@ -394,7 +438,12 @@ mod tests {
         crate::config::set("rewrite", "true").unwrap();
 
         let ws = ws_at(&d.path().join("proj"));
-        let ctx = LaunchCtx { fresh: true, sessions_root: "/root".into(), mode: None };
+        let ctx = LaunchCtx {
+            fresh: true,
+            sessions_root: "/root".into(),
+            mode: None,
+            initial_prompt: None,
+        };
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         let editor = env_of(&cmd, "EDITOR").expect("rewrite is on, so $EDITOR is ws's shim");
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -447,5 +496,20 @@ mod tests {
                 "{key} must be removed, or the dispatcher's hooks act as that workspace"
             );
         }
+    }
+
+    #[test]
+    fn an_opening_prompt_is_the_last_argument() {
+        let td = TempDir::new().unwrap();
+        let ws = ws_at(td.path());
+        let ctx = LaunchCtx {
+            fresh: true,
+            sessions_root: "/root".into(),
+            mode: Some(crate::agents::LaunchMode::Sane),
+            initial_prompt: Some("Continue from the handoff x.md".into()),
+        };
+        let a = args_of(&ClaudeAgent.launch(&ws, &ctx).unwrap());
+        assert_eq!(a[0], "--session-id");
+        assert_eq!(a.last().unwrap(), "Continue from the handoff x.md", "{a:?}");
     }
 }

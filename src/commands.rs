@@ -617,6 +617,26 @@ fn ask_resume(name: &str) -> bool {
     }
 }
 
+/// Offer an armed handoff before the agent starts. Defaults to yes: Enter or
+/// `y` starts it, `n` or Esc starts fresh.
+fn ask_handoff(a: &crate::handoff::Armed) -> bool {
+    use std::io::Write;
+    eprint!(
+        "There is a handoff active: .ws/handoffs/{} ({} old). Start it? [Y/n] ",
+        a.name(),
+        crate::handoff::age_label(a.age_secs)
+    );
+    let _ = std::io::stderr().flush();
+    let yes = key_starts_handoff(read_resume_key());
+    eprintln!("{}", if yes { "y" } else { "n — starting fresh" });
+    yes
+}
+
+/// Enter (`None`) or `y` starts the handoff; `n` and Esc do not.
+fn key_starts_handoff(key: Option<char>) -> bool {
+    !matches!(key, Some('n' | 'N' | '\x1b'))
+}
+
 /// Read one key without requiring Enter. Errors deliberately choose the
 /// prompt's safe default (`None`): a failed terminal read must not resume a
 /// conversation the person did not select. Raw mode is restored on every path.
@@ -633,7 +653,12 @@ fn read_resume_key() -> Option<char> {
                 ..
             })) => break Some(c),
             Ok(Event::Key(KeyEvent {
-                code: KeyCode::Enter | KeyCode::Esc,
+                code: KeyCode::Esc,
+                kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                ..
+            })) => break Some('\x1b'),
+            Ok(Event::Key(KeyEvent {
+                code: KeyCode::Enter,
                 kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
             })) => break None,
@@ -1500,13 +1525,36 @@ pub fn launch(
     // ask. `y` resumes; the default (Enter) starts a fresh conversation. When
     // there is nobody to ask, resuming stays the unprompted behavior — a
     // scripted launch must not silently start over.
+    // 6a. A handoff armed by `ws -rotate` is offered first, while the terminal
+    // is still ours: yes starts a fresh conversation that opens on it, no drops
+    // it. Without a terminal the marker stays, and the SessionStart hook offers
+    // it inside the conversation instead.
+    let mut initial_prompt = None;
+    let mut fresh = fresh;
+    if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        if let Some(a) = crate::handoff::armed(&ws) {
+            let yes = ask_handoff(&a);
+            crate::handoff::disarm(&ws, &a);
+            let _ = crate::timeline::record(
+                &ws.timeline(),
+                if yes { "handoff-consumed" } else { "handoff-declined" },
+                &crate::actors::actor_slug(),
+                serde_json::json!({ "file": a.name(), "source": "launch" }),
+            );
+            if yes {
+                fresh = true;
+                initial_prompt = Some(crate::handoff::continue_prompt(a.name()));
+            }
+        }
+    }
+
     let has_prior = crate::contract::read_session_id(&ws.state_toml(), agent.id()).is_some();
     let fresh = fresh
         || (should_ask_new(has_prior, fresh, cfg.resume_prompt, std::io::stdin().is_terminal())
             && !ask_resume(&ws.name));
 
     // 7. Build + run — the agent owns the fresh/resume decision and persists its own state.
-    let ctx = LaunchCtx { fresh, sessions_root: config::sessions_root(&cfg), mode };
+    let ctx = LaunchCtx { fresh, sessions_root: config::sessions_root(&cfg), mode, initial_prompt };
     let cmd = agent.launch(&ws, &ctx)?;
 
     // Keep the lock file in place; the launched agent inherits our PID.
@@ -1627,9 +1675,13 @@ pub fn rotate(name: Option<String>) -> Result<()> {
         &actor,
         serde_json::json!({ "file": path.file_name().and_then(|f| f.to_str()) }),
     );
-    crate::handoff::arm(&ws, &path)?;
+    let armed_by = contract::read_session_id(&ws.state_toml(), &agent);
+    crate::handoff::arm(&ws, &path, armed_by.as_deref())?;
     println!("wrote {}", path.display());
-    println!("armed: the next fresh conversation (/clear, or a new `ws {n}`) continues from it.");
+    println!(
+        "armed: the next conversation (/clear, a new `ws {n}`, or the other agent) asks \
+         whether to continue from it."
+    );
     println!("`ws {n} --handoff` also points a launch at it.");
     Ok(())
 }
@@ -1713,7 +1765,18 @@ pub fn whoami() -> Result<()> {
 
 #[cfg(test)]
 mod resume_prompt_tests {
-    use super::{key_resumes, should_ask_new};
+    use super::{key_resumes, key_starts_handoff, should_ask_new};
+
+    /// The handoff prompt reads `[Y/n]`: Enter starts it, n or Esc does not.
+    #[test]
+    fn enter_or_y_starts_the_handoff() {
+        for yes in [None, Some('y'), Some('Y'), Some('\n')] {
+            assert!(key_starts_handoff(yes), "{yes:?} should start it");
+        }
+        for no in [Some('n'), Some('N'), Some('\x1b')] {
+            assert!(!key_starts_handoff(no), "{no:?} should start fresh");
+        }
+    }
 
     /// The prompt reads `[y/N]`, so one `y` resumes immediately. Every other
     /// key, including Enter's `None`, starts a fresh conversation.

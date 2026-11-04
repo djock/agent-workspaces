@@ -10,10 +10,25 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- A new conversation (startup or `/clear`) prints a one-line terminal banner
-  naming the newest handoff in `.ws/handoffs/`, once per handoff, or the
-  rotation it is continuing. The banner is a hook `systemMessage`, so the model
-  never sees it and it costs no tokens.
+- A handoff armed by `ws -rotate` (or by `/ws:rotate` and the rate-limit
+  guard) is now offered, not silently followed. `ws <name>` asks before the
+  agent starts: "There is a handoff active: … Start it? [Y/n]". Enter starts a
+  fresh conversation that opens on the handoff, `n` drops it. After `/clear`, or
+  when the other agent opens, the terminal shows the same question and the agent
+  reads your first message as the answer (`y` / `n`), asking with
+  Yes / No-start-fresh choices if it is anything else. The conversation that
+  armed the handoff is never asked about it, and a compaction never is.
+- With no handoff armed, a new conversation prints a one-line terminal banner
+  naming the newest handoff in `.ws/handoffs/`, once per handoff. The banner is
+  a hook `systemMessage`, so the model never sees it and it costs no tokens.
+
+### Fixed
+
+- A fresh `ws <name>` launch of Claude was mistaken for a resume (ws records
+  the new session id before exec), so an armed handoff was only ever picked up
+  after `/clear` and the waiting banner never showed on launch.
+- An armed handoff now lasts 7 days instead of 6 hours, so one written by the
+  rate-limit guard survives until the window resets.
 - `ws-quiet-notes`, an optional Claude Code mod in `plugins/` with a
   marketplace at the repo root. It replaces diffs of `.ws/` and `.cs/` files in
   the transcript with one dim line, counts the session's notes above the

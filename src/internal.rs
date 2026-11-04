@@ -87,36 +87,31 @@ fn session_start() {
     record_session_identity(&ws, &h);
 
     let mut ctx = build_context(&ws);
-    // A rotation armed by `ws -rotate` continues here. Only on a fresh start: a
-    // compaction or a resume is the same conversation, and consuming the marker
-    // there would spend a rotation the user has not made yet. The session id
-    // is the second check: Codex has only been seen reporting `startup`, so a
-    // resumed Codex conversation may too, but it keeps its id and a fresh one
-    // never does.
-    let fresh_start = (h.source == "startup" || h.source == "clear")
-        && prior_session.as_deref() != Some(h.session_id.as_str());
-    let mut rotated = false;
+    // A handoff armed by `ws -rotate` is offered to the next conversation:
+    // after /clear, on a new launch, or when the other agent opens. Offered,
+    // not followed: the user answers y or n. Never on a compaction (same
+    // conversation), and never to the conversation that armed it resuming.
+    // A launch from a terminal already asked before the agent started and
+    // disarmed it, so a marker still here means nobody has been asked yet.
+    let armed = crate::handoff::armed(&ws);
+    let held = armed.is_some();
+    let offered =
+        armed.filter(|a| h.source != "compact" && a.by.as_deref() != Some(h.session_id.as_str()));
     let mut banner = None;
-    if fresh_start {
-        let taken = crate::handoff::take(&ws);
-        banner = crate::handoff::notice(&ws, taken.as_deref());
-        if let Some(path) = taken {
-            rotated = true;
-            let name = path.file_name().and_then(|f| f.to_str()).unwrap_or_default();
-            ctx.push_str(&format!(
-                "\n\nThis conversation continues a rotation. Read .ws/handoffs/{name} before \
-                 anything else and take its Next step as your first action. When that step \
-                 is done, append a `## Successor report` to the handoff: what you had to \
-                 look up again, re-derive, or found wrong — or `none`."
-            ));
-            let _ = timeline::record(
-                &ws.timeline(),
-                "handoff-consumed",
-                &actors::actor_slug(),
-                serde_json::json!({ "file": name, "source": h.source }),
-            );
-        }
+    if let Some(a) = &offered {
+        crate::handoff::disarm(&ws, a);
+        ctx.push_str(&crate::handoff::ask_directive(a));
+        banner = Some(crate::handoff::ask_banner(a));
+        let _ = timeline::record(
+            &ws.timeline(),
+            "handoff-offered",
+            &actors::actor_slug(),
+            serde_json::json!({ "file": a.name(), "source": h.source }),
+        );
+    } else if !held && fresh_start(&h, prior_session.as_deref()) {
+        banner = crate::handoff::notice(&ws);
     }
+    let rotated = offered.is_some();
     // `/clear` is where the user says "this task is finished". Only then does ws
     // raise the finished-worktree question — never at startup or resume, when
     // nothing has just finished. A rotation `/clear` is the exception: it is
@@ -133,6 +128,22 @@ fn session_start() {
         None => hookio::additional_context("SessionStart", &ctx),
     };
     println!("{out}");
+}
+
+/// A new conversation rather than one coming back. `/clear` always is. Claude
+/// reports `resume` when resumed, and ws writes the id of a fresh Claude
+/// launch into state.toml before exec, so comparing ids there would call every
+/// fresh Claude launch a resume. Codex has only been seen reporting `startup`,
+/// so for it a kept session id is what marks a resume.
+fn fresh_start(h: &hookio::HookInput, prior_session: Option<&str>) -> bool {
+    match h.source.as_str() {
+        "clear" => true,
+        "startup" => {
+            std::env::var("WS_AGENT").as_deref() == Ok("claude")
+                || prior_session != Some(h.session_id.as_str())
+        }
+        _ => false,
+    }
 }
 
 /// Whether a session that carries this workspace's env actually started somewhere
@@ -518,9 +529,10 @@ fn limit_check(ws: &Workspace, h: &hookio::HookInput) -> Option<String> {
             Some(format!(
                 "Rate-limit guard: the {label} {window} window is high. Finish only the \
                  current step — start no new work — update your notebook \
-                 (.ws/notebook/notebook.<actor>.md), write a handoff to .ws/handoffs/, then \
-                 stop and tell the user: work is saved, continue in a fresh window later or \
-                 with another agent."
+                 (.ws/notebook/notebook.<actor>.md), run `ws -rotate` and fill in the handoff it \
+                 writes (it arms it, so the next conversation is asked whether to continue \
+                 it), then stop and tell the user: work is saved, continue in a fresh window \
+                 later or with another agent."
             ))
         }
     }

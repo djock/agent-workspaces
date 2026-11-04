@@ -498,34 +498,92 @@ fn session_start(env: &Env, name: &str, proj: &std::path::Path, source: &str) ->
 }
 
 #[test]
-fn clear_continues_from_the_armed_handoff_once() {
+fn clear_offers_the_armed_handoff_once() {
     let env = Env::new();
     let proj = adopt_ws(&env, "h1");
     arm(&proj, "2026-09-30T120000Z-me.md");
 
     let out = session_start(&env, "h1", &proj, "clear");
-    assert!(out.contains(".ws/handoffs/2026-09-30T120000Z-me.md"), "{out}");
-    assert!(out.contains("Successor report"), "{out}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    let banner = v["systemMessage"].as_str().unwrap();
+    assert!(banner.contains("handoff active") && banner.contains("Start it?"), "{banner}");
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert!(ctx.contains(".ws/handoffs/2026-09-30T120000Z-me.md"), "{ctx}");
+    assert!(ctx.contains("Yes, start it") && ctx.contains("No, start fresh"), "asks: {ctx}");
+    assert!(ctx.contains("Successor report"), "{ctx}");
     assert!(!proj.join(".ws/local/pending-handoff").exists());
 
     let tl = std::fs::read_to_string(proj.join(".ws/timeline.jsonl")).unwrap();
-    assert!(tl.contains("handoff-consumed"), "{tl}");
+    assert!(tl.contains("handoff-offered"), "{tl}");
 
     let again = session_start(&env, "h1", &proj, "clear");
     assert!(!again.contains("2026-09-30T120000Z-me.md"), "only once: {again}");
 }
 
 #[test]
-fn compact_and_resume_leave_the_marker_armed() {
+fn compaction_leaves_the_marker_armed_and_a_new_start_is_asked() {
     let env = Env::new();
     let proj = adopt_ws(&env, "h2");
     arm(&proj, "a.md");
-    for source in ["compact", "resume"] {
-        let out = session_start(&env, "h2", &proj, source);
-        assert!(!out.contains("a.md"), "{source}: {out}");
-        assert!(proj.join(".ws/local/pending-handoff").exists(), "{source} consumed it");
-    }
+    let out = session_start(&env, "h2", &proj, "compact");
+    assert!(!out.contains("a.md"), "{out}");
+    assert!(proj.join(".ws/local/pending-handoff").exists(), "compact consumed it");
     assert!(session_start(&env, "h2", &proj, "startup").contains(".ws/handoffs/a.md"));
+}
+
+/// Opening the other agent, or resuming an older conversation, is a different
+/// conversation from the one that rotated, so it is asked too.
+#[test]
+fn a_resume_of_another_conversation_is_asked() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "h4");
+    arm(&proj, "r.md");
+    assert!(session_start(&env, "h4", &proj, "resume").contains(".ws/handoffs/r.md"));
+}
+
+/// The conversation that ran `ws -rotate` coming back (quit, then resumed) is
+/// not a new one: asking it about its own handoff would be noise.
+#[test]
+fn the_conversation_that_armed_it_is_not_asked() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "h5");
+    arm(&proj, "own.md");
+    std::fs::write(proj.join(".ws/local/pending-handoff"), "own.md\nn1\n").unwrap();
+    for source in ["resume", "startup"] {
+        let out = session_start(&env, "h5", &proj, source);
+        assert!(!out.contains("own.md"), "{source}: {out}");
+    }
+    assert!(proj.join(".ws/local/pending-handoff").exists());
+}
+
+/// A fresh `ws <name>` launch of Claude writes its new session id before exec,
+/// so the hook sees `prior == current`. That must still count as fresh, or the
+/// "handoff waiting" banner never shows on a launch.
+#[test]
+fn a_fresh_claude_launch_still_gets_the_waiting_banner() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "h6");
+    std::fs::create_dir_all(proj.join(".ws/handoffs")).unwrap();
+    std::fs::write(proj.join(".ws/handoffs/w.md"), "# Handoff").unwrap();
+    let start = || {
+        let out = env
+            .cmd()
+            .env("WS_WORKSPACE", "h6")
+            .env("WS_DIR", &proj)
+            .env("WS_AGENT", "claude")
+            .args(["internal", "session-start"])
+            .write_stdin(r#"{"source":"startup","session_id":"c1"}"#)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap()
+    };
+    start(); // records c1, as the launch would have
+    std::fs::remove_file(proj.join(".ws/local/handoff-notice.stamp")).ok();
+    let out = start();
+    assert!(out.contains("handoff waiting") && out.contains("w.md"), "{out}");
 }
 
 #[test]
@@ -541,7 +599,8 @@ fn two_conversations_over_the_threshold_are_each_nudged_once() {
 }
 
 /// Codex has only ever been seen reporting `startup`, so a resumed Codex
-/// conversation may too. It keeps its session id; a fresh one never does.
+/// conversation may too. It keeps its session id, so the conversation that
+/// armed the handoff is recognised; a fresh one never has that id.
 #[test]
 fn a_start_that_keeps_the_recorded_session_id_does_not_take_the_marker() {
     let env = Env::new();
@@ -563,6 +622,7 @@ fn a_start_that_keeps_the_recorded_session_id_does_not_take_the_marker() {
     };
     start("x1"); // records x1 as codex's session
     arm(&proj, "c.md");
+    std::fs::write(proj.join(".ws/local/pending-handoff"), "c.md\nx1\n").unwrap(); // armed by x1
     assert!(!start("x1").contains("c.md"), "the resumed conversation must not take it");
     assert!(proj.join(".ws/local/pending-handoff").exists());
     assert!(start("x2").contains(".ws/handoffs/c.md"), "a new conversation does");
