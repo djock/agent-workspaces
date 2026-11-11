@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-11-11
+
 ### Added
 
 - The picker shows where each workspace lives, in a new WHERE column
