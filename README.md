@@ -310,6 +310,12 @@ enter       open            d    delete it, after a confirmation
 q / esc     quit            A    show or hide archived workspaces
 ```
 
+The WHERE column shows the folder each workspace lives in. Run `ws` from inside
+a project folder and its workspaces come first, under "in this folder", with the
+cursor on the first one. That covers workspaces below the folder and the
+workspace you are standing inside. From `~` or `/` nothing is grouped, since
+every workspace is below those.
+
 Deleting from the picker is the same operation as `ws -rm` without `--force`: a
 workspace another process is running is refused rather than pulled out from
 under it, and an adopted project loses only its `.ws/` — the source tree stays.

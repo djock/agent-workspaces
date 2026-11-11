@@ -39,6 +39,10 @@ pub struct WorkspaceRow {
     /// Newest mtime across the workspace's documents, epoch seconds.
     pub last_activity: Option<i64>,
     pub limits: Option<LimitsSnapshot>,
+    /// The workspace is in or under the folder `ws` was run from, or that
+    /// folder is inside it. Only the picker sets it (it depends on the cwd, not
+    /// on the workspace), and it lifts these rows above the recency order.
+    pub here: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -158,6 +162,7 @@ pub fn list_all(opts: &ListOpts) -> Result<Listing> {
             status: meta.status.clone(),
             last_activity: last_activity(&ws_dir),
             limits: limits::read(&ws_dir.join("local/limits.json")),
+            here: false,
             name,
             path,
             state,

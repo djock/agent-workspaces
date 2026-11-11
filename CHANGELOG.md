@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The picker shows where each workspace lives, in a new WHERE column
+  (`~/Projects/Native/milo`). Long paths are cut from the left so the project
+  folder stays visible, and the column is dropped on a terminal too narrow for it.
+- Run `ws` inside a project folder and that folder's workspaces come first,
+  under "in this folder", with the cursor on the first one. The workspace you
+  are standing inside counts too, however deep you are in it. From `~` or `/`
+  the list keeps its usual most-recent-first order.
+
 ## [0.18.0] — 2026-11-04
 
 ### Added

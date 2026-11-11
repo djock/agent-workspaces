@@ -98,6 +98,7 @@ mod tests {
             status: None,
             last_activity: None,
             limits: None,
+            here: false,
         }
     }
 

@@ -395,11 +395,12 @@ pub fn render_row(
     let name = format!("{:<w$}", r.name, w = cols.name);
     let agent = format!("{:<w$}", r.agent, w = cols.agent);
     let when = format!("{when:>4}");
+    let place = format!("{:<w$}", fit_path(&home_relative(&r.path), cols.place), w = cols.place);
 
     if selected && !theme.plain {
         // One bar the full width of the terminal. Inner colours are dropped:
         // each one ends in a reset, which would cut the reverse video short.
-        let line = format!("{marker}{live} {name}  {agent}  {when}  {state:<18} {tags}");
+        let line = format!("{marker}{live} {name}  {agent}  {when}  {state:<18} {place} {tags}");
         let line = line.trim_end();
         let w = cols.width.max(line.chars().count());
         return theme.selected(&format!("{line:<w$}"));
@@ -424,9 +425,13 @@ pub fn render_row(
     // Pad by the plain text's width: the escape codes are invisible but counted.
     let pad = " ".repeat(18usize.saturating_sub(state_width(r)));
     let live = if r.live_pid.is_some() { theme.ok(live) } else { live.to_string() };
-    format!("{marker}{live} {name}  {agent}  {when}  {state}{pad} {}", theme.dim(&tags))
-        .trim_end()
-        .to_string()
+    format!(
+        "{marker}{live} {name}  {agent}  {when}  {state}{pad} {} {}",
+        theme.dim(&place),
+        theme.dim(&tags)
+    )
+    .trim_end()
+    .to_string()
 }
 
 /// The visible width of a row's state text, for padding a styled copy of it.
@@ -450,6 +455,9 @@ pub struct Columns {
     /// Whether any row has a status to show; a heading over an empty column
     /// reads as missing data.
     pub status: bool,
+    /// The WHERE column: each workspace's folder, home-relative. Sized to the
+    /// longest path on screen but never past the terminal edge; 0 drops it.
+    pub place: usize,
     /// The terminal width, less one: printing into the last column makes some
     /// terminals wrap, and a wrapped line breaks the erase arithmetic.
     pub width: usize,
@@ -460,27 +468,80 @@ impl Columns {
         let longest = |f: fn(&WorkspaceRow) -> usize, floor: usize| {
             rows.iter().map(|r| f(r)).max().unwrap_or(0).max(floor)
         };
+        let name = longest(|r| r.name.chars().count(), "NAME".len()).min(28);
+        let agent = longest(|r| r.agent.chars().count(), "AGENT".len());
+        let width = (width as usize).saturating_sub(1);
+        // Everything left of WHERE: marker, live dot, name, agent, age, and the
+        // fixed 18-wide status, with their gaps.
+        let before = 3 + name + 2 + agent + 2 + 4 + 2 + 18 + 1;
+        let room = width.saturating_sub(before);
+        let wanted = rows.iter().map(|r| home_relative(&r.path).chars().count()).max().unwrap_or(0);
+        // A path cut to a handful of characters says nothing; drop the column
+        // on a terminal too narrow to show a useful tail of it.
+        let place = if room < 12 { 0 } else { wanted.max("WHERE".len()).min(room) };
         Columns {
             // Floors are the header labels; the cap keeps one long name from
             // pushing every other column off a narrow terminal.
-            name: longest(|r| r.name.chars().count(), "NAME".len()).min(28),
-            agent: longest(|r| r.agent.chars().count(), "AGENT".len()),
+            name,
+            agent,
             status: rows.iter().any(|r| state_width(r) > 0),
-            width: (width as usize).saturating_sub(1),
+            place,
+            width,
         }
     }
 
     fn header(&self) -> String {
-        let status = if self.status { "  STATUS" } else { "" };
+        let status = if self.status { "STATUS" } else { "" };
+        let place = if self.place > 0 { "WHERE" } else { "" };
         format!(
-            "   {:<n$}  {:<a$}  {:>4}{status}",
+            "   {:<n$}  {:<a$}  {:>4}  {status:<18} {place}",
             "NAME",
             "AGENT",
             "LAST",
             n = self.name,
             a = self.agent
         )
+        .trim_end()
+        .to_string()
     }
+}
+
+/// A path cut to `width` characters from the left, so the end — the folder
+/// that names the project — is what survives: `…/Native/milo`.
+fn fit_path(p: &str, width: usize) -> String {
+    let n = p.chars().count();
+    if n <= width {
+        return p.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let tail: String = p.chars().skip(n - (width - 1)).collect();
+    format!("…{tail}")
+}
+
+/// Whether a workspace at `ws` belongs to the folder `cwd`: you are inside it,
+/// or it lives somewhere below you. The second half is skipped from `home` and
+/// `/`, where "below you" is every workspace you have and grouping them would
+/// only move the whole list down a line.
+pub(crate) fn is_here(ws: &Path, cwd: &Path, home: Option<&Path>) -> bool {
+    if cwd.starts_with(ws) {
+        return true;
+    }
+    let too_broad = cwd.parent().is_none() || home.is_some_and(|h| h == cwd);
+    !too_broad && ws.starts_with(cwd)
+}
+
+/// Mark the rows that belong to `cwd` and move them to the top. The sort is
+/// stable, so each group keeps the recency order `list_all` gave it.
+pub(crate) fn lift_here(rows: &mut [WorkspaceRow], cwd: &Path, home: Option<&Path>) {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let cwd = canon(cwd);
+    let home = home.map(canon);
+    for r in rows.iter_mut() {
+        r.here = is_here(&canon(&r.path), &cwd, home.as_deref());
+    }
+    rows.sort_by_key(|r| !r.here);
 }
 
 /// Recently used: running now, or touched within the last day. The list draws a
@@ -673,7 +734,11 @@ pub fn render_info(
 
 fn load(show_archived: bool) -> Result<Vec<WorkspaceRow>> {
     let opts = ListOpts { tag: None, include_archived: show_archived };
-    Ok(crate::rows::list_all(&opts)?.rows)
+    let mut rows = crate::rows::list_all(&opts)?.rows;
+    if let Ok(cwd) = std::env::current_dir() {
+        lift_here(&mut rows, &cwd, dirs::home_dir().as_deref());
+    }
+    Ok(rows)
 }
 
 /// Draw the list, returning how many lines were printed so the next frame can
@@ -733,11 +798,22 @@ fn draw(
         writeln!(out, "{}\r", theme.dim(&clip(&cols.header(), width)))?;
         lines += 1;
     }
+    let rule = theme.dim(&format!("   {}", "┄".repeat(cols.name)));
     for (i, r) in rows.iter().enumerate() {
-        // One rule where "used today" ends, drawn only when there is something
-        // on both sides of it.
-        if i > 0 && is_recent(rows[i - 1], now) && !is_recent(r, now) {
-            writeln!(out, "{}\r", theme.dim(&format!("   {}", "┄".repeat(cols.name))))?;
+        // The workspaces of the folder you ran `ws` from come first, under a
+        // heading so the order does not look like a broken sort.
+        if i == 0 && r.here {
+            writeln!(out, "{}\r", theme.dim("   in this folder"))?;
+            lines += 1;
+        }
+        let prev = (i > 0).then(|| rows[i - 1]);
+        // One rule where that group ends, and one where "used today" ends —
+        // each drawn only when there is something on both sides of it.
+        let end_of_here = prev.is_some_and(|p| p.here && !r.here);
+        let end_of_today =
+            prev.is_some_and(|p| !p.here && !r.here && is_recent(p, now) && !is_recent(r, now));
+        if end_of_here || end_of_today {
+            writeln!(out, "{rule}\r")?;
             lines += 1;
         }
         let sel = i == state.selected_index();
@@ -966,6 +1042,7 @@ mod tests {
             status: None,
             last_activity: None,
             limits: None,
+            here: false,
         }
     }
 
@@ -1639,5 +1716,92 @@ mod tests {
         let rule = text.lines().position(|l| l.contains('┄')).expect("a rule");
         let stale = text.lines().position(|l| l.contains("stale")).unwrap();
         assert_eq!(rule + 1, stale, "{text}");
+    }
+
+    #[test]
+    fn a_workspace_is_here_when_you_are_inside_it_or_it_is_below_you() {
+        let home = PathBuf::from("/u");
+        let h = Some(home.as_path());
+        let milo = PathBuf::from("/u/Projects/Native/milo");
+        assert!(is_here(&milo, Path::new("/u/Projects/Native"), h), "below the cwd");
+        assert!(is_here(&milo, Path::new("/u/Projects/Native/milo/src"), h), "cwd inside it");
+        assert!(!is_here(&milo, Path::new("/u/Projects/Web"), h), "a sibling folder");
+        assert!(
+            !is_here(&milo, Path::new("/u/Projects/Native/mil"), h),
+            "a name prefix is not a parent"
+        );
+        assert!(!is_here(&milo, &home, h), "home holds everything; grouping it says nothing");
+        assert!(!is_here(&milo, Path::new("/"), h), "nor does /");
+    }
+
+    #[test]
+    fn workspaces_of_this_folder_come_first_and_keep_their_order() {
+        let mut rows = vec![
+            WorkspaceRow { path: "/x/web/site".into(), ..row("site") },
+            WorkspaceRow { path: "/x/native/milo".into(), ..row("milo") },
+            WorkspaceRow { path: "/x/other".into(), ..row("other") },
+            WorkspaceRow { path: "/x/native/lilo".into(), ..row("lilo") },
+        ];
+        lift_here(&mut rows, Path::new("/x/native"), None);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["milo", "lilo", "site", "other"]);
+        assert!(rows[0].here && rows[1].here && !rows[2].here);
+    }
+
+    #[test]
+    fn the_here_group_has_a_heading_and_a_rule_under_it() {
+        let s = State::new(vec![WorkspaceRow { here: true, ..row("milo") }, row("other")], false);
+        let mut buf: Vec<u8> = Vec::new();
+        let lines = draw(&s, &plain(), 0, (100, 40), &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert_eq!(lines, 7, "title, header, heading, row, rule, row, hint: {text}");
+        let l: Vec<&str> = text.lines().collect();
+        assert!(l[2].contains("in this folder"), "{text}");
+        assert!(l[3].contains("milo") && l[4].contains('┄') && l[5].contains("other"), "{text}");
+    }
+
+    #[test]
+    fn no_heading_when_nothing_is_here() {
+        let mut buf: Vec<u8> = Vec::new();
+        draw(&three(), &plain(), 0, (100, 40), &mut buf).unwrap();
+        assert!(!String::from_utf8(buf).unwrap().contains("in this folder"));
+    }
+
+    #[test]
+    fn each_row_shows_where_the_workspace_lives() {
+        let r = WorkspaceRow { path: "/srv/Projects/Native/milo".into(), ..row("milo") };
+        let cols = Columns::fit(&[&r], 120);
+        assert!(cols.header().contains("WHERE"), "{}", cols.header());
+        let line = render_row(&r, false, 0, &plain(), &cols);
+        assert!(line.contains("/srv/Projects/Native/milo"), "{line}");
+        let sel = render_row(&r, true, 0, &colour(), &cols);
+        assert!(sel.contains("/srv/Projects/Native/milo"), "the selected bar too: {sel}");
+    }
+
+    #[test]
+    fn a_long_path_keeps_its_end_and_never_runs_past_the_edge() {
+        let r = WorkspaceRow {
+            path: "/srv/a/very/deep/tree/of/folders/Native/milo".into(),
+            ..row("milo")
+        };
+        let cols = Columns::fit(&[&r], 60);
+        let line = render_row(&r, false, 0, &plain(), &cols);
+        assert!(line.chars().count() <= 59, "{line:?}");
+        assert!(line.contains("…") && line.ends_with("Native/milo"), "{line:?}");
+    }
+
+    #[test]
+    fn a_terminal_too_narrow_for_paths_drops_the_column() {
+        let r = row("milo");
+        let cols = Columns::fit(&[&r], 40);
+        assert_eq!(cols.place, 0);
+        assert!(!cols.header().contains("WHERE"));
+    }
+
+    #[test]
+    fn fit_path_cuts_from_the_left() {
+        assert_eq!(fit_path("~/Projects/Native/milo", 30), "~/Projects/Native/milo");
+        assert_eq!(fit_path("~/Projects/Native/milo", 12), "…Native/milo");
+        assert_eq!(fit_path("abc", 0), "");
     }
 }
