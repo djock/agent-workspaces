@@ -6,6 +6,21 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.19.1] — 2026-11-18
+
+There is no 0.19.0 release. The tag was pushed, but its release build was
+cancelled and produced no artifacts, so 0.19.1 is the first release with the
+0.19.0 changes below.
+
+### Fixed
+
+- The status line no longer times out at a base workspace with several
+  worktrees on a large repo. Checking which worktrees are ready to merge ran the
+  base repo's `git status` once per worktree; it now runs once per check. The
+  "done" count is cached for 5 seconds, and the cache is written before the
+  count is recomputed, so a render that Claude Code kills partway still leaves
+  an answer for the next ones.
+
 ## [0.19.0] — 2026-11-11
 
 ### Added
