@@ -715,3 +715,21 @@ fn a_rotation_clear_in_a_worktree_does_not_ask_whether_the_feature_is_done() {
     assert!(out.contains(".ws/handoffs/h.md"), "{out}");
     assert!(!out.contains("mark this feature done"), "{out}");
 }
+
+/// The base's `git status` is the expensive call on a large repo, and the status
+/// line's chip runs this listing. It must run once per listing, not once per
+/// worktree. Counted from `GIT_TRACE`: one `status` per worktree plus one base.
+#[test]
+fn a_listing_runs_the_base_status_once_not_once_per_worktree() {
+    let env = Env::new();
+    base_workspace(&env, "api");
+    for f in ["a", "b", "c", "d"] {
+        env.cmd().args([&format!("api@{f}")]).assert().success();
+    }
+    let trace = env.root.join("git-trace.log");
+    env.cmd().env("GIT_TRACE", &trace).args(["api", "-done", "--porcelain"]).assert().success();
+    let log = std::fs::read_to_string(&trace).unwrap();
+    let statuses =
+        log.lines().filter(|l| l.contains("built-in: git") && l.contains(" status ")).count();
+    assert_eq!(statuses, 4 + 1, "{log}");
+}

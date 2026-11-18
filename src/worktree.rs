@@ -100,8 +100,20 @@ fn feature_user_dirt(porcelain: &str) -> Vec<&str> {
 /// `git worktree remove` (no `--force`) refuses on a modified tracked file after
 /// the merge has already landed, which would strand a merged worktree.
 fn base_dirt(base: &Path, branch: &str) -> Result<Vec<String>> {
+    Ok(relax_timeline(base, branch, base_user_dirt(base)?))
+}
+
+/// The base's `user_dirt`, before the per-branch timeline relaxation.
+fn base_user_dirt(base: &Path) -> Result<Vec<String>> {
     let porcelain = crate::git::ok(base, &["--no-optional-locks", "status", "--porcelain"])?;
-    let mut dirt: Vec<String> = user_dirt(&porcelain).into_iter().map(String::from).collect();
+    Ok(user_dirt(&porcelain).into_iter().map(String::from).collect())
+}
+
+/// `dirt` minus a locally modified tracked timeline, when `branch` leaves it alone.
+/// The only per-branch part of the base's dirt, so a listing of N worktrees runs
+/// the base's `git status` once and this N times (and this runs git only in a
+/// repo whose timeline is tracked and modified).
+fn relax_timeline(base: &Path, branch: &str, mut dirt: Vec<String>) -> Vec<String> {
     if dirt.iter().any(|l| l == MODIFIED_TIMELINE) {
         // Not `git::maybe`: it answers None for both failure and empty output, and
         // "could not ask" must not read as "the branch leaves it alone".
@@ -119,7 +131,21 @@ fn base_dirt(base: &Path, branch: &str) -> Result<Vec<String>> {
             dirt.retain(|l| l != MODIFIED_TIMELINE);
         }
     }
-    Ok(dirt)
+    dirt
+}
+
+/// What the base contributes to every feature's readiness, read once per
+/// listing. On a large repo the base's `git status` is the expensive call, and
+/// running it once per worktree made the status line miss its render deadline.
+struct BaseState {
+    mid_merge: bool,
+    dirt: Vec<String>,
+}
+
+impl BaseState {
+    fn read(base: &Path) -> Result<Self> {
+        Ok(BaseState { mid_merge: mid_merge(base)?, dirt: base_user_dirt(base)? })
+    }
 }
 
 /// Why a feature worktree cannot be merged right now.
@@ -250,6 +276,20 @@ pub fn readiness_as(
     branch: &str,
     own_base_session: bool,
 ) -> Result<Readiness> {
+    let base = BaseState::read(base_path)?;
+    readiness_with(&base, base_path, base_ws, feature_path, feature_ws, branch, own_base_session)
+}
+
+/// [`readiness_as`] against a base state already read, so a listing reads it once.
+fn readiness_with(
+    base: &BaseState,
+    base_path: &Path,
+    base_ws: &str,
+    feature_path: &Path,
+    feature_ws: &str,
+    branch: &str,
+    own_base_session: bool,
+) -> Result<Readiness> {
     let mut blockers = Vec::new();
 
     // Order matters: it is the order `merge` refuses in, so the first blocker
@@ -272,10 +312,10 @@ pub fn readiness_as(
     if !feature_dirt.is_empty() {
         blockers.push(Blocker::FeatureDirty(feature_dirt));
     }
-    if mid_merge(base_path)? {
+    if base.mid_merge {
         blockers.push(Blocker::BaseMidMerge);
     }
-    let base_dirty = base_dirt(base_path, branch)?;
+    let base_dirty = relax_timeline(base_path, branch, base.dirt.clone());
     if !base_dirty.is_empty() {
         blockers.push(Blocker::BaseDirty(base_dirty));
     }
@@ -445,6 +485,8 @@ pub fn features_as(base: &str, own_base_session: bool) -> Result<Vec<Feature>> {
         .ok_or_else(|| anyhow::anyhow!("no workspace named {base}"))?;
     let prefix = format!("{base}@");
     let mut out = Vec::new();
+    // Read on first use: a base with no live worktree directories runs no git.
+    let mut base_state: Option<std::result::Result<BaseState, String>> = None;
     for (name, path) in crate::registry::all_checked()? {
         let Some(feature) = name.strip_prefix(&prefix) else { continue };
         let path = path.clone();
@@ -468,12 +510,21 @@ pub fn features_as(base: &str, own_base_session: bool) -> Result<Vec<Feature>> {
                 ))],
             }
         } else {
-            match readiness_as(&base_path, base, &path, &name, feature, own_base_session) {
+            let state = base_state
+                .get_or_insert_with(|| BaseState::read(&base_path).map_err(|e| format!("{e:#}")));
+            let r = match state {
+                Ok(b) => {
+                    readiness_with(b, &base_path, base, &path, &name, feature, own_base_session)
+                        .map_err(|e| format!("{e:#}"))
+                }
+                Err(e) => Err(e.clone()),
+            };
+            match r {
                 Ok(r) => r,
                 Err(e) => Readiness {
                     ahead: 0,
                     already_merged: false,
-                    blockers: vec![Blocker::Unreadable(format!("{e:#}"))],
+                    blockers: vec![Blocker::Unreadable(e)],
                 },
             }
         };

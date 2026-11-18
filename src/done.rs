@@ -265,7 +265,7 @@ pub fn stop_prompt(
 
 /// How many `base@*` worktrees have a fresh marker, for the status line. Cached
 /// for `CHIP_TTL_SECS`: the bar repaints once a second and each answer runs git.
-const CHIP_TTL_SECS: u64 = 20;
+const CHIP_TTL_SECS: u64 = 5;
 
 pub fn chip_count(ws_name: &str, ws_root: &Path) -> usize {
     if worktree::parse_name(ws_name).is_some() {
@@ -279,15 +279,21 @@ pub fn chip_count(ws_name: &str, ws_root: &Path) -> usize {
     if let Some(n) = cache_hit(cached, now) {
         return n;
     }
-    // A failed classify is not "0 done": answer 0 for now but cache nothing, so
-    // the next repaint tries again.
+    // Stamp the last answer *before* computing. Claude Code kills a render that
+    // runs past its deadline, and a cache written only after the git calls was
+    // never written by a killed one, so every repaint paid the full cost again.
+    // With the stamp, the renders inside the TTL serve the old count while one
+    // render recomputes. A failed classify leaves that stamp, so it retries
+    // once the TTL is up rather than on every repaint.
+    let previous = cached.map_or(0, |(_, n)| n);
+    let _ = write_json(&cache, &(now, previous));
     match classify(ws_name, true) {
         Ok(rows) => {
             let n = rows.iter().filter(|r| r.class != Class::NotDone).count();
             let _ = write_json(&cache, &(now, n));
             n
         }
-        Err(_) => 0,
+        Err(_) => previous,
     }
 }
 
@@ -342,7 +348,7 @@ mod tests {
 
     #[test]
     fn the_chip_cache_expires_and_ignores_a_future_stamp() {
-        assert_eq!(cache_hit(Some((100, 3)), 105), Some(3));
+        assert_eq!(cache_hit(Some((100, 3)), 100 + CHIP_TTL_SECS - 1), Some(3));
         assert_eq!(cache_hit(Some((100, 3)), 100 + CHIP_TTL_SECS), None, "expired");
         assert_eq!(cache_hit(Some((200, 3)), 100), None, "a future stamp is stale");
         assert_eq!(cache_hit(None, 100), None);
