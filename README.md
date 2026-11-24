@@ -2,15 +2,15 @@
 
 `ws` gives each project a named, persistent workspace. The workspace keeps its code, notes, memory, handoffs, and agent state together so you can leave and return later.
 
-Most importantly, the same workspace works with both Claude Code and Codex. If your Codex limit runs out, you can create a handoff and continue the work with Claude without starting the project again.
+Most importantly, the same workspace works with Claude Code, Codex and agy (Google's Antigravity CLI). If one agent's limit runs out, you can create a handoff and continue the work with another without starting the project again.
 
 ## What it does
 
 - Creates and resumes named workspaces.
-- Launches either Claude Code or Codex in the same workspace.
+- Launches Claude Code, Codex or agy in the same workspace.
 - Keeps durable notes and handoffs in the workspace.
 - Switches agents while preserving the project context — including durable
-  project rules in `.ws/conventions.md`, which both agents are told to read on
+  project rules in `.ws/conventions.md`, which every agent is told to read on
   start, so "this repo has no test suite" is stated once rather than once per
   agent.
 - Lists, searches, tags, archives, and removes workspaces.
@@ -24,17 +24,18 @@ Most importantly, the same workspace works with both Claude Code and Codex. If y
   conversation. On Claude, the end-of-turn hook asks once per conversation when
   context passes `rotate_nudge` (default 65%; `ws config set rotate_nudge 0`
   turns it off). Conversation lineage is in `ws -conversations`.
-- Lets you define **your own hooks** in one file that apply to both agents
+- Lets you define **your own hooks** in one file that apply to every agent
   (`hooks.toml`; see [User-defined hooks](#user-defined-hooks)).
 - Stores secrets in your keyring or an encrypted file, and redacts
   `NAME=VALUE`-shaped credentials out of files the agent writes through its
   file-edit tools, scoped to the workspace root. Redacted values can be put
   back with `ws -secrets restore <file>`.
-- Installs hooks and reusable prompts for both supported agents.
+- Installs hooks and reusable prompts for every supported agent.
 - Configures matching Claude and Codex status bars with model, branch, context,
   5-hour usage, and weekly usage. Claude's is drawn by ws as colored blocks, each
   gauge escalating to amber and red on its own value; Codex renders its own
-  built-in segments, so ws only chooses which appear.
+  built-in segments, so ws only chooses which appear. agy has no status-line
+  setting, so ws draws nothing there.
 - Gives each workspace a color, drawn as the terminal tab background (iTerm2 and
   WezTerm) and as a chip at the head of the status bar, so panes are
   distinguishable at a glance. Allocated at creation and changed with
@@ -65,7 +66,8 @@ own:
   lines rather than conflicting.
 - **Secret redaction is a heuristic, not a scanner.** It only looks at
   `NAME=VALUE` lines in files an agent writes through a file-edit tool (Claude's
-  `Write`/`Edit`/`MultiEdit`/`NotebookEdit`, Codex's `Write`/`Edit`/`apply_patch`), and only
+  `Write`/`Edit`/`MultiEdit`/`NotebookEdit`, Codex's `Write`/`Edit`/`apply_patch`,
+  agy's `write_file`/`replace_file_content`/…), and only
   redacts when both the name and the value look credential-shaped. It does not
   see a secret embedded in a JSON or YAML value, in a URL
   (`DATABASE_URL=postgres://user:pw@host`), or in a file a Bash heredoc wrote
@@ -112,6 +114,11 @@ own:
 - **The Codex hook contract is not covered by CI.** It was verified by hand
   against Codex CLI 0.145.0 (`docs/2026-07-27-codex-hook-contract-verified.md`);
   a Codex upgrade could break it silently.
+- **The agy hook contract is not covered by CI either.** It was read from agy
+  1.5.16's built-in hooks guide and three live payload captures
+  (`docs/2026-11-25-agy-hook-contract-verified.md`). agy's edit
+  tools (`replace_file_content` and friends) have not been seen in a live
+  payload, and there is no status line, limit guard or `SessionEnd` for agy.
 
 The refocus described in `docs/plans/2026-07-28-ws-refocus.md` deleted the
 features ws had picked up rather than needed: the dashboard, the unattended
@@ -130,15 +137,15 @@ event   = "PostToolUse"           # required
 tool    = "file-write"            # optional: "shell" | "file-write"; omit = every tool
 command = "~/bin/my-hook.sh"      # required; must exist and be executable
 timeout = 30                      # optional, seconds, default 10
-agents  = ["claude", "codex"]     # optional, default both
+agents  = ["claude", "codex"]     # optional, default every agent (claude, codex, agy)
 ```
 
 Then `ws setup`.
 
 The point of declaring it here rather than editing each agent's config by hand is
 that **`tool` is resolved per agent**: `"file-write"` becomes
-`Write|Edit|MultiEdit|NotebookEdit` for Claude and `Write|Edit|apply_patch` for
-Codex. Written by hand you would have to know both vocabularies and keep them in
+`Write|Edit|MultiEdit|NotebookEdit` for Claude, `Write|Edit|apply_patch` for
+Codex and `write_file|create_file|…` for agy. Written by hand you would have to know every vocabulary and keep them in
 step; here you write it once.
 
 Your command receives the hook payload on **stdin** and inherits
@@ -156,7 +163,11 @@ Fields: `session_id`, `cwd`, `source`, `prompt`, `tool_name`, `command`,
   registered, **writing nothing**.
 - `ws hooks list` shows what is registered for each agent, built-in and yours.
 - An event an agent cannot fire is skipped for that agent and reported, never
-  silently written (Codex has no `PostToolUseFailure`).
+  silently written (Codex has no `PostToolUseFailure`; agy has no `SessionEnd`,
+  and ws does not register `PreToolUse` on agy, where a hook that does not
+  answer `allow` blocks the tool).
+- On agy, ws's own hooks are translated to and from agy's hook format. Your
+  hooks are not: their stdout reaches agy as you write it.
 - An invalid entry refuses the whole install rather than half-registering it.
 
 `hooks.toml` is read **only** from your config directory, never from a workspace
@@ -166,7 +177,7 @@ hook file would let a cloned project execute code the moment you opened it.
 ## Requirements
 
 - macOS on Apple Silicon, or Linux x86_64, for the prebuilt release.
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Codex](https://developers.openai.com/codex/cli).
+- Any of [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://developers.openai.com/codex/cli) or agy (Google's Antigravity CLI).
 - [GitHub CLI](https://cli.github.com/), authenticated. The repository is public
   and `gh release download` works without a login, but `install.sh` checks
   `gh auth status` and stops if it fails — the check predates the repo going
@@ -228,12 +239,13 @@ ws my-project -claude --fresh --handoff
 ### Permission posture
 
 `-loco` and `-sane` say how much the agent may do without asking, in one word
-that means the same thing on both agents:
+that means the same thing on every agent:
 
 | | `-loco` | `-sane` |
 |---|---|---|
 | Claude | `--dangerously-skip-permissions` | `--permission-mode acceptEdits` |
 | Codex | `--dangerously-bypass-approvals-and-sandbox` | `--sandbox workspace-write --ask-for-approval on-request` |
+| agy | `--dangerously-skip-permissions` | `--mode accept-edits` |
 
 Either flag is remembered: type it once and every later `ws <name>` opens in the
 same posture, until the other flag is given. A workspace that has never been
@@ -261,6 +273,7 @@ ws -pick                       Same, explicitly
 ws -list                       List active workspaces, most recently used first
 ws <name> -claude              Open with Claude Code
 ws <name> -codex               Open with Codex
+ws <name> -agy                 Open with agy (Google's Antigravity CLI; -gemini works too)
 ws <name> -loco                Bypass every permission check (remembered)
 ws <name> -sane                Apply edits without asking (remembered)
 ws <name> --fresh              Start a fresh agent session
@@ -481,7 +494,7 @@ notebook before moving on. The plan is kept at
 `~/.cache/ws/dispatch/<time>/tasks.md`; `ws -dispatch <that file>` reruns only
 the unticked tasks. Plans untouched for two weeks are removed.
 
-`-claude` / `-codex` and `-loco` / `-sane` apply to that run only. A Codex
+`-claude` / `-codex` / `-agy` and `-loco` / `-sane` apply to that run only. A Codex
 dispatch with neither posture runs `-sane`: Codex only writes to added
 directories under its `workspace-write` sandbox, and the dispatch directory
 would otherwise start `read-only`.

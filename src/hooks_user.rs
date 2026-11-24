@@ -124,16 +124,19 @@ fn validate(h: RawHook, n: usize, path: &Path) -> Result<UserHook> {
     }
 
     let agents = match h.agents {
-        None => vec!["claude".to_string(), "codex".to_string()],
+        None => crate::agents::IDS.iter().map(|a| a.to_string()).collect(),
         Some(list) if list.is_empty() => {
             bail!("{where_}: `agents` is empty — omit it to mean every agent")
         }
-        Some(list) => {
-            for a in &list {
-                crate::agents::for_id(a).with_context(|| format!("{where_}: bad agent"))?;
-            }
-            list
-        }
+        // Stored as the agent's id, so an alias (`gemini`) still matches `agy`.
+        Some(list) => list
+            .iter()
+            .map(|a| {
+                crate::agents::for_id(a)
+                    .map(|agent| agent.id().to_string())
+                    .with_context(|| format!("{where_}: bad agent"))
+            })
+            .collect::<Result<Vec<_>>>()?,
     };
 
     let slug = slug_for(&h.event, &command);
@@ -241,7 +244,7 @@ mod tests {
         assert_eq!(h.event, "Stop");
         assert_eq!(h.scope, Scope::Always, "no `tool` means every tool");
         assert_eq!(h.timeout, DEFAULT_TIMEOUT_SECS);
-        assert_eq!(h.agents, vec!["claude", "codex"], "both agents by default");
+        assert_eq!(h.agents, vec!["claude", "codex", "agy"], "every agent by default");
         assert_eq!(h.slug, "stop-my-hook");
     }
 

@@ -265,6 +265,7 @@ mod tests {
         for token in [
             "-claude",
             "-codex",
+            "-agy",
             "--agent",
             "--fresh",
             "--handoff",

@@ -15,7 +15,8 @@ on a fixed date, so the fix can be scheduled against it.
 `ws` is not sandboxed. Installing it means accepting that it:
 
 - **writes into your agents' configuration** — `~/.claude/settings.json` and
-  `~/.codex/hooks.json` gain hook registrations, and status-line commands are
+  `~/.codex/hooks.json` gain hook registrations, `~/.gemini/config/hooks.json`
+  gains a `ws` entry, and status-line commands are
   replaced (the prior value is backed up and restored on uninstall);
 - **installs hooks that run on every agent session event**, as your user, with no
   sandbox;
@@ -41,7 +42,8 @@ Stated plainly rather than left for a reader to discover:
 - **Secret redaction is a safety net, not a guarantee.** It rewrites
   `NAME=VALUE` assignments whose name **and** value both look credential-shaped,
   in files the agent writes through a hook (Claude's `Write`/`Edit`/`MultiEdit`/
-  `NotebookEdit`, Codex's `Write`/`Edit`/`apply_patch`), and only inside the
+  `NotebookEdit`, Codex's `Write`/`Edit`/`apply_patch`, agy's `write_file` and
+  edit tools), and only inside the
   workspace root. It
   cannot see a credential embedded in prose, in JSON or YAML, in a URL
   (`DATABASE_URL=postgres://user:pw@host`), in a command line, or written by a
@@ -76,7 +78,8 @@ Stated plainly rather than left for a reader to discover:
   state file `ws` writes.
 - **The Codex hook contract is verified by hand, not by CI.** See
   `docs/2026-07-27-codex-hook-contract-verified.md`. A Codex upgrade could silently
-  disable the hooks, including secret redaction.
+  disable the hooks, including secret redaction. The same holds for agy:
+  `docs/2026-11-25-agy-hook-contract-verified.md`.
 
 The refocus in `docs/plans/2026-07-28-ws-refocus.md` removed the unattended drain, tmux
 spawning, cross-workspace mail and the unredacted shell-command log. Mail has

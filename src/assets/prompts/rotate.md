@@ -15,4 +15,4 @@ Rotate this ws conversation: write a handoff a fresh conversation can continue f
 5. Never copy a credential or personal data into the handoff. Name the secret, not its value.
 6. Append fresh findings to your own notebook (`.ws/notebook/notebook.<actor>.md`; `ws -whoami` names the actor).
 
-End by telling the user the handoff path. Your last line to them is exactly: "Type /clear to continue in a fresh conversation." On Codex, say instead: "Open the workspace again with `ws <name>` to continue."
+End by telling the user the handoff path. Your last line to them is exactly: "Type /clear to continue in a fresh conversation." On Codex or agy, say instead: "Open the workspace again with `ws <name>` to continue."

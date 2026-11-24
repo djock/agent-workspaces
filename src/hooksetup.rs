@@ -44,6 +44,32 @@ pub enum Scope {
     Tool(ToolKind),
 }
 
+/// The layout of an agent's hooks file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HooksFormat {
+    /// `{"hooks": {"<Event>": [{"matcher"?, "hooks": [handler]}]}}` — Claude's
+    /// settings.json and Codex's hooks.json.
+    Claude,
+    /// `{"<hook name>": {"<Event>": [...]}}` — agy's hooks.json. ws owns the
+    /// one entry named [`AGY_HOOK_NAME`]. Tool events take `{matcher, hooks}`
+    /// groups, every other event a flat list of handlers, and ws's
+    /// `UserPromptSubmit` is registered on agy's `PreInvocation`.
+    Agy,
+}
+
+/// The top-level name ws registers under in agy's hooks.json.
+pub const AGY_HOOK_NAME: &str = "ws";
+
+/// The event name agy uses for a ws event. agy has no `UserPromptSubmit`;
+/// `PreInvocation` runs before every model call and carries `lastUserInput`
+/// (the handler acts only on a turn's first call, see `internal::run`).
+pub fn agy_event(event: &str) -> &str {
+    match event {
+        "UserPromptSubmit" => "PreInvocation",
+        e => e,
+    }
+}
+
 pub struct HookSpec {
     pub event: &'static str,
     pub scope: Scope,
@@ -113,6 +139,16 @@ pub fn claude_settings_path() -> PathBuf {
 
 pub fn codex_hooks_path() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".codex").join("hooks.json")
+}
+
+/// agy's shared hooks file. `~/.gemini/antigravity-cli/hooks.json` is not it:
+/// agy's own guide calls reading that path a bug, since fixed.
+pub fn agy_hooks_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".gemini")
+        .join("config")
+        .join("hooks.json")
 }
 
 pub fn codex_config_path() -> PathBuf {
@@ -254,6 +290,13 @@ fn register_settings_locked(
         );
     }
 
+    if agent.hooks_format() == HooksFormat::Agy {
+        let entry = agy_entry(hooks_dir, agent, user);
+        root.as_object_mut().unwrap().insert(AGY_HOOK_NAME.into(), entry);
+        crate::atomic::atomic_write(settings_path, serde_json::to_string_pretty(&root)?)?;
+        return Ok(());
+    }
+
     let obj = root.as_object_mut().unwrap();
     let hooks_entry = obj.entry("hooks").or_insert_with(|| json!({}));
     if !hooks_entry.is_object() {
@@ -335,6 +378,44 @@ fn register_settings_locked(
 
     crate::atomic::atomic_write(settings_path, serde_json::to_string_pretty(&root)?)?;
     Ok(())
+}
+
+/// ws's whole entry in agy's hooks.json, rebuilt from scratch on every setup:
+/// the entry is ws's alone, so there is nothing of the user's to merge with.
+/// Events the agent cannot fire (agy has no `SessionEnd`) are left out rather
+/// than written where they would never run.
+fn agy_entry(
+    hooks_dir: &Path,
+    agent: &dyn crate::agents::Agent,
+    user: &[&crate::hooks_user::UserHook],
+) -> Value {
+    let mut entry = serde_json::Map::new();
+    let mut add = |event: &str, scope: Scope, script: String, timeout: u64| {
+        if !agent.supports_event(event) {
+            return;
+        }
+        let handler = json!({
+            "type": "command",
+            "command": shell_command(&hooks_dir.join(script)),
+            "timeout": timeout,
+        });
+        let item = match scope {
+            Scope::Tool(kind) => json!({ "matcher": agent.tool_matcher(kind), "hooks": [handler] }),
+            Scope::Always if matches!(event, "PreToolUse" | "PostToolUse") => {
+                json!({ "matcher": "*", "hooks": [handler] })
+            }
+            Scope::Always => handler,
+        };
+        let list = entry.entry(agy_event(event).to_string()).or_insert_with(|| json!([]));
+        list.as_array_mut().unwrap().push(item);
+    };
+    for spec in HOOKS {
+        add(spec.event, spec.scope, spec.script.to_string(), 10);
+    }
+    for h in user {
+        add(&h.event, h.scope, user_script_name(&h.slug), h.timeout);
+    }
+    Value::Object(entry)
 }
 
 /// Register `ws statusline` in settings.json, recording
@@ -608,27 +689,28 @@ pub fn audit_registration(
         if !agent.supports_event(spec.event) {
             continue;
         }
-        let found = root
-            .get("hooks")
-            .and_then(|h| h.get(spec.event))
+        // The exact script, not merely something under the hooks directory: a
+        // leftover registration pointing at a different shim is not this hook
+        // being registered.
+        let is_spec = |h: &Value| {
+            h.get("command")
+                .and_then(|c| c.as_str())
+                .map(|c| command_is_in(c, &dir) && c.contains(spec.script))
+                .unwrap_or(false)
+        };
+        let list = match agent.hooks_format() {
+            HooksFormat::Claude => root.get("hooks").and_then(|h| h.get(spec.event)),
+            HooksFormat::Agy => root.get(AGY_HOOK_NAME).and_then(|h| h.get(agy_event(spec.event))),
+        };
+        let found = list
             .and_then(|e| e.as_array())
-            .map(|groups| {
-                groups.iter().any(|g| {
-                    g.get("hooks")
-                        .and_then(|h| h.as_array())
-                        .map(|hs| {
-                            hs.iter().any(|h| {
-                                h.get("command")
-                                    .and_then(|c| c.as_str())
-                                    // The exact script, not merely something
-                                    // under the hooks directory: a leftover
-                                    // registration pointing at a different shim
-                                    // is not this hook being registered.
-                                    .map(|c| command_is_in(c, &dir) && c.contains(spec.script))
-                                    .unwrap_or(false)
-                            })
-                        })
-                        .unwrap_or(false)
+            .map(|items| {
+                items.iter().any(|g| {
+                    // A group wraps its handlers; agy's flat events list them directly.
+                    is_spec(g)
+                        || g.get("hooks")
+                            .and_then(|h| h.as_array())
+                            .is_some_and(|hs| hs.iter().any(is_spec))
                 })
             })
             .unwrap_or(false);
@@ -699,6 +781,21 @@ pub fn unregister_hooks_for(config_path: &Path) -> Result<usize> {
     }
     if root.get("hooks").and_then(Value::as_object).is_some_and(|hooks| hooks.is_empty()) {
         root.as_object_mut().unwrap().remove("hooks");
+    }
+    // agy's layout: ws's named entry. Removed only when it really is ws's —
+    // some handler under it runs a script from our hooks directory.
+    if let Some(entry) = root.get(AGY_HOOK_NAME).and_then(Value::as_object) {
+        let ours = entry.values().filter_map(Value::as_array).flatten().any(|item| {
+            group_is_ws(item, &dir)
+                || item
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|c| command_is_in(c, &dir))
+        });
+        if ours {
+            removed += entry.values().filter_map(Value::as_array).map(Vec::len).sum::<usize>();
+            root.as_object_mut().unwrap().remove(AGY_HOOK_NAME);
+        }
     }
 
     if removed > 0 {

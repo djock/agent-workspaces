@@ -158,7 +158,7 @@ pub fn run(name: Option<String>) -> Result<()> {
 
     // The live id per agent, so `← current` is accurate rather than guessed.
     let mut current = Vec::new();
-    for agent in ["claude", "codex"] {
+    for agent in crate::agents::IDS {
         if let Some(id) = crate::contract::read_session_id(&ws.state_toml(), agent) {
             current.push((agent.to_string(), id));
         }
