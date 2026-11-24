@@ -32,6 +32,10 @@ impl Agent for CodexAgent {
         crate::hooksetup::codex_hooks_path()
     }
 
+    fn hooks_format(&self) -> crate::hooksetup::HooksFormat {
+        crate::hooksetup::HooksFormat::Claude
+    }
+
     /// Verified against Codex CLI 0.145.0 by capturing real hook payloads
     /// (`docs/2026-07-27-codex-hook-contract-verified.md`): a shell call arrives
     /// as `tool_name: "Bash"` — the same name Claude uses — but a file edit

@@ -29,6 +29,11 @@ impl Env {
             // suite's output depend on what is published. Tests that mean to
             // exercise the notice set the cache file and unset this.
             .env("WS_NO_UPDATE_CHECK", "1")
+            // A real `agy` on the developer's PATH would otherwise count as
+            // installed, and setup/doctor output would depend on the machine.
+            // Tests that want agy point this at `fake_codex()`, which logs its
+            // argv the same way.
+            .env("WS_AGY_BIN", self.home.path().join("no-such-agy"))
             .env_remove("NO_COLOR");
         // ws is developed from inside a ws workspace, so `cargo test` inherits
         // that launch's WS_WORKSPACE/WS_DIR/WS_AGENT. Tests asserting a hook does

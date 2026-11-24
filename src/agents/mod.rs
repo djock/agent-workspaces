@@ -1,3 +1,4 @@
+pub mod agy;
 pub mod claude;
 pub mod codex;
 
@@ -84,6 +85,12 @@ pub trait Agent {
     /// Where this agent's hooks config lives (a JSON file with a top-level `hooks` object).
     fn hooks_config_path(&self) -> PathBuf;
 
+    /// How that file is laid out. Claude and Codex share one shape (a top-level
+    /// `hooks` object); agy rejects it and wants named hooks at the top level.
+    /// **No default**: writing the wrong shape leaves the agent with no ws hooks
+    /// at all, and nothing says so.
+    fn hooks_format(&self) -> crate::hooksetup::HooksFormat;
+
     /// The `tool_name` regex this agent uses for a given kind of tool.
     ///
     /// Hook matchers are regexes over the payload's `tool_name`, and the agents
@@ -130,6 +137,12 @@ pub fn for_id(id: &str) -> anyhow::Result<Box<dyn Agent>> {
     match id {
         "claude" => Ok(Box::new(claude::ClaudeAgent)),
         "codex" => Ok(Box::new(codex::CodexAgent)),
-        other => anyhow::bail!("unknown agent: {other} (ws supports claude and codex)"),
+        // `gemini` is what people call it; `agy` is the binary and the id ws
+        // files state under.
+        "agy" | "gemini" => Ok(Box::new(agy::AgyAgent)),
+        other => anyhow::bail!("unknown agent: {other} (ws supports claude, codex and agy)"),
     }
 }
+
+/// Every agent ws knows, in the order setup, doctor and uninstall walk them.
+pub const IDS: [&str; 3] = ["claude", "codex", "agy"];

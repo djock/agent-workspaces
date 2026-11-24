@@ -24,12 +24,37 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let handler = args.first().map(String::as_str).unwrap_or("");
     match handler {
         "hook-payload" => hook_payload(args.get(1).map(String::as_str).unwrap_or("")),
-        "session-start" => session_start(),
-        "user-prompt" => user_prompt(),
-        "stop" => stop(),
-        "bash-audit" => bash_audit(),
-        "session-end" => session_end(),
-        "secret-redact" => secret_redact(),
+        // The hook handlers. stdin is read once here and the answer printed
+        // here, so the agent's dialect is handled in one place: agy's payload
+        // comes in camelCase and its answer goes back as `injectSteps` (see
+        // `hookio::render`), and the handlers never need to know.
+        "session-start" | "user-prompt" | "stop" | "bash-audit" | "session-end"
+        | "secret-redact" => {
+            let h = hookio::read_stdin();
+            let out = match handler {
+                "session-start" => session_start(&h),
+                // agy runs this hook before every model call of a turn, not
+                // once per prompt; only the turn's first call is a prompt.
+                "user-prompt" if h.invocation_num.unwrap_or(0) > 0 => None,
+                "user-prompt" => user_prompt(&h),
+                "stop" => stop(&h),
+                "bash-audit" => {
+                    bash_audit(&h);
+                    None
+                }
+                "session-end" => {
+                    session_end(&h);
+                    None
+                }
+                _ => {
+                    secret_redact(&h);
+                    None
+                }
+            };
+            if let Some(o) = hookio::render(&h, out) {
+                println!("{o}");
+            }
+        }
         // The $EDITOR shim behind ctrl+g. Takes the file Claude Code wrote the
         // composer buffer to; see `rewrite`.
         "rewrite" => {
@@ -41,17 +66,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-fn session_start() {
-    let h = hookio::read_stdin();
+fn session_start(h: &hookio::HookInput) -> Option<String> {
     // subagents don't drive session lifecycle
     if h.agent_id.as_deref().map(|s| !s.is_empty()).unwrap_or(false) {
-        return;
+        return None;
     }
-    let ws = match current_ws() {
-        Some(w) => w,
-        None => return, // not a ws launch → no context, exit 0
-    };
-    if started_outside(&ws, &h) {
+    let ws = current_ws()?;
+    if started_outside(&ws, h) {
         let _ = append_log(
             &ws,
             &format!(
@@ -59,7 +80,7 @@ fn session_start() {
                 h.cwd, h.session_id
             ),
         );
-        return;
+        return None;
     }
 
     // audit log
@@ -84,7 +105,7 @@ fn session_start() {
         .ok()
         .filter(|a| !a.is_empty())
         .and_then(|a| contract::read_session_id(&ws.state_toml(), &a));
-    record_session_identity(&ws, &h);
+    record_session_identity(&ws, h);
 
     // Keep the notebook this agent is about to reread small. Only the actor's
     // own: a teammate's is theirs to roll when they start. A second live agent
@@ -129,7 +150,7 @@ fn session_start() {
             &actors::actor_slug(),
             serde_json::json!({ "file": a.name(), "source": h.source }),
         );
-    } else if !held && fresh_start(&h, prior_session.as_deref()) {
+    } else if !held && fresh_start(h, prior_session.as_deref()) {
         banner = crate::handoff::notice(&ws);
     }
     let rotated = offered.is_some();
@@ -148,7 +169,7 @@ fn session_start() {
         Some(b) => hookio::additional_context_with_message("SessionStart", &ctx, &b),
         None => hookio::additional_context("SessionStart", &ctx),
     };
-    println!("{out}");
+    Some(out)
 }
 
 /// A new conversation rather than one coming back. `/clear` always is. Claude
@@ -232,26 +253,25 @@ fn record_session_identity(ws: &Workspace, h: &hookio::HookInput) {
     crate::conversations::record_rotation(ws, &agent, prior.as_deref(), &h.session_id, &h.source);
 }
 
-fn user_prompt() {
-    let h = hookio::read_stdin();
-    let ws = match current_ws() {
-        Some(w) => w,
-        None => return,
-    };
+fn user_prompt(h: &hookio::HookInput) -> Option<String> {
+    let ws = current_ws()?;
     if h.prompt.trim().is_empty() {
-        return;
+        return None;
     }
     let _ = readme::capture_objective(&ws.readme(), &h.prompt);
     // Phase 2: capture only, no context injection → no stdout.
 
-    let agent = active_agent(&h);
+    // One answer, not one JSON object per note: a hook's stdout is parsed as
+    // a single document.
+    let mut notes: Vec<String> = Vec::new();
+    let agent = active_agent(h);
     if ws.limit_guard_for(&agent).exists() {
         let notice = format!(
             "Note: the ws rate-limit guard is active for {} (a handoff was already saved). \
              Continuing spends more of the current budget — that's fine, but it's your call.",
             agent_label(&agent)
         );
-        println!("{}", hookio::additional_context("UserPromptSubmit", &notice));
+        notes.push(notice);
     }
 
     // Unread mail rides every prompt until it is read, rather than being
@@ -260,8 +280,9 @@ fn user_prompt() {
     // moment nobody is looking and never again. Keyed on the mailbox itself, so
     // the awareness stops exactly when `ws -msg` moves the mail to `cur/`.
     if let Some(digest) = crate::mail::digest(&ws.root) {
-        println!("{}", hookio::additional_context("UserPromptSubmit", &digest));
+        notes.push(digest);
     }
+    (!notes.is_empty()).then(|| hookio::additional_context("UserPromptSubmit", &notes.join("\n\n")))
 }
 
 /// How recently a notebook must have been written for the reminder to consider
@@ -275,61 +296,51 @@ const NOTEBOOK_FRESH_SECS: u64 = 300;
 /// phase".
 const REMINDER_COOLDOWN_SECS: u64 = 1800;
 
-fn stop() {
-    let ws = match current_ws() {
-        Some(w) => w,
-        // Stop hooks allow the turn to end by exiting successfully without a
-        // decision. Claude only accepts `decision: "block"` for this event;
-        // emitting the old `decision: "approve"` shape is invalid.
-        None => return,
-    };
-    let h = hookio::read_stdin();
+fn stop(h: &hookio::HookInput) -> Option<String> {
+    let ws = current_ws()?;
 
     // Snapshot the working tree before anything can block the turn, and whatever
     // this hook decides. A turn end is the natural save point — the agent has
     // just finished writing — and the cost is one commit only when something
     // actually changed. Failures are ignored on purpose: losing a snapshot is
     // recoverable next turn, failing the turn is not.
-    let _ = crate::autosave::snapshot(&ws.root, &conversation_id(&ws, &h));
+    let _ = crate::autosave::snapshot(&ws.root, &conversation_id(&ws, h));
 
     // The agent is only stopping because a previous stop was blocked. Blocking
     // again is how a Stop hook turns into an infinite loop, so every directive
     // below waits for a turn the user actually ended.
     if h.stop_hook_active {
-        return;
+        return None;
     }
 
     // Limit-aware handoff: check before the notebook reminder.
-    if let Some(directive) = limit_check(&ws, &h) {
-        println!("{}", hookio::decision_block(&directive));
-        return;
+    if let Some(directive) = limit_check(&ws, h) {
+        return Some(hookio::decision_block(&directive));
     }
 
     // Context before the notebook: the rotation directive asks for the
     // notebook update itself, so both firing on one stop would ask twice.
-    if let Some(directive) = rotate_check(&ws, &h) {
-        println!("{}", hookio::decision_block(&directive));
-        return;
+    if let Some(directive) = rotate_check(&ws, h) {
+        return Some(hookio::decision_block(&directive));
     }
 
     if let Some(reason) = notebook_check(&ws) {
-        println!("{}", hookio::decision_block(&reason));
-        return;
+        return Some(hookio::decision_block(&reason));
     }
 
     // Tasks come last: a turn's findings get recorded before the agent is asked
     // what to do next. When both are due they fire on consecutive stops.
     if let Some(directive) = task_check(&ws) {
-        println!("{}", hookio::decision_block(&directive));
-        return;
+        return Some(hookio::decision_block(&directive));
     }
 
     // Finished worktrees last of all: the user's own queue and the notebook
     // come first, and this question is only worth an extra turn once nothing
     // more pressing is due.
     if let Some(directive) = done_check(&ws) {
-        println!("{}", hookio::decision_block(&directive));
+        return Some(hookio::decision_block(&directive));
     }
+    None
 }
 
 /// Returns Some(directive) when the Stop hook should ask about finished
@@ -462,13 +473,17 @@ fn task_check(ws: &Workspace) -> Option<String> {
 /// `$WS_AGENT` when ws launched it. A bare launch in a workspace directory still
 /// fires the hooks (Codex's are registered globally), so without the variable
 /// the transcript path decides: Codex names its rollouts `rollout-*.jsonl`
-/// under `.codex/sessions`. Anything else is Claude, the only other agent ws
-/// registers hooks for.
+/// under `.codex/sessions`. agy is known by its camelCase payload. Anything
+/// else is Claude.
 fn active_agent(h: &hookio::HookInput) -> String {
     if let Ok(a) = std::env::var("WS_AGENT") {
         if !a.is_empty() {
             return a;
         }
+    }
+    // Only agy speaks this dialect, so the payload alone identifies it.
+    if h.dialect == hookio::Dialect::Agy {
+        return "agy".into();
     }
     let t = std::path::Path::new(&h.transcript_path);
     let is_rollout =
@@ -499,6 +514,8 @@ fn active_limits(
     h: &hookio::HookInput,
 ) -> Option<limits::LimitsSnapshot> {
     match agent {
+        // agy reports no usage windows ws could read.
+        "agy" => None,
         "codex" => {
             if h.transcript_path.is_empty() {
                 return None;
@@ -639,8 +656,7 @@ fn append_log(ws: &Workspace, msg: &str) -> std::io::Result<()> {
     writeln!(f, "[{}] {}", crate::now_iso(), msg)
 }
 
-fn bash_audit() {
-    let h = hookio::read_stdin();
+fn bash_audit(h: &hookio::HookInput) {
     let ws = match current_ws() {
         Some(w) => w,
         None => return,
@@ -648,7 +664,7 @@ fn bash_audit() {
     if h.tool_name != "Bash" {
         return;
     }
-    let mut cmd = h.tool_input.command;
+    let mut cmd = h.tool_input.command.clone();
     if cmd.is_empty() {
         return;
     }
@@ -658,8 +674,7 @@ fn bash_audit() {
     let _ = append_log(&ws, &format!("BASH: {cmd}"));
 }
 
-fn session_end() {
-    let h = hookio::read_stdin();
+fn session_end(h: &hookio::HookInput) {
     let ws = match current_ws() {
         Some(w) => w,
         None => return,
@@ -672,7 +687,7 @@ fn session_end() {
     // The sweep takes any snapshot older than a fortnight whose owner is gone
     // with it: without one, a machine keeps a ref per crashed conversation
     // forever, each holding a whole tree of objects reachable.
-    let conversation = conversation_id(&ws, &h);
+    let conversation = conversation_id(&ws, h);
     crate::autosave::discard(&ws.root, &conversation);
     crate::autosave::gc(&ws.root, Some(&conversation), 14);
 }
@@ -746,10 +761,21 @@ fn written_paths(h: &hookio::HookInput) -> Vec<std::path::PathBuf> {
 /// Codex gap stayed invisible for two releases — so it is re-checked here, and
 /// this list has to stay in step with the matchers in `agents/claude.rs` and
 /// `agents/codex.rs`.
-const WRITE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"];
+/// agy's write tools are the ones in `agents/agy.rs`'s matcher.
+const WRITE_TOOLS: &[&str] = &[
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "apply_patch",
+    "write_file",
+    "create_file",
+    "edit_file",
+    "replace_file_content",
+    "multi_replace_file_content",
+];
 
-fn secret_redact() {
-    let h = hookio::read_stdin();
+fn secret_redact(h: &hookio::HookInput) {
     let ws = match current_ws() {
         Some(w) => w,
         None => return,
@@ -757,7 +783,7 @@ fn secret_redact() {
     if !WRITE_TOOLS.contains(&h.tool_name.as_str()) {
         return;
     }
-    for path in written_paths(&h) {
+    for path in written_paths(h) {
         if !path.is_file() {
             continue; // deleted, a directory, or never created — nothing to scan
         }

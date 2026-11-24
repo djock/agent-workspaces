@@ -137,7 +137,7 @@ pub fn ask_directive(a: &Armed) -> String {
          fresh, then do what they ask.\n\
          - anything else: before acting on it, ask \"There is a handoff active ({name}). \
          Start it?\" with the options \"Yes, start it\" and \"No, start fresh\" (Claude: \
-         AskUserQuestion with header \"Handoff\"; Codex: one line, then wait). On yes, \
+         AskUserQuestion with header \"Handoff\"; Codex and agy: one line, then wait). On yes, \
          continue the handoff as above; on no, do what their message asked.",
         age = age_label(a.age_secs)
     )

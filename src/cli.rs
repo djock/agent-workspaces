@@ -184,6 +184,7 @@ pub fn help_text() -> &'static str {
          \x20                                made by a newer ws, as does every\n\
          \x20                                command that modifies a workspace)\n\
          \x20 ws <name> -claude | -codex   choose the agent for this launch\n\
+         \x20 ws <name> -agy | -gemini     (agy: Google's Antigravity CLI)\n\
          \x20 ws <name> --agent <id>       same, by id\n\
          \x20 ws <name> -loco | --loco     run with every permission check bypassed\n\
          \x20 ws <name> -sane | --sane     apply edits without asking, escalate the rest\n\
@@ -216,7 +217,7 @@ pub fn help_text() -> &'static str {
          \x20 ws -dispatch [<tasks.md>]    work several workspaces' tasks in one session:\n\
          \x20                                `@name` lines start each project's list; with\n\
          \x20                                no file, $EDITOR opens for you to paste it\n\
-         \x20                                (-claude|-codex, -loco|-sane, --force)\n\
+         \x20                                (-claude|-codex|-agy, -loco|-sane, --force)\n\
          \n\
          Worktrees\n\
          \x20 ws <base>@<feature>          create a git worktree workspace off <base>,\n\
@@ -542,13 +543,14 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
                 match a.as_str() {
                     "-claude" => agent = Some("claude".to_string()),
                     "-codex" => agent = Some("codex".to_string()),
+                    "-agy" | "-gemini" => agent = Some("agy".to_string()),
                     "-loco" | "--loco" => mode = Some(crate::agents::LaunchMode::Loco),
                     "-sane" | "--sane" => mode = Some(crate::agents::LaunchMode::Sane),
                     "--force" => force = true,
                     other if other.starts_with('-') => bail!("unexpected argument: {other}"),
                     other if file.is_none() => file = Some(std::path::PathBuf::from(other)),
                     other => bail!(
-                        "usage: ws -dispatch [<tasks.md>] [-claude|-codex] [-loco|-sane] [--force] \
+                        "usage: ws -dispatch [<tasks.md>] [-claude|-codex|-agy] [-loco|-sane] [--force] \
                          (unexpected: {other})"
                     ),
                 }
@@ -652,6 +654,7 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
                     "--agent" => agent = it.next(),
                     "-claude" => agent = Some("claude".into()),
                     "-codex" => agent = Some("codex".into()),
+                    "-agy" | "-gemini" => agent = Some("agy".into()),
                     // The two postures are one setting, so asking for both is a
                     // contradiction rather than a last-one-wins: a launch that
                     // quietly picked one of them could bypass every permission

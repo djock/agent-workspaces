@@ -153,11 +153,9 @@ fn launch_errors_clearly_when_claude_missing() {
 fn unknown_agent_errors_clearly() {
     let env = Env::new();
     let shim = env.fake_claude();
-    // `gemini` is deliberately not an agent: ws supports claude and codex only,
-    // so it must fall through to the same error as any other unknown name.
-    launch_cmd(&env, &shim).args(["proj", "--agent", "gemini"]).assert().failure().stderr(
+    launch_cmd(&env, &shim).args(["proj", "--agent", "copilot"]).assert().failure().stderr(
         predicates::str::contains("unknown agent")
-            .and(predicates::str::contains("claude and codex")),
+            .and(predicates::str::contains("claude, codex and agy")),
     );
 }
 

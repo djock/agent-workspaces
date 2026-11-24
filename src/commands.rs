@@ -187,7 +187,7 @@ pub fn setup() -> Result<()> {
     // nowhere, so `ws config set statusline false` reported success and the next
     // `ws setup` claimed the status bar anyway.
     let statusline = config::load().statusline;
-    for id in ["claude", "codex"] {
+    for id in crate::agents::IDS {
         let agent = crate::agents::for_id(id)?;
         if !agent.is_installed() {
             continue;
@@ -202,7 +202,9 @@ pub fn setup() -> Result<()> {
         let prompts = crate::picker::home_relative(&agent.prompts_dir());
         println!("  Installed {id} hooks ({nh}) → {hooks}");
         println!("  Installed {id} prompts ({np}) → {prompts}/");
-        if !statusline {
+        if id == "agy" {
+            // agy has no status-line setting ws could register.
+        } else if !statusline {
             println!("  Skipped {id} status line (config statusline = false)");
         } else {
             let config = if id == "claude" {
@@ -264,7 +266,7 @@ fn gitignored_ws_note(cwd: &std::path::Path) -> Option<String> {
 pub fn doctor() -> Result<()> {
     let mut any_agent = false;
     let mut hard_fail = false;
-    for id in ["claude", "codex"] {
+    for id in crate::agents::IDS {
         let agent = crate::agents::for_id(id)?;
         if agent.is_installed() {
             any_agent = true;
@@ -373,7 +375,7 @@ pub fn doctor() -> Result<()> {
     }
 
     if !any_agent {
-        eprintln!("ws: no agent installed (need claude or codex on PATH)");
+        eprintln!("ws: no agent installed (need claude, codex or agy on PATH)");
         hard_fail = true;
     }
     if hard_fail {
@@ -421,7 +423,7 @@ pub fn uninstall(force: bool) -> Result<()> {
 
     let mut hooks = 0;
     let mut prompts = 0;
-    for id in ["claude", "codex"] {
+    for id in crate::agents::IDS {
         let agent = crate::agents::for_id(id)?;
         hooks += crate::hooksetup::unregister_hooks_for(&agent.hooks_config_path())?;
         prompts += crate::prompts::uninstall_for(&agent.prompts_dir(), |base| {
@@ -803,7 +805,7 @@ pub fn limits() -> Result<()> {
     // docs/2026-07-27-codex-hook-contract-verified.md.
     println!(
         "note: these are Claude's limits only. Codex shows its own in its status bar; \
-         it exposes them to no hook, so ws cannot record them."
+         it exposes them to no hook, so ws cannot record them. agy reports none."
     );
     Ok(())
 }
@@ -1702,7 +1704,7 @@ pub fn hooks(cmd: crate::cli::HooksCmd) -> Result<()> {
             } else {
                 println!("{} — {} user hook(s), all valid:", path.display(), user.len());
             }
-            for agent_id in ["claude", "codex"] {
+            for agent_id in crate::agents::IDS {
                 let agent = crate::agents::for_id(agent_id)?;
                 let (applies, skipped) = crate::hooks_user::for_agent(&user, agent.as_ref());
                 for h in applies {
@@ -1728,7 +1730,7 @@ pub fn hooks(cmd: crate::cli::HooksCmd) -> Result<()> {
             Ok(())
         }
         HooksCmd::List => {
-            for agent_id in ["claude", "codex"] {
+            for agent_id in crate::agents::IDS {
                 let agent = crate::agents::for_id(agent_id)?;
                 println!("{agent_id} ({})", agent.hooks_config_path().display());
                 for spec in crate::hooksetup::HOOKS {

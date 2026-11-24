@@ -31,6 +31,10 @@ impl Agent for ClaudeAgent {
         crate::hooksetup::claude_settings_path()
     }
 
+    fn hooks_format(&self) -> crate::hooksetup::HooksFormat {
+        crate::hooksetup::HooksFormat::Claude
+    }
+
     fn tool_matcher(&self, kind: crate::hooksetup::ToolKind) -> &'static str {
         use crate::hooksetup::ToolKind;
         match kind {
