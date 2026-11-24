@@ -6,11 +6,22 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-11-24
+
 ### Added
 
 - Notebooks roll over: past 32 KB, the oldest entries move to
   `.ws/notebook-archive/` at session start, so agents stop rereading months of
-  history.
+  history. Only your own notebook rolls, the kept entries fit in 16 KB, and a
+  pointer line at the top names the archive. If another agent appends while
+  the roll runs, the roll stands down until the next start.
+
+### Changed
+
+- `.ws/.gitattributes` union-merges `notebook-archive/*.md`, so a base and its
+  worktree that both rolled over merge without a conflict. Opening a workspace
+  created by an older ws adds the line, which shows up as a change to commit.
+- The `ws-quiet-notes` mod (0.1.1) hides only `.ws/` diffs.
 
 ## [0.19.1] — 2026-11-18
 
