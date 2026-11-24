@@ -3,8 +3,7 @@
 **Written:** 2026-07-27 · **Branch:** `audit-fixes` @ 14 commits · 400 tests, clippy clean
 
 Tickable steps with the exact commands. This is the *doing* document; the
-*reasoning* is in [`releasing.md`](releasing.md) and the gap analysis is in
-[`2026-07-27-cs-vs-ws-independent-audit.md`](2026-07-27-cs-vs-ws-independent-audit.md).
+*reasoning* is in [`releasing.md`](releasing.md).
 
 Everything below is a human action. The code side is already done — see
 [§7](#7-what-is-already-done) for exactly what was built and what it does.
@@ -133,7 +132,7 @@ was private. `gh release download` works unauthenticated against a public repo.
 - [ ] Remove the "private repository" line from the README requirements.
 
 **Do not** replace it with `curl … | sh`. That executes the payload before anything
-verifies it — the exact pattern this project's own audit criticised in `cs`. The
+verifies it. The
 supported flow stays download → verify → run:
 
 ```sh
@@ -153,7 +152,7 @@ whole job.
 |---|---|---|
 | minisign signing of `SHA256SUMS` | `.github/workflows/release.yml` | One signature covers every asset, so the installer needs exactly one verification step. Skipped with a CI **warning** when no key is configured, so a fork still releases. |
 | Keyless build provenance | same | `actions/attest-build-provenance` with `id-token: write`. Independent of minisign on purpose: minisign works offline with no GitHub account; attestation proves which workflow and commit built the artifact with no key to leak. A compromise must defeat both. |
-| Signature verification, **fail-closed** | `install.sh` | Signature checked *before* the checksum. Missing signature, failed verification, or absent `minisign` all abort. `--allow-unsigned` must be typed. Deliberately stricter than `cs`, whose installer silently skips verification when the verifier is absent while still reading as "verified". |
+| Signature verification, **fail-closed** | `install.sh` | Signature checked *before* the checksum. Missing signature, failed verification, or absent `minisign` all abort. `--allow-unsigned` must be typed. Deliberately strict: an installer that silently skips verification when the verifier is absent still reads as "verified". |
 | Portable checksum verification | `install.sh` | `sha256sum`, else `shasum`, else refuse. |
 | Key leak guard | `.gitignore` | `*.key`, `*.pem`; confirmed to block a staged `minisign.key`. |
 | Runbook | `docs/releasing.md` | Key generation, the GitHub secret, ordering, history scan, normal release cadence, and what a *user* can verify. |
@@ -182,11 +181,11 @@ gh attestation verify ws-v0.3.0-aarch64-apple-darwin.tar.gz --repo djock/agent-w
 Not blockers for going public, but the honest remainder:
 
 - Shell completions (`ws completions bash|zsh|fish`) — promised by the old design
-  doc, present in `cs`, roughly a day.
+  doc, roughly a day.
 - The `cargo fmt --check` gate — repo-wide formatting still fails; the gate belongs
   in the same commit that fixes it. Reason recorded in `ci.yml`.
 - Two standing trust findings: the queue's schema-validated agent disposition, and
   exact Codex session identity (blocked on `resume --last` having no addressable
   id).
-- `x86_64-apple-darwin` (Intel Macs) and Windows remain `cs`-only; `ws` ships two
-  targets against `cs`'s four.
+- `x86_64-apple-darwin` (Intel Macs) and Windows are not shipped; `ws` ships two
+  targets.

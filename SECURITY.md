@@ -78,11 +78,8 @@ Stated plainly rather than left for a reader to discover:
   `docs/2026-07-27-codex-hook-contract-verified.md`. A Codex upgrade could silently
   disable the hooks, including secret redaction.
 
-`docs/2026-07-27-cs-vs-ws-independent-audit.md` carries an older, fuller list,
-including items not security-relevant. It predates the refocus in
-`docs/plans/2026-07-28-ws-refocus.md`, which removed the unattended drain, tmux
-spawning, cross-workspace mail and the unredacted shell-command log entirely, so
-some of what it describes no longer exists.
+The refocus in `docs/plans/2026-07-28-ws-refocus.md` removed the unattended drain, tmux
+spawning, cross-workspace mail and the unredacted shell-command log entirely.
 
 ## Scope
 

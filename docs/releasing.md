@@ -131,9 +131,8 @@ was the only way to read a private repository. Once public it can drop that:
 just removing the `gh auth status` precondition and the "private repository" line
 from the README's requirements.
 
-Do **not** replace it with `curl … | sh`. That pattern is exactly what this
-project's own audit criticised in `cs`: it executes the payload before anything
-verifies it. Download, verify, then run:
+Do **not** replace it with `curl … | sh`. That pattern executes the payload
+before anything verifies it. Download, verify, then run:
 
 ```sh
 gh release download v0.2.0 --repo djock/agent-workspaces --pattern install.sh
@@ -170,16 +169,15 @@ gh release edit v0.3.0 --draft=false
 
 **Wait for CI before tagging, not after.** `cargo test` locally is not the same
 check: CI builds the cross-compiled target and runs on a clean checkout, and it
-is where a `--locked` failure after a version bump shows up. `cs` tagged two
-releases on commits whose CI then went red, and both had to be re-cut — the tag
-could not be moved, only orphaned.
+is where a `--locked` failure after a version bump shows up. A tag on a commit
+whose CI then goes red has to be re-cut: the tag cannot be moved, only orphaned.
 
 ### The redaction rule ships a claim about a population
 
 `src/redact_rule.rs` decides what counts as a credential in a file the agent
 wrote. A diff-scoped review sees the matcher once and judges whether it *looks*
-right; that is how `cs`'s corpus redactor survived twenty-nine releases before
-anyone ran it over the transcripts it was protecting and found it had fired
+right; that is how a corpus redactor elsewhere survived twenty-nine releases
+before anyone ran it over the transcripts it was protecting and found it had fired
 twice, both false positives, catching nothing.
 
 So a change there is not done until it has been measured against a real tree:

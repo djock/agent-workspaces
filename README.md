@@ -1,7 +1,5 @@
 # ws
 
-> **Acknowledgment:** `ws` is inspired by [cs (claude-sessions)](https://github.com/hex/claude-sessions). All credit and thanks are due to its authors and contributors for the original idea. `ws` is an independent work-in-progress built to support both Claude Code and Codex.
-
 `ws` gives each project a named, persistent workspace. The workspace keeps its code, notes, memory, handoffs, and agent state together so you can leave and return later.
 
 Most importantly, the same workspace works with both Claude Code and Codex. If your Codex limit runs out, you can create a handoff and continue the work with Claude without starting the project again.
@@ -115,13 +113,11 @@ own:
   against Codex CLI 0.145.0 (`docs/2026-07-27-codex-hook-contract-verified.md`);
   a Codex upgrade could break it silently.
 
-`docs/2026-07-27-cs-vs-ws-independent-audit.md` is the older gap list against
-`cs`. It predates the refocus described in
-`docs/plans/2026-07-28-ws-refocus.md`, which deleted the features ws had copied
-rather than needed — the dashboard, the unattended queue drain, tmux spawning,
-and the `cs` importer — so parts of it describe code that no longer exists.
-Cross-workspace mail was deleted there too and has since come back, in the
-maildir shape rather than the shared-append-file one that made it fragile.
+The refocus described in `docs/plans/2026-07-28-ws-refocus.md` deleted the
+features ws had picked up rather than needed: the dashboard, the unattended
+queue drain, tmux spawning and the session importer. Cross-workspace mail was
+deleted there too and has since come back, in the maildir shape rather than the
+shared-append-file one that made it fragile.
 
 ## User-defined hooks
 
@@ -525,7 +521,7 @@ Agents append to `.ws/notebook/` all session, and Claude Code shows each append
 as a full diff, which pushes the answer out of view. The `ws-quiet-notes` mod
 (Claude Code 2.1.292 or later) cuts that back:
 
-- in the transcript, a diff of a file under `.ws/` or `.cs/` becomes one dim
+- in the transcript, a diff of a file under `.ws/` becomes one dim
   line, `.ws/notebook/notebook.me.md updated (+2 -0)`; the command's own output
   and other files' diffs still show;
 - above the prompt, `✎ 3 notes · 1 new [ Read ]` counts this session's notes;

@@ -63,7 +63,6 @@ Also in the tree, from the review's non-blocking list:
 | Path | What it is | Decision needed |
 |---|---|---|
 | `Cargo.toml`, `Cargo.lock` | adds `fs2 = "0.4.3"` | **`fs2` is not referenced anywhere in `src/`.** It is prep for hardening Changeset 1. Either drop it from the Phase 8 commit or accept shipping an unused dependency in v0.2.0. |
-| `.gitignore` | adds `.cs/local/`, `.cs/archives/`, `.cs/.narrative-reminder-cooldown` | session-tooling noise, unrelated to Phase 8 — commit separately |
 | `AGENTS.md` (untracked) | from a codex launch | decide whether it belongs in the repo |
 | `docs/superpowers/plans/2026-07-26-ws-mandatory-hardening.md` (untracked) | a separate 9-changeset plan (§3) | commit as a plan doc |
 
@@ -137,8 +136,8 @@ Tag-driven release workflow fires on `v*`.
 
 ## 3. The separate hardening plan — **not started**
 
-`docs/superpowers/plans/2026-07-26-ws-mandatory-hardening.md`, from a `cs` vs
-`ws` audit. Nine changesets. Only artefact so far is the unused `fs2`
+`docs/superpowers/plans/2026-07-26-ws-mandatory-hardening.md`, from an audit.
+Nine changesets. Only artefact so far is the unused `fs2`
 dependency. This is **larger than Phase 8 was** and is independent of shipping
 v0.2.0.
 
