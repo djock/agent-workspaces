@@ -581,11 +581,18 @@ files:
 | `.ws/README.md` — objective | yes |
 | `.ws/conventions.md` — durable project rules | yes |
 | `.ws/notebook/` — per-actor findings | yes |
+| `.ws/notebook-archive/` — rolled-over notebook entries, not read on start | yes |
 | `.ws/handoffs/` — seeded into the incoming agent on a switch | yes |
 | `.ws/memory/` — Claude's memory tool writes it; both are told to read it | read by both, written by Claude |
 | Conversation history | **no** — session ids are per agent in `.ws/local/state.toml` |
 | Whatever you write *outside* the managed block | **no** — `CLAUDE.local.md` and `AGENTS.md` are separate files |
 | MCP servers | **no** — `ws` does not configure MCP for either agent |
+
+Agents reread their notebook at every start, so `ws` keeps it small. When a
+session starts or resumes and your notebook is over 32 KB, its oldest `## `
+entries move to `.ws/notebook-archive/notebook.<actor>.md`, until what's left
+fits in 16 KB. A pointer line at the top of the notebook names the archive.
+Only your own notebook rolls; a teammate's rolls when they next start.
 
 So a lasting rule belongs in `.ws/conventions.md`, not in one agent's memory or
 one agent's context file. MCP servers are set up per agent, outside `ws`.

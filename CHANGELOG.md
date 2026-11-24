@@ -6,6 +6,12 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Notebooks roll over: past 32 KB, the oldest entries move to
+  `.ws/notebook-archive/` at session start, so agents stop rereading months of
+  history.
+
 ## [0.19.1] — 2026-11-18
 
 There is no 0.19.0 release. The tag was pushed, but its release build was

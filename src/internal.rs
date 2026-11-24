@@ -86,6 +86,25 @@ fn session_start() {
         .and_then(|a| contract::read_session_id(&ws.state_toml(), &a));
     record_session_identity(&ws, &h);
 
+    // Keep the notebook this agent is about to reread small. Only its own:
+    // this agent has not written yet, while a teammate's could be mid-append.
+    // `actor_slug_in(root)`, not `actor_slug()`: the hook's cwd is not ours to
+    // rely on. A failure is logged and the launch goes on.
+    if h.source == "startup" || h.source == "resume" {
+        match crate::rollover::roll_over(&ws, &actors::actor_slug_in(&ws.root)) {
+            Ok(0) => {}
+            Ok(n) => {
+                let _ = append_log(
+                    &ws,
+                    &format!("notebook rolled: {n} entries moved to .ws/notebook-archive/"),
+                );
+            }
+            Err(e) => {
+                let _ = append_log(&ws, &format!("notebook roll failed: {e:#}"));
+            }
+        }
+    }
+
     let mut ctx = build_context(&ws);
     // A handoff armed by `ws -rotate` is offered to the next conversation:
     // after /clear, on a new launch, or when the other agent opens. Offered,

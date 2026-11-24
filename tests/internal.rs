@@ -627,3 +627,46 @@ fn a_start_that_keeps_the_recorded_session_id_does_not_take_the_marker() {
     assert!(proj.join(".ws/local/pending-handoff").exists());
     assert!(start("x2").contains(".ws/handoffs/c.md"), "a new conversation does");
 }
+
+fn whoami(env: &Env, proj: &std::path::Path) -> String {
+    let out =
+        env.cmd().current_dir(proj).arg("-whoami").assert().success().get_output().stdout.clone();
+    String::from_utf8(out).unwrap().trim().to_string()
+}
+
+fn oversized_notebook(proj: &std::path::Path, actor: &str) -> std::path::PathBuf {
+    let mut s = format!("# Notebook ({actor})\n\n");
+    for i in 0..40 {
+        s.push_str(&format!("## e{i}\n{}\n", "x".repeat(1000)));
+    }
+    let dir = proj.join(".ws/notebook");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join(format!("notebook.{actor}.md"));
+    std::fs::write(&p, s).unwrap();
+    p
+}
+
+#[test]
+fn session_start_rolls_an_oversized_notebook() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "proj");
+    let actor = whoami(&env, &proj);
+    let nb = oversized_notebook(&proj, &actor);
+    session_start(&env, "proj", &proj, "startup");
+    let archive = proj.join(format!(".ws/notebook-archive/notebook.{actor}.md"));
+    let arch = std::fs::read_to_string(&archive).expect("archive written");
+    assert!(arch.contains("## e0\n"));
+    assert!(std::fs::metadata(&nb).unwrap().len() < 20 * 1024);
+    let log = std::fs::read_to_string(proj.join(".ws/local/log/session.log")).unwrap();
+    assert!(log.contains("rolled"), "{log}");
+}
+
+#[test]
+fn session_start_does_not_roll_on_clear() {
+    let env = Env::new();
+    let proj = adopt_ws(&env, "proj");
+    let actor = whoami(&env, &proj);
+    oversized_notebook(&proj, &actor);
+    session_start(&env, "proj", &proj, "clear");
+    assert!(!proj.join(".ws/notebook-archive").exists());
+}
