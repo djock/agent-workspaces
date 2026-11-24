@@ -6,6 +6,25 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-11-25
+
+### Added
+
+- agy (Google's Antigravity CLI) is a third agent: `ws <name> -agy` (or
+  `-gemini`, `--agent agy`). It shares the workspace's `.ws/` files with Claude
+  and Codex, so you can switch between all three. A launch resumes the
+  recorded agy conversation by id. `ws setup` registers ws's hooks under a
+  `ws` entry in `~/.gemini/config/hooks.json`: session start context and
+  handoffs, the prompt-time notes (on agy's `PreInvocation`), the Stop
+  reminders and secret redaction. ws translates agy's camelCase payloads and
+  answers in its `injectSteps` / `decision: "continue"` shape. There is no
+  status line or limit guard for agy.
+
+### Fixed
+
+- The prompt hook now prints one JSON answer when both the limit-guard note
+  and unread mail are due. It used to print two documents.
+
 ## [0.20.0] — 2026-11-24
 
 ### Added
