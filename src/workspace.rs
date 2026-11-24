@@ -39,6 +39,11 @@ impl Workspace {
     pub fn notebook_dir(&self) -> PathBuf {
         self.ws_dir().join("notebook")
     }
+    /// Rolled-over notebook entries. Outside `notebook/`, so the start
+    /// protocol never lists or rereads them.
+    pub fn notebook_archive_dir(&self) -> PathBuf {
+        self.ws_dir().join("notebook-archive")
+    }
     pub fn timeline(&self) -> PathBuf {
         self.ws_dir().join("timeline.jsonl")
     }
