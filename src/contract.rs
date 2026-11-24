@@ -38,8 +38,8 @@ pub fn check_gate(name: &str, ws_toml: &Path) -> Result<()> {
 }
 
 pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
-    // Validate here, not only in `open_or_create`: `-adopt`, `migrate-cs` and
-    // `worktree::create` all reach this function directly, and `-adopt` used to
+    // Validate here, not only in `open_or_create`: `-adopt` and
+    // `worktree::create` both reach this function directly, and `-adopt` used to
     // register an arbitrary name — which `ws -spawn` then executed.
     crate::workspace::validate_name(name)?;
     let ws = root.join(".ws");

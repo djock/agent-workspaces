@@ -8,7 +8,7 @@
     {
       "name": "ws-quiet-notes",
       "source": "./plugins/ws-quiet-notes",
-      "description": "Hides workspace-note diffs (.ws/, .cs/) in the transcript, counts them above the prompt, and reads them back with /notes."
+      "description": "Hides workspace-note diffs (.ws/) in the transcript, counts them above the prompt, and reads them back with /notes."
     }
   ]
 }

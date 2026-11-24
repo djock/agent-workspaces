@@ -153,9 +153,9 @@ fn which(bin: &str) -> Option<PathBuf> {
 ///
 /// Runs hermetically: a neutral working directory and the session's own context
 /// variables stripped. Without that, a nested agent inherits the project's
-/// `CLAUDE.md`, its memory and its conventions — cs measured a request to add a
-/// flag coming back demanding TDD, bash 3.2 compatibility and a README update
-/// nobody asked for.
+/// `CLAUDE.md`, its memory and its conventions, and a request to add a flag
+/// comes back demanding TDD, shell compatibility and a README update nobody
+/// asked for.
 pub fn rewrite(prompt: &str) -> Option<String> {
     let r = rewriter()?;
     let mut cmd = match &r {

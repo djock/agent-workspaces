@@ -228,9 +228,9 @@ mod tests {
     }
 
     /// The file belongs to another program, whose format may change. One
-    /// unreadable record must not take the rest of the listing down with it —
-    /// the shape of failure cs hit when a single `jq` invocation abandoned the
-    /// whole run at the first parse error.
+    /// unreadable record must not take the rest of the listing down with it, the
+    /// way a single `jq` invocation abandons a whole run at the first parse
+    /// error.
     #[test]
     fn one_unparseable_record_does_not_hide_the_others() {
         let d = TempDir::new().unwrap();

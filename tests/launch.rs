@@ -624,8 +624,7 @@ const CHANGELOG: &str = "\
 - An older fix.
 ";
 
-/// Opening a workspace says so when a newer ws has been released — the same
-/// nudge `cs` prints on session open — and lists what each newer release
+/// Opening a workspace says so when a newer ws has been released, and lists what each newer release
 /// brought, read from the published changelog.
 #[test]
 fn a_launch_reports_a_newer_release_and_its_changelog() {

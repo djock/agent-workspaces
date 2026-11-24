@@ -2,7 +2,7 @@
 //!
 //! Scoped to a diff, a review sees a matcher once and judges whether the change
 //! looks right. Measured against the population it runs on, the same rule has
-//! nowhere to hide: cs's corpus redactor survived twenty-nine releases of
+//! nowhere to hide: a corpus redactor elsewhere survived twenty-nine releases of
 //! diff-scoped review and, when finally run over 2,384 real transcripts, had
 //! fired twice — both false positives — and caught zero credentials.
 //!

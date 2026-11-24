@@ -12,7 +12,7 @@
 //! `git checkout <ref> -- <path>`, and the snapshots are invisible to
 //! `git log`/`git branch` because they live outside `refs/heads`.
 //!
-//! Two rules keep this honest, both learned from cs:
+//! Two rules keep this honest:
 //!
 //! * **One ref per conversation.** A single shared ref meant two sessions on one
 //!   checkout read, wrote and deleted each other's snapshots — and a worktree
@@ -551,7 +551,7 @@ mod tests {
         assert!(!notice.contains("HEAD has moved"), "{notice}");
     }
 
-    /// The refusal cs had to learn: a whole-tree restore onto a moved HEAD
+    /// The refusal that matters: a whole-tree restore onto a moved HEAD
     /// writes an hour-old tree over work that has since been committed.
     #[test]
     fn a_moved_head_downgrades_the_offer_to_per_file() {

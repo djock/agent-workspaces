@@ -23,7 +23,6 @@ const toolResult = (surface: 'terminal' | 'desktop', paths: string[]) =>
 
 test('protocol paths are quiet, project files are not', () => {
   expect(isQuiet('/w/.ws/notebook/notebook.me.md')).toBe(true)
-  expect(isQuiet('/w/.cs/memory/narrative.me.md')).toBe(true)
   expect(isQuiet('/w/Sources/App.swift')).toBe(false)
   expect(isQuiet(undefined)).toBe(false)
   expect(short('/Users/x/proj/.ws/notebook/n.md')).toBe('.ws/notebook/n.md')

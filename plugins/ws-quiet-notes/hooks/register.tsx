@@ -6,7 +6,7 @@ import type { Note } from '../types'
 // Files the agent writes for the workspace protocol (notebooks, summaries,
 // handoffs). Their diffs are bookkeeping and push the answer out of view, so
 // the transcript shows one dim line, the band counts them, and /notes reads them.
-const QUIET = ['/.ws/', '/.cs/']
+const QUIET = ['/.ws/']
 const PANE = 'ws-notes'
 const PER_PAGE = 4
 
@@ -83,7 +83,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'notes',
-      description: 'Read the workspace notes this session wrote (.ws/, .cs/)',
+      description: 'Read the workspace notes this session wrote (.ws/)',
     })
     return next(e)
   })

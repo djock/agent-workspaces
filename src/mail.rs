@@ -6,10 +6,10 @@
 //! to that workspace's agent on its next prompt.
 //!
 //! **A maildir, not a log file.** Every message is its own file, staged in
-//! `tmp/` and renamed into `new/`. This is the whole design, and it is the shape
-//! cs arrived at only after shipping the other one: a shared append-only file
+//! `tmp/` and renamed into `new/`. This is the whole design, and the obvious
+//! alternative fails: a shared append-only file
 //! looks atomic and is not, because a large body is flushed in chunks and two
-//! simultaneous senders splice each other's lines. Measured there, four
+//! simultaneous senders splice each other's lines. Measured, four
 //! concurrent senders left 112 of 200 lines intact — and a torn line was
 //! silently dropped by the tolerant reader. A rename cannot interleave, so
 //! delivery here is atomic by construction rather than by hoping the write is
@@ -417,8 +417,8 @@ mod tests {
         assert_eq!(unread_count(&root), 0, "nothing may be delivered");
     }
 
-    /// One unparseable file must not hide the rest of the mailbox — the failure
-    /// mode cs hit when a single torn document took down every message after it.
+    /// One unparseable file must not hide the rest of the mailbox, the way a
+    /// single torn document in a shared file takes down every message after it.
     #[test]
     fn one_unreadable_message_does_not_hide_the_others() {
         let d = TempDir::new().unwrap();

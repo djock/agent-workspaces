@@ -361,7 +361,7 @@ pub fn register_statuslines(ws_bin: &Path) -> Result<()> {
         );
     }
 
-    // back up any prior commands (so cs-statusline is recoverable)
+    // back up any prior commands (so a prior statusline is recoverable)
     let mut backup = serde_json::Map::new();
     let ws_prefix = format!("{} ", ws_bin.display());
     let quoted_ws_prefix = format!("{} ", shell_command(ws_bin));
@@ -960,10 +960,10 @@ mod tests {
     #[test]
     fn install_is_idempotent_and_preserves_foreign_hooks() {
         let _d = iso();
-        // pre-existing foreign (cs-style) hook must survive
+        // a pre-existing foreign hook must survive
         let sp = claude_settings_path();
         std::fs::create_dir_all(sp.parent().unwrap()).unwrap();
-        std::fs::write(&sp, r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/cs/session-start.sh"}]}]}}"#).unwrap();
+        std::fs::write(&sp, r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/other-tool/session-start.sh"}]}]}}"#).unwrap();
 
         install_hooks_for(
             &claude_settings_path(),
@@ -984,13 +984,13 @@ mod tests {
         // exactly one foreign + exactly one ws entry (idempotent)
         let foreign = arr
             .iter()
-            .filter(|g| g["hooks"][0]["command"].as_str().unwrap().contains("/cs/"))
+            .filter(|g| g["hooks"][0]["command"].as_str().unwrap().contains("/other-tool/"))
             .count();
         let ours = arr
             .iter()
             .filter(|g| {
                 g["hooks"][0]["command"].as_str().unwrap().contains("session-start.sh")
-                    && !g["hooks"][0]["command"].as_str().unwrap().contains("/cs/")
+                    && !g["hooks"][0]["command"].as_str().unwrap().contains("/other-tool/")
             })
             .count();
         assert_eq!(foreign, 1);
@@ -1217,7 +1217,7 @@ mod tests {
         let _d = iso();
         let sp = claude_settings_path();
         std::fs::create_dir_all(sp.parent().unwrap()).unwrap();
-        let original = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/cs/session-start.sh"}]}]},"other":"keep-me"}"#;
+        let original = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/other-tool/session-start.sh"}]}]},"other":"keep-me"}"#;
         std::fs::write(&sp, original).unwrap();
 
         let mut perms = std::fs::metadata(&sp).unwrap().permissions();

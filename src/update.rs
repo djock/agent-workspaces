@@ -79,7 +79,7 @@ pub fn run(check: bool, force: bool) -> Result<()> {
     let temp = TempDir::new()?;
     let installer = temp.path().join("install.sh");
 
-    // Plain text throughout, in the shape `cs -update` uses: what is changing,
+    // Plain text throughout: what is changing,
     // each thing installed, then what is new.
     println!();
     if latest_version == current {
@@ -162,7 +162,7 @@ fn print_whats_new(latest: &str, installed: &str) {
     println!("  See https://github.com/{repository}/releases for the full notes.");
 }
 
-/// Print "there is a newer ws" on launch, the way `cs` does on session open.
+/// Print "there is a newer ws" on launch.
 ///
 /// Deliberately infallible: a launch is not the place to fail over a release
 /// lookup, so every error path here degrades to silence. Set `WS_NO_UPDATE_CHECK`
@@ -430,8 +430,8 @@ fn write_cache(version: &str) {
     let _ = crate::atomic::atomic_write(&path, format!("{} {version}\n", now_secs()));
 }
 
-/// `$XDG_CACHE_HOME/ws/update-check`, else `~/.cache/ws/update-check` — the
-/// same shape `cs` uses, and under `$HOME` either way so tests stay isolated.
+/// `$XDG_CACHE_HOME/ws/update-check`, else `~/.cache/ws/update-check`, under
+/// `$HOME` either way so tests stay isolated.
 fn cache_path() -> PathBuf {
     let base = match std::env::var("XDG_CACHE_HOME") {
         Ok(d) if !d.is_empty() => PathBuf::from(d),

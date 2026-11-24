@@ -301,9 +301,9 @@ pub fn verb_usage(verb: &str) -> String {
 
 /// Every verb `ws -h` documents, in the order it lists them.
 ///
-/// One source for the vocabulary. cs shipped three copies of its own — two
-/// completion scripts and an error message — each missing something different,
-/// which is what a hand-maintained list does over time.
+/// One source for the vocabulary. Separate copies (completion scripts, an
+/// error message) each drift to miss something different, which is what a
+/// hand-maintained list does over time.
 pub fn known_verbs() -> Vec<&'static str> {
     let mut out = Vec::new();
     for line in help_text().lines() {
@@ -1122,23 +1122,19 @@ mod tests {
         }
     }
 
-    /// The two removed *bare-word* commands cannot be rejected by the parser:
-    /// every bare word is a workspace name, and the parser does not consult the
-    /// registry to decide otherwise. They now parse as a launch and fail at
+    /// A removed *bare-word* command cannot be rejected by the parser: every
+    /// bare word is a workspace name, and the parser does not consult the
+    /// registry to decide otherwise. It now parses as a launch and fails at
     /// runtime with "no such workspace", which is the honest outcome — pinned
     /// here so nobody later mistakes it for the alias still working.
     #[test]
     fn removed_bare_word_commands_parse_as_workspace_names() {
-        match p(&["migrate-cs"]) {
-            Cmd::Launch { name, .. } => assert_eq!(name, "migrate-cs"),
-            other => panic!("expected a launch attempt, got {other:?}"),
-        }
         match p(&["subagent-statusline"]) {
             Cmd::Launch { name, .. } => assert_eq!(name, "subagent-statusline"),
             other => panic!("expected a launch attempt, got {other:?}"),
         }
-        // With their flags they are rejected outright, since a launch takes none.
-        assert!(super::parse(vec!["migrate-cs".into(), "--all".into()]).is_err());
+        // With a flag it is rejected outright, since a launch takes none.
+        assert!(super::parse(vec!["subagent-statusline".into(), "--all".into()]).is_err());
     }
 
     /// `config set --workspace` parsed, threaded a bool through the whole call

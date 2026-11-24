@@ -8,7 +8,6 @@
 /target
 
 # Local assistant and workspace state (never shared)
-/.cs/
 /.ws/
 
 # Claude Code local settings (recreated on each machine)
@@ -35,9 +34,6 @@ Thumbs.db
 minisign.key
 *.key
 *.pem
-.cs/local/
-.cs/archives/
-.cs/.narrative-reminder-cooldown
 
 # Claude Code lays a mod's API types beside it on load; they are per build.
 plugins/*/.claude-plugin/types/

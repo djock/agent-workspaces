@@ -62,7 +62,7 @@ mod tests {
             let p = commands_dir().join(name);
             assert!(p.is_file(), "missing {name}");
         }
-        // namespaced under commands/ws (so /ws:summary, never clobbering cs's /summary)
+        // namespaced under commands/ws (so /ws:summary never clobbers another plugin's /summary)
         assert!(commands_dir().ends_with("commands/ws"));
         assert!(std::fs::read_to_string(commands_dir().join("rotate.md"))
             .unwrap()

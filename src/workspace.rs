@@ -128,7 +128,7 @@ pub fn open_or_create(name: &str, agent: &str, cfg: &Config) -> Result<(Workspac
 /// only dots — both are path traversal in a value used as a directory name.
 ///
 /// Called from `contract::init` and `registry::register` rather than only from
-/// `open_or_create`, because `-adopt` and `migrate-cs` reach those directly and
+/// `open_or_create`, because `-adopt` reaches those directly and
 /// used to bypass validation entirely.
 pub fn validate_name(name: &str) -> Result<()> {
     let ok_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@');
@@ -256,7 +256,7 @@ mod tests {
 
         assert!(
             crate::contract::init(nasty, d.path(), "claude", false).is_err(),
-            "contract::init must refuse a hostile name (the -adopt / migrate-cs path)"
+            "contract::init must refuse a hostile name (the -adopt path)"
         );
         assert!(
             crate::registry::register(nasty, d.path()).is_err(),

@@ -373,7 +373,7 @@ mod tests {
         // `-msg` is deliberately absent from this list: cross-workspace mail
         // was removed in the 0.3.0 refocus and brought back, in the maildir
         // shape rather than the append-to-a-shared-file one that made it fragile.
-        for token in ["-tui", "migrate-cs", "-spawn", "-queue", "drain", "--dry-run"] {
+        for token in ["-tui", "-spawn", "-queue", "drain", "--dry-run"] {
             assert!(!help.contains(token), "`ws --help` still mentions removed {token:?}");
         }
     }

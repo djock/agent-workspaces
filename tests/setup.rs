@@ -119,11 +119,14 @@ fn setup_installs_hooks_and_prompts() {
 #[test]
 fn setup_registers_statuslines_and_backs_up_prior() {
     let env = Env::new();
-    // pre-existing foreign statusline (cs) must be backed up, not lost
+    // a pre-existing foreign statusline must be backed up, not lost
     let sp = env.home.path().join(".claude/settings.json");
     std::fs::create_dir_all(sp.parent().unwrap()).unwrap();
-    std::fs::write(&sp, r#"{"statusLine":{"type":"command","command":"/opt/cs/cs-statusline"}}"#)
-        .unwrap();
+    std::fs::write(
+        &sp,
+        r#"{"statusLine":{"type":"command","command":"/opt/other/other-statusline"}}"#,
+    )
+    .unwrap();
 
     let shim = env.fake_claude();
     env.cmd().env("WS_CLAUDE_BIN", &shim).arg("setup").assert().success();
@@ -138,10 +141,10 @@ fn setup_registers_statuslines_and_backs_up_prior() {
          setup must not register it any more"
     );
 
-    // the prior cs command was recorded to the backup file
+    // the prior command was recorded to the backup file
     let backup = std::fs::read_to_string(env.home.path().join(".config/ws/statusline-backup.json"))
         .unwrap_or_default();
-    assert!(backup.contains("cs-statusline"), "prior statusline must be backed up");
+    assert!(backup.contains("other-statusline"), "prior statusline must be backed up");
 }
 
 #[test]
@@ -177,8 +180,11 @@ fn setup_backup_merges_and_never_drops_a_prior_original() {
     std::fs::create_dir_all(sp.parent().unwrap()).unwrap();
 
     // Run 1: only a foreign statusLine present.
-    std::fs::write(&sp, r#"{"statusLine":{"type":"command","command":"/opt/cs/cs-statusline"}}"#)
-        .unwrap();
+    std::fs::write(
+        &sp,
+        r#"{"statusLine":{"type":"command","command":"/opt/other/other-statusline"}}"#,
+    )
+    .unwrap();
     let shim = env.fake_claude();
     env.cmd().env("WS_CLAUDE_BIN", &shim).arg("setup").assert().success();
 
@@ -196,5 +202,5 @@ fn setup_backup_merges_and_never_drops_a_prior_original() {
 
     let backup = std::fs::read_to_string(env.home.path().join(".config/ws/statusline-backup.json"))
         .unwrap_or_default();
-    assert!(backup.contains("cs-statusline"), "run-1 original must survive: {backup}");
+    assert!(backup.contains("other-statusline"), "run-1 original must survive: {backup}");
 }
