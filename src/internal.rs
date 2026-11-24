@@ -86,8 +86,10 @@ fn session_start() {
         .and_then(|a| contract::read_session_id(&ws.state_toml(), &a));
     record_session_identity(&ws, &h);
 
-    // Keep the notebook this agent is about to reread small. Only its own:
-    // this agent has not written yet, while a teammate's could be mid-append.
+    // Keep the notebook this agent is about to reread small. Only the actor's
+    // own: a teammate's is theirs to roll when they start. A second live agent
+    // of the same actor can still be appending; `roll_over` re-reads the file
+    // before writing and stands down if it changed.
     // `actor_slug_in(root)`, not `actor_slug()`: the hook's cwd is not ours to
     // rely on. A failure is logged and the launch goes on.
     if h.source == "startup" || h.source == "resume" {

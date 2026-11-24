@@ -105,6 +105,7 @@ pub fn open_or_create(name: &str, agent: &str, cfg: &Config) -> Result<(Workspac
         // one created before ws set them — has a `.ws/` built under whatever
         // umask that machine had.
         contract::harden(&ws.root);
+        contract::backfill_gitattributes(&ws.root);
         return Ok((ws, false));
     }
     std::fs::create_dir_all(&ws.root)?;

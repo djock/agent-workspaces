@@ -83,6 +83,17 @@ fn with_pointer(preamble: &str, actor: &str) -> String {
 /// The archive is appended to, and synced, before the notebook is rewritten:
 /// a crash between the two leaves an entry in both files, never in neither.
 pub fn roll_over(ws: &Workspace, actor: &str) -> Result<usize> {
+    roll_over_with(ws, actor, || {})
+}
+
+/// [`roll_over`], with `before_write` run between deciding the roll and
+/// writing it, which is where a test lands a concurrent append.
+///
+/// The `txn` lock keeps out other ws processes, not an agent's `>>`, so the
+/// notebook is read again before the archive append and before the rename. If
+/// it changed, the roll stands down and the next start tries again. That
+/// narrows the window to the rename itself.
+fn roll_over_with(ws: &Workspace, actor: &str, before_write: impl FnOnce()) -> Result<usize> {
     let path = ws.notebook_dir().join(format!("notebook.{actor}.md"));
     match std::fs::metadata(&path) {
         Ok(m) if m.len() as usize > ROLL_OVER_BYTES => {}
@@ -99,6 +110,12 @@ pub fn roll_over(ws: &Workspace, actor: &str) -> Result<usize> {
         let (preamble, entries) = split_entries(&text);
         let keep = first_kept(&entries, KEEP_BYTES);
         if keep == 0 {
+            return Ok(0);
+        }
+
+        before_write();
+        let unchanged = || std::fs::read(&path).map(|b| b == text.as_bytes()).unwrap_or(false);
+        if !unchanged() {
             return Ok(0);
         }
 
@@ -125,6 +142,11 @@ pub fn roll_over(ws: &Workspace, actor: &str) -> Result<usize> {
         f.write_all(out.as_bytes())?;
         f.sync_all()?;
 
+        // Changed since the archive append: the moved entries are now in both
+        // files, which the next roll repeats harmlessly. Duplicate, never loss.
+        if !unchanged() {
+            return Ok(0);
+        }
         let mut kept = with_pointer(preamble, actor);
         entries[keep..].iter().for_each(|e| kept.push_str(e));
         crate::atomic::atomic_write(&path, kept)?;
@@ -260,6 +282,28 @@ mod tests {
         assert!(arch.starts_with(&old));
         assert!(arch[old.len()..].starts_with("## e0\n"));
         assert_eq!(arch.matches("# Notebook archive").count(), 1);
+    }
+
+    /// A second live agent of the same actor can append with `>>`, which takes
+    /// no lock. An append that lands while the roll is running must survive:
+    /// the roll stands down instead of renaming over it.
+    #[test]
+    fn an_append_during_the_roll_aborts_it() {
+        let d = TempDir::new().unwrap();
+        let ws = ws_in(&d);
+        std::fs::write(nb(&ws), big("\n")).unwrap();
+        let path = nb(&ws);
+        let n = roll_over_with(&ws, ACTOR, || {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+            f.write_all(b"## late\nkept\n").unwrap();
+        })
+        .unwrap();
+        assert_eq!(n, 0);
+        let now = std::fs::read_to_string(nb(&ws)).unwrap();
+        assert!(now.ends_with("## late\nkept\n"));
+        assert!(now.contains("## e0\n"), "nothing moved");
+        assert!(!archive(&ws).exists(), "no half roll");
     }
 
     #[test]

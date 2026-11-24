@@ -79,7 +79,8 @@ Stated plainly rather than left for a reader to discover:
   disable the hooks, including secret redaction.
 
 The refocus in `docs/plans/2026-07-28-ws-refocus.md` removed the unattended drain, tmux
-spawning, cross-workspace mail and the unredacted shell-command log entirely.
+spawning, cross-workspace mail and the unredacted shell-command log. Mail has
+since returned, as a maildir (`src/mail.rs`).
 
 ## Scope
 

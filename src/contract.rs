@@ -106,9 +106,15 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
     // its worktree. Without union merge a `base@feature` merge conflicts on
     // it, and a conflicted merge is the C1 path — the one that leaves the
     // user's repository mid-merge.
+    //
+    // `notebook-archive/*.md` holds what a notebook rolled over: append-only
+    // too, and created independently in a base and its worktree, which without
+    // union merge is an add/add conflict.
     write_if_absent(
         &ws.join(".gitattributes"),
-        "notebook/*.md merge=union\ntimeline.jsonl merge=union\nqueue/*.jsonl merge=union\n",
+        &format!(
+            "notebook/*.md merge=union\ntimeline.jsonl merge=union\nqueue/*.jsonl merge=union\n{ARCHIVE_UNION}\n"
+        ),
     )?;
 
     // git init only if this dir is not already inside a repo (direct or ancestor)
@@ -222,6 +228,25 @@ pub fn init(name: &str, root: &Path, agent: &str, commit: bool) -> Result<()> {
 /// machine-local state. The one exception is that this says nothing about what
 /// git does with those files — a workspace that commits `.ws/` and pushes it
 /// publishes the contents regardless of the mode on disk.
+/// The union-merge rule for rolled-over notebook entries.
+const ARCHIVE_UNION: &str = "notebook-archive/*.md merge=union";
+
+/// Add [`ARCHIVE_UNION`] to a `.ws/.gitattributes` written before it existed.
+/// That file is only ever written if absent, so a workspace created by an older
+/// ws never gets the rule otherwise. Best-effort, like `harden`: a missing file
+/// is left missing, and a failure must not stop an open.
+pub fn backfill_gitattributes(root: &Path) {
+    let path = root.join(".ws").join(".gitattributes");
+    let Ok(cur) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    if cur.lines().any(|l| l.trim() == ARCHIVE_UNION) {
+        return;
+    }
+    let sep = if cur.is_empty() || cur.ends_with('\n') { "" } else { "\n" };
+    let _ = crate::atomic::atomic_write(&path, format!("{cur}{sep}{ARCHIVE_UNION}\n"));
+}
+
 pub fn harden(root: &Path) {
     let ws = root.join(".ws");
     if !ws.is_dir() {
@@ -397,6 +422,43 @@ mod tests {
 
         let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o755, "the user's own directory mode must survive");
+    }
+
+    /// The archive is append-only like the notebook it comes from. Without
+    /// union merge, a base and its worktree that each rolled over add the same
+    /// file twice, and the merge stops on an add/add conflict.
+    #[test]
+    fn init_union_merges_the_notebook_archive() {
+        let d = TempDir::new().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", d.path().join("cfg"));
+        let root = d.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        init("proj", &root, "claude", false).unwrap();
+        let ga = std::fs::read_to_string(root.join(".ws/.gitattributes")).unwrap();
+        assert!(ga.lines().any(|l| l == ARCHIVE_UNION), "{ga}");
+    }
+
+    #[test]
+    fn backfill_adds_the_archive_rule_once() {
+        let d = TempDir::new().unwrap();
+        let ga = d.path().join(".ws/.gitattributes");
+        std::fs::create_dir_all(ga.parent().unwrap()).unwrap();
+        let old = "notebook/*.md merge=union\ntimeline.jsonl merge=union";
+        std::fs::write(&ga, old).unwrap();
+        backfill_gitattributes(d.path());
+        backfill_gitattributes(d.path());
+        let now = std::fs::read_to_string(&ga).unwrap();
+        assert!(now.starts_with(old));
+        assert_eq!(now.lines().filter(|l| *l == ARCHIVE_UNION).count(), 1, "{now}");
+        assert!(now.ends_with('\n'));
+    }
+
+    #[test]
+    fn backfill_leaves_a_missing_file_alone() {
+        let d = TempDir::new().unwrap();
+        std::fs::create_dir_all(d.path().join(".ws")).unwrap();
+        backfill_gitattributes(d.path());
+        assert!(!d.path().join(".ws/.gitattributes").exists());
     }
 
     #[test]
