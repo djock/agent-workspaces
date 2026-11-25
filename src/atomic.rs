@@ -221,6 +221,29 @@ pub fn atomic_write_with_mode(
     Ok(())
 }
 
+/// Publish `contents` at `path` only if nothing is there yet.
+///
+/// Same temp-then-link shape as [`atomic_write`], so a reader never sees a
+/// partial file, but the last step is a hard link, which fails with
+/// `AlreadyExists` instead of replacing. A handoff written in the same second as
+/// an earlier one under the same actor used to replace that one's body.
+pub fn publish_new(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let ext = match path.extension().and_then(|e| e.to_str()) {
+        Some(e) => format!("{e}.new.{}", std::process::id()),
+        None => format!("new.{}", std::process::id()),
+    };
+    let tmp = path.with_extension(ext);
+    let res = write_tmp(&tmp, contents.as_ref(), None).and_then(|_| std::fs::hard_link(&tmp, path));
+    let _ = std::fs::remove_file(&tmp);
+    res?;
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(())
+}
+
 /// An existing file's unix mode, in the shape `atomic_write_with_mode` wants.
 ///
 /// For rewriting a file *the user owns* rather than one this tool created:
@@ -275,6 +298,19 @@ fn write_tmp(tmp: &Path, contents: &[u8], mode: Option<u32>) -> std::io::Result<
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn publish_new_refuses_to_replace_and_leaves_no_temp_behind() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("h.md");
+        publish_new(&p, "first").unwrap();
+        let e = publish_new(&p, "second").unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "first");
+        let names: Vec<_> =
+            std::fs::read_dir(d.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+    }
 
     /// The defect: an interrupted write leaves a final line with no newline, a
     /// bare append splices the next record onto it, and a per-line reader drops

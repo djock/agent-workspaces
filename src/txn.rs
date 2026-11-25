@@ -63,7 +63,12 @@ impl Drop for Txn {
 
 /// Take the exclusive lock guarding `target`, waiting up to [`TIMEOUT`].
 pub fn acquire(target: &Path) -> Result<Txn> {
-    let lp = lock_path(target);
+    acquire_at(&lock_path(target), target)
+}
+
+/// [`acquire`] with the lock file somewhere other than beside `target`.
+pub fn acquire_at(lp: &Path, target: &Path) -> Result<Txn> {
+    let lp = lp.to_path_buf();
     if let Some(dir) = lp.parent() {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("failed to create {}", dir.display()))?;

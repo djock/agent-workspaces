@@ -363,3 +363,66 @@ fn a_feature_whose_directory_is_gone_says_so() {
         "a directory that does not exist has no uncommitted changes: {text}"
     );
 }
+
+/// `ws base@feature -codex` used to fail with "unexpected argument". A feature
+/// workspace takes the same launch flags as a named one, and a first call with
+/// a flag creates the worktree and opens it.
+#[test]
+fn a_feature_worktree_takes_launch_flags() {
+    let env = Env::new();
+    let claude = env.fake_claude();
+    let codex = env.fake_codex();
+    let base = base_workspace(&env, "api");
+
+    env.cmd()
+        .env("WS_CLAUDE_BIN", &claude)
+        .env("WS_CODEX_BIN", &codex)
+        .env("WS_NO_EXEC", "1")
+        .args(["api@retry", "-codex", "-sane"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("created api@retry"));
+    assert!(!env.codex_argv_log().is_empty(), "created and opened with codex");
+    assert!(env.argv_log().is_empty(), "claude was not launched: {}", env.argv_log());
+
+    env.cmd()
+        .env("WS_CLAUDE_BIN", &claude)
+        .env("WS_CODEX_BIN", &codex)
+        .env("WS_NO_EXEC", "1")
+        .args(["api@retry", "-claude", "--fresh"])
+        .assert()
+        .success();
+    assert!(env.argv_log().contains("--session-id"), "{}", env.argv_log());
+
+    let base_meta = std::fs::read_to_string(base.join(".ws/workspace.toml")).unwrap_or_default();
+    assert!(!base_meta.contains("codex"), "the base's default is untouched: {base_meta}");
+
+    env.cmd()
+        .args(["api@retry", "--merge", "-codex"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--merge"));
+}
+
+/// Opening a feature worktree used to leave an untracked `AGENTS.md.lock` (or
+/// `CLAUDE.md.lock`) at its root, which the merge check counts as user dirt.
+#[test]
+fn launching_a_feature_worktree_leaves_no_lock_file_in_the_checkout() {
+    let env = Env::new();
+    let claude = env.fake_claude();
+    let codex = env.fake_codex();
+    base_workspace(&env, "api");
+    for flag in ["-claude", "-codex", "-claude"] {
+        env.cmd()
+            .env("WS_CLAUDE_BIN", &claude)
+            .env("WS_CODEX_BIN", &codex)
+            .env("WS_NO_EXEC", "1")
+            .args(["api@lk", flag])
+            .assert()
+            .success();
+    }
+    let wt = env.root.join("api@lk");
+    let status = git(&wt, &["status", "--porcelain", "--untracked-files=all"]);
+    assert!(!status.contains(".lock"), "no lock sidecar in the checkout:\n{status}");
+    assert!(!wt.join("AGENTS.md.lock").exists() && !wt.join("CLAUDE.md.lock").exists());
+}

@@ -57,8 +57,16 @@ impl LaunchMode {
 /// The environment a launch inside a workspace sets. A dispatch started from
 /// inside a ws session inherits it, and its hooks would then act as that
 /// workspace; every dispatch command removes it.
-pub(crate) const WORKSPACE_ENV: [&str; 4] =
-    ["WS_WORKSPACE", "WS_DIR", "WS_AGENT", "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"];
+pub(crate) const WORKSPACE_ENV: [&str; 6] = [
+    "WS_WORKSPACE",
+    "WS_DIR",
+    "WS_AGENT",
+    "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE",
+    // A dispatched agent is not the session that launched it: it must neither
+    // confirm that session's launch nor claim its process as owner.
+    "WS_LAUNCH_ATTEMPT",
+    "WS_SESSION_PID",
+];
 
 pub trait Agent {
     fn id(&self) -> &'static str;
@@ -142,6 +150,17 @@ pub fn for_id(id: &str) -> anyhow::Result<Box<dyn Agent>> {
         "agy" | "gemini" => Ok(Box::new(agy::AgyAgent)),
         other => anyhow::bail!("unknown agent: {other} (ws supports claude, codex and agy)"),
     }
+}
+
+/// The refusal for an agent whose binary is missing, naming that agent's own
+/// override variable (`WS_CODEX_BIN`, `WS_AGY_BIN`), not Claude's.
+pub fn not_installed(agent: &dyn Agent) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{} is not installed or not on PATH (looked for `{}`). Install it, or set WS_{}_BIN.",
+        agent.id(),
+        agent.binary(),
+        agent.id().to_uppercase()
+    )
 }
 
 /// Every agent ws knows, in the order setup, doctor and uninstall walk them.

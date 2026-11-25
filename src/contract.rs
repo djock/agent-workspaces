@@ -275,9 +275,14 @@ fn write_if_absent(path: &Path, contents: &str) -> Result<()> {
 // errors reading `git … failed:` with no reason at all.
 
 pub fn read_session_id(state_toml: &Path, agent: &str) -> Option<String> {
+    read_agent_str(state_toml, agent, "session_id")
+}
+
+/// One string field of an agent's table in `state.toml`.
+pub fn read_agent_str(state_toml: &Path, agent: &str, key: &str) -> Option<String> {
     let s = std::fs::read_to_string(state_toml).ok()?;
     let t: toml::Table = toml::from_str(&s).ok()?;
-    t.get(agent)?.get("session_id")?.as_str().map(String::from)
+    t.get(agent)?.get(key)?.as_str().map(String::from)
 }
 
 /// Read `.ws/local/state.toml` as a table for a read-modify-write.

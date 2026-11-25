@@ -344,3 +344,37 @@ fn the_rotate_prompt_arms_via_ws_rotate_and_names_the_clear_step() {
     assert!(body.contains("measured") && body.contains("assumed"), "{body}");
     assert!(body.contains("Type /clear to continue"), "tells the agent the user's step: {body}");
 }
+
+/// Two rotations in the same second used to pick the same name, and the second
+/// replaced the first handoff's body with a fresh skeleton.
+#[test]
+fn rotate_never_overwrites_an_earlier_handoff() {
+    let env = Env::new();
+    let p = adopt(&env, "proj");
+    let dir = p.join(".ws/handoffs");
+    let mut written = Vec::new();
+    for i in 0..3 {
+        env.cmd().env("WS_WORKSPACE", "proj").current_dir(&p).arg("-rotate").assert().success();
+        let fresh = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|f| f.extension().is_some_and(|x| x == "md") && !written.contains(f))
+            .expect("each rotate publishes a new file");
+        let mut body = std::fs::read_to_string(&fresh).unwrap();
+        body.push_str(&format!("\nunique-line-{i}\n"));
+        std::fs::write(&fresh, body).unwrap();
+        written.push(fresh);
+    }
+    for (i, f) in written.iter().enumerate() {
+        let body = std::fs::read_to_string(f).unwrap();
+        assert!(
+            body.contains(&format!("unique-line-{i}")),
+            "{} lost its body:\n{body}",
+            f.display()
+        );
+    }
+    let armed = std::fs::read_to_string(p.join(".ws/local/pending-handoff")).unwrap();
+    let last = written.last().unwrap().file_name().unwrap().to_str().unwrap();
+    assert!(armed.starts_with(last), "the newest file is armed: {armed}");
+}

@@ -198,6 +198,9 @@ pub fn setup() -> Result<()> {
             agent.as_ref(),
         )?;
         let np = crate::prompts::install_for(&agent.prompts_dir(), |b| agent.prompt_filename(b))?;
+        if id == "codex" {
+            crate::hooksetup::remember_codex_home(&crate::hooksetup::codex_home())?;
+        }
         let hooks = crate::picker::home_relative(&agent.hooks_config_path());
         let prompts = crate::picker::home_relative(&agent.prompts_dir());
         println!("  Installed {id} hooks ({nh}) → {hooks}");
@@ -430,8 +433,22 @@ pub fn uninstall(force: bool) -> Result<()> {
             agent.prompt_filename(base)
         })?;
     }
-    let statuslines = crate::hooksetup::unregister_statuslines(&ws_bin)?
-        + crate::hooksetup::unregister_codex_statusline()?;
+    let mut statuslines = crate::hooksetup::unregister_statuslines(&ws_bin)?;
+    // Every Codex profile setup configured, not only the one selected now: the
+    // shims they point at are about to go. The current profile's hooks and
+    // prompts were handled in the loop above.
+    let codex = crate::agents::for_id("codex")?;
+    let current = crate::hooksetup::codex_home();
+    for home in crate::hooksetup::known_codex_homes() {
+        if home != current {
+            hooks += crate::hooksetup::unregister_hooks_for(&home.join("hooks.json"))?;
+            prompts += crate::prompts::uninstall_for(&home.join("prompts"), |base| {
+                codex.prompt_filename(base)
+            })?;
+        }
+        statuslines += crate::hooksetup::unregister_codex_statusline_in(&home)?;
+    }
+    crate::hooksetup::forget_codex_homes();
     let scripts = crate::hooksetup::remove_hook_scripts()?;
     println!(
         "Removed ws integrations ({hooks} hooks, {scripts} scripts, {prompts} prompts, \
@@ -620,8 +637,9 @@ fn ask_resume(name: &str) -> bool {
 }
 
 /// Offer an armed handoff before the agent starts. Defaults to yes: Enter or
-/// `y` starts it, `n` or Esc starts fresh.
-fn ask_handoff(a: &crate::handoff::Armed) -> bool {
+/// `y` starts it, `n` or Esc starts fresh. `None` when the terminal could not
+/// be read: nobody answered, so the handoff stays armed.
+fn ask_handoff(a: &crate::handoff::Armed) -> Option<bool> {
     use std::io::Write;
     eprint!(
         "There is a handoff active: .ws/handoffs/{} ({} old). Start it? [Y/n] ",
@@ -629,9 +647,13 @@ fn ask_handoff(a: &crate::handoff::Armed) -> bool {
         crate::handoff::age_label(a.age_secs)
     );
     let _ = std::io::stderr().flush();
-    let yes = key_starts_handoff(read_resume_key());
+    let Ok(key) = read_key() else {
+        eprintln!("(no answer — the handoff stays waiting)");
+        return None;
+    };
+    let yes = key_starts_handoff(key);
     eprintln!("{}", if yes { "y" } else { "n — starting fresh" });
-    yes
+    Some(yes)
 }
 
 /// Enter (`None`) or `y` starts the handoff; `n` and Esc do not.
@@ -643,9 +665,16 @@ fn key_starts_handoff(key: Option<char>) -> bool {
 /// prompt's safe default (`None`): a failed terminal read must not resume a
 /// conversation the person did not select. Raw mode is restored on every path.
 fn read_resume_key() -> Option<char> {
+    read_key().ok().flatten()
+}
+
+/// One key: `Ok(None)` is Enter, `Err` is a terminal that could not be read
+/// (EOF, no raw mode). The handoff prompt treats the two differently: Enter
+/// accepts, an unread answer leaves the handoff waiting.
+fn read_key() -> Result<Option<char>, ()> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
     if crossterm::terminal::enable_raw_mode().is_err() {
-        return None;
+        return Err(());
     }
     let answer = loop {
         match crossterm::event::read() {
@@ -653,19 +682,19 @@ fn read_resume_key() -> Option<char> {
                 code: KeyCode::Char(c),
                 kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
-            })) => break Some(c),
+            })) => break Ok(Some(c)),
             Ok(Event::Key(KeyEvent {
                 code: KeyCode::Esc,
                 kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
-            })) => break Some('\x1b'),
+            })) => break Ok(Some('\x1b')),
             Ok(Event::Key(KeyEvent {
                 code: KeyCode::Enter,
                 kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
-            })) => break None,
+            })) => break Ok(None),
             Ok(_) => continue,
-            Err(_) => break None,
+            Err(_) => break Err(()),
         }
     };
     let _ = crossterm::terminal::disable_raw_mode();
@@ -1341,17 +1370,30 @@ pub fn launch(
             }
         },
     };
+    // A remembered loco is a preference carried by a tracked file, not consent:
+    // it arrives by clone on machines that never chose it. It applies only where
+    // this user typed `-loco` for this workspace at least once.
+    let ws_root = workspace::resolve(&name, &cfg).root;
+    let mode = match mode {
+        Some(agents::LaunchMode::Loco)
+            if mode_override.is_none() && !crate::consent::has_loco(&ws_root) =>
+        {
+            eprintln!(
+                "ws: {name} asks for loco (permission checks bypassed), which this machine has \
+                 not agreed to — launching with the agent's own permission checks. \
+                 `ws {name} -loco` once to agree."
+            );
+            None
+        }
+        m => m,
+    };
     let agent_id = agent_override
         .clone()
         .or_else(|| recorded_default.clone())
         .unwrap_or_else(|| cfg.default_agent.clone());
     let agent = agents::for_id(&agent_id)?;
     if !agent.is_installed() {
-        anyhow::bail!(
-            "{} is not installed or not on PATH (looked for `{}`). Install it, or set WS_CLAUDE_BIN.",
-            agent.id(),
-            agent.binary()
-        );
+        return Err(agents::not_installed(agent.as_ref()));
     }
 
     // Whether this launch switches the workspace to a different agent than its
@@ -1422,31 +1464,11 @@ pub fn launch(
         }
     };
 
-    // 4. Regenerate context file, seeding a handoff pointer when requested or switching.
-    let hint = if handoff || switching { crate::handoff::latest_handoff(&ws) } else { None };
-    context::regenerate_with_handoff(
-        &ws.root.join(agent.context_file()),
-        &ws.name,
-        hint.as_deref(),
-    )?;
-
+    // 4. The switch itself (new default, `agent-switch` row) and the handoff are
+    // committed by the agent's SessionStart hook once it has started — see
+    // `attempt`. Here only the parts that do not depend on that.
     if switching {
         let _ = std::fs::remove_file(ws.limit_guard());
-        crate::meta::set_default_agent(&ws.workspace_toml(), agent.id())?;
-        // Record `from` and the handoff actually seeded, not just `to`. A switch
-        // event naming only its destination cannot be read as a chain — and the
-        // handoff is the one piece of context that crossed, so it belongs in the
-        // history rather than only in the context file that gets regenerated.
-        let _ = crate::timeline::record(
-            &ws.timeline(),
-            "agent-switch",
-            &crate::actors::actor_slug(),
-            serde_json::json!({
-                "from": recorded_default.as_deref().unwrap_or("?"),
-                "to": agent.id(),
-                "handoff": hint.as_deref(),
-            }),
-        );
     } else if ws.is_initialised() && crate::meta::read(&ws.workspace_toml()).default_agent.is_none()
     {
         // A workspace whose identity file never recorded an agent — written before
@@ -1473,6 +1495,8 @@ pub fn launch(
         if recorded.mode.as_deref() != Some(m.as_str()) {
             crate::meta::set_mode(&ws.workspace_toml(), Some(m.as_str()))?;
         }
+        // Typing the flag is this machine's consent (or its withdrawal).
+        crate::consent::set_loco(&ws.root, m == agents::LaunchMode::Loco)?;
     }
 
     // 4c. Stamp "opened now" so `-list` and the picker can put this workspace at
@@ -1509,6 +1533,11 @@ pub fn launch(
     if let Some(notice) = crate::autosave::recovery_notice(&ws.root, None) {
         print!("{notice}");
     }
+    // A previous launch whose agent never reported back: the workspace was
+    // left as it was, and the user should know why.
+    if let Some(notice) = crate::attempt::stale_notice(&ws) {
+        eprint!("{notice}");
+    }
 
     // 5d. Say it out loud, every loco launch — not only the one that typed the
     // flag. The posture is remembered in a committed file, so the launch that
@@ -1523,41 +1552,103 @@ pub fn launch(
         );
     }
 
-    // 6. Ask before resuming, when there is something to resume and someone to
-    // ask. `y` resumes; the default (Enter) starts a fresh conversation. When
-    // there is nobody to ask, resuming stays the unprompted behavior — a
-    // scripted launch must not silently start over.
-    // 6a. A handoff armed by `ws -rotate` is offered first, while the terminal
-    // is still ours: yes starts a fresh conversation that opens on it, no drops
-    // it. Without a terminal the marker stays, and the SessionStart hook offers
-    // it inside the conversation instead.
+    // 6. One decision for this launch, made before anything is written for it:
+    // which conversation, and which handoff (if any) the agent is pointed at.
+    //
+    // 6a. A handoff armed by `ws -rotate` is offered first, while the terminal is
+    // ours. Yes starts a fresh conversation that opens on it; no starts a fresh
+    // one without it and drops it — and is not followed by the resume question,
+    // which would be a second, contradicting answer. An unread answer, or no
+    // terminal at all, leaves it armed for the SessionStart hook to offer.
     let mut initial_prompt = None;
     let mut fresh = fresh;
+    let mut accepted: Option<String> = None;
+    let mut answered = false;
     if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
         if let Some(a) = crate::handoff::armed(&ws) {
-            let yes = ask_handoff(&a);
-            crate::handoff::disarm(&ws, &a);
-            let _ = crate::timeline::record(
-                &ws.timeline(),
-                if yes { "handoff-consumed" } else { "handoff-declined" },
-                &crate::actors::actor_slug(),
-                serde_json::json!({ "file": a.name(), "source": "launch" }),
-            );
-            if yes {
-                fresh = true;
-                initial_prompt = Some(crate::handoff::continue_prompt(a.name()));
+            match ask_handoff(&a) {
+                Some(true) => {
+                    answered = true;
+                    fresh = true;
+                    initial_prompt = Some(crate::handoff::continue_prompt(a.name()));
+                    accepted = Some(a.name().to_string());
+                }
+                Some(false) => {
+                    answered = true;
+                    fresh = true;
+                    crate::handoff::disarm(&ws, &a);
+                    let _ = crate::timeline::record(
+                        &ws.timeline(),
+                        "handoff-declined",
+                        &crate::actors::actor_slug(),
+                        serde_json::json!({ "file": a.name(), "source": "launch" }),
+                    );
+                }
+                None => {}
             }
         }
     }
+    // Still armed and not accepted here: the hook will offer it, so the launch
+    // must not point the agent at some other file in the meantime.
+    let pending = accepted.is_none() && crate::handoff::armed(&ws).is_some();
 
-    let has_prior = crate::contract::read_session_id(&ws.state_toml(), agent.id()).is_some();
+    // 6b. Ask before resuming, when there is something to resume and someone to
+    // ask. `y` resumes; the default (Enter) starts a fresh conversation. When
+    // there is nobody to ask, resuming stays the unprompted behavior — a
+    // scripted launch must not silently start over.
+    let prior = crate::contract::read_session_id(&ws.state_toml(), agent.id());
     let fresh = fresh
-        || (should_ask_new(has_prior, fresh, cfg.resume_prompt, std::io::stdin().is_terminal())
+        || (!answered
+            && should_ask_new(
+                prior.is_some(),
+                fresh,
+                cfg.resume_prompt,
+                std::io::stdin().is_terminal(),
+            )
             && !ask_resume(&ws.name));
 
-    // 7. Build + run — the agent owns the fresh/resume decision and persists its own state.
+    // 6c. The one handoff this launch names, carried into the context file, the
+    // attempt and (through it) the `agent-switch` row.
+    let hint = match &accepted {
+        Some(n) => Some(ws.ws_dir().join("handoffs").join(n)),
+        None if answered || pending => None,
+        None if handoff || switching => crate::handoff::latest_handoff(&ws),
+        None => None,
+    };
+    context::regenerate_with_handoff(
+        &ws.root.join(agent.context_file()),
+        &ws.name,
+        hint.as_deref(),
+    )?;
+
+    // 7. Build, record the attempt, run. The agent owns its own state; what this
+    // launch intends is committed only when its SessionStart hook reports in.
     let ctx = LaunchCtx { fresh, sessions_root: config::sessions_root(&cfg), mode, initial_prompt };
-    let cmd = agent.launch(&ws, &ctx)?;
+    let mut cmd = agent.launch(&ws, &ctx)?;
+    let attempt = crate::attempt::Attempt {
+        id: crate::attempt::new_id(),
+        agent: agent.id().to_string(),
+        from_agent: if switching { recorded_default.clone() } else { None },
+        resume_id: if fresh { None } else { prior },
+        preallocated: crate::contract::read_agent_str(
+            &ws.state_toml(),
+            agent.id(),
+            "pending_session_id",
+        )
+        .filter(|_| fresh),
+        handoff: accepted,
+        hint: hint
+            .as_deref()
+            .and_then(|p| p.file_name())
+            .and_then(|f| f.to_str())
+            .map(String::from),
+        started: crate::time::now_unix(),
+    };
+    crate::attempt::begin(&ws, &attempt)?;
+    cmd.env(crate::attempt::ENV, &attempt.id);
+    // The pid the agent will run under: `exec` keeps it, so the autosave hook
+    // can name the session's real owner rather than its own short life.
+    cmd.env(crate::autosave::SESSION_PID_ENV, std::process::id().to_string());
 
     // Keep the lock file in place; the launched agent inherits our PID.
     guard.keep();
@@ -1649,7 +1740,6 @@ pub fn rotate(name: Option<String>) -> Result<()> {
     // Colons are legal in a filename but awkward in a shell; the timestamp is
     // flattened rather than reformatted so it still sorts lexically.
     let stamp = ts.replace(':', "");
-    let path = dir.join(format!("{stamp}-{actor}.md"));
 
     let body = format!(
         "# Handoff — {n}\n\n\
@@ -1670,7 +1760,20 @@ pub fn rotate(name: Option<String>) -> Result<()> {
          ## Watch out for\n\n\
          <!-- anything that would mislead someone reading only the code -->\n"
     );
-    crate::atomic::atomic_write(&path, body)?;
+    // A second rotation in the same second takes the next free suffix rather
+    // than replacing the first one's body.
+    let mut path = dir.join(format!("{stamp}-{actor}.md"));
+    for n in 2.. {
+        match crate::atomic::publish_new(&path, &body) {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => {
+                path = dir.join(format!("{stamp}-{actor}-{n}.md"));
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("cannot write {}", path.display()));
+            }
+        }
+    }
     let _ = crate::timeline::record(
         &ws.timeline(),
         "handoff-written",

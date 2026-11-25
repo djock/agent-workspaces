@@ -105,7 +105,13 @@ fn session_start(h: &hookio::HookInput) -> Option<String> {
         .ok()
         .filter(|a| !a.is_empty())
         .and_then(|a| contract::read_session_id(&ws.state_toml(), &a));
+    // The launch that started this agent, if ws started it and it has not
+    // reported in yet. Read before recording the identity, then committed.
+    let attempt = crate::attempt::for_hook(&ws);
     record_session_identity(&ws, h);
+    if let Some(a) = &attempt {
+        crate::attempt::confirm(&ws, a, &h.session_id);
+    }
 
     // Keep the notebook this agent is about to reread small. Only the actor's
     // own: a teammate's is theirs to roll when they start. A second live agent
@@ -133,8 +139,9 @@ fn session_start(h: &hookio::HookInput) -> Option<String> {
     // after /clear, on a new launch, or when the other agent opens. Offered,
     // not followed: the user answers y or n. Never on a compaction (same
     // conversation), and never to the conversation that armed it resuming.
-    // A launch from a terminal already asked before the agent started and
-    // disarmed it, so a marker still here means nobody has been asked yet.
+    // A launch from a terminal already asked before the agent started: a yes
+    // was committed just above (disarmed), a no disarmed it at the terminal, so
+    // a marker still here means nobody has been asked yet.
     let armed = crate::handoff::armed(&ws);
     let held = armed.is_some();
     let offered =
@@ -173,17 +180,14 @@ fn session_start(h: &hookio::HookInput) -> Option<String> {
 }
 
 /// A new conversation rather than one coming back. `/clear` always is. Claude
-/// reports `resume` when resumed, and ws writes the id of a fresh Claude
-/// launch into state.toml before exec, so comparing ids there would call every
-/// fresh Claude launch a resume. Codex has only been seen reporting `startup`,
-/// so for it a kept session id is what marks a resume.
+/// reports `resume` when resumed; Codex has only been seen reporting
+/// `startup`, so a kept session id is what marks a resume. A fresh Claude
+/// launch's id is only pending until this hook confirms it, so comparing ids
+/// works for Claude too.
 fn fresh_start(h: &hookio::HookInput, prior_session: Option<&str>) -> bool {
     match h.source.as_str() {
         "clear" => true,
-        "startup" => {
-            std::env::var("WS_AGENT").as_deref() == Ok("claude")
-                || prior_session != Some(h.session_id.as_str())
-        }
+        "startup" => prior_session != Some(h.session_id.as_str()),
         _ => false,
     }
 }
@@ -646,7 +650,7 @@ fn build_context(ws: &Workspace) -> String {
     s
 }
 
-fn append_log(ws: &Workspace, msg: &str) -> std::io::Result<()> {
+pub(crate) fn append_log(ws: &Workspace, msg: &str) -> std::io::Result<()> {
     let path = ws.session_log();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

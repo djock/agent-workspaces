@@ -101,10 +101,7 @@ impl Agent for CodexAgent {
     }
 
     fn prompts_dir(&self) -> std::path::PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".codex")
-            .join("prompts")
+        crate::hooksetup::codex_home().join("prompts")
     }
 
     fn prompt_filename(&self, base: &str) -> String {

@@ -2,11 +2,13 @@ mod actors;
 mod agents;
 mod agentstate;
 mod atomic;
+mod attempt;
 mod autosave;
 mod cli;
 mod collision;
 mod commands;
 mod config;
+mod consent;
 mod context;
 mod contract;
 mod conversations;
@@ -100,7 +102,7 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
         Cmd::Done { name, undo, declined, porcelain } => {
             commands::done(name, undo, declined, porcelain)?
         }
-        Cmd::Worktree { spec, merge, from_session } => {
+        Cmd::Worktree { spec, merge, from_session, launch } => {
             let s = worktree::parse_name(&spec)
                 .ok_or_else(|| anyhow::anyhow!("not a worktree spec: {spec}"))?;
             if merge {
@@ -112,10 +114,18 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
                 // registry. Deciding here instead left an existing worktree
                 // permanently unreachable: every launch after the first hit
                 // `worktree::create`'s "already exists" and stopped.
-                commands::launch(s.workspace_name(), None, None, false, false, false)?
+                let cli::LaunchFlags { agent, mode, fresh, force, handoff } = launch;
+                commands::launch(s.workspace_name(), agent, mode, fresh, force, handoff)?
             } else {
                 let path = worktree::create(&s)?;
                 println!("created {} at {}", s.workspace_name(), path.display());
+                // Bare `ws base@feature` only creates, as it always has. Asking
+                // for a launch in the same breath (`-codex`, `--fresh`, ...)
+                // creates and then opens it.
+                if !launch.is_empty() {
+                    let cli::LaunchFlags { agent, mode, fresh, force, handoff } = launch;
+                    commands::launch(s.workspace_name(), agent, mode, fresh, force, handoff)?
+                }
             }
         }
     }
