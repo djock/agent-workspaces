@@ -49,11 +49,16 @@ pub fn regenerate_with_handoff(
 
 fn regenerate_locked(path: &Path, workspace_name: &str, handoff_hint: Option<&Path>) -> Result<()> {
     let block = render(workspace_name, handoff_hint);
-    let new_contents = match std::fs::read_to_string(path) {
-        Ok(existing) => splice(&existing, &block),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => block,
+    let (new_contents, created) = match std::fs::read_to_string(path) {
+        Ok(existing) => (splice(&existing, &block), false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (block, true),
         Err(e) => return Err(e).context("failed to read existing context file"),
     };
+    let root = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    // Ours only if we created it and nobody has changed it since: a file the
+    // user wrote, or edited after us, is theirs from then on.
+    let owned = created || owns(root, &name);
     // Atomic, not `fs::write`: everything outside the managed block is the
     // user's own prose, and `fs::write` truncates before it writes. A crash, a
     // full disk or a signal in that gap destroys the prose with nothing left
@@ -62,11 +67,75 @@ fn regenerate_locked(path: &Path, workspace_name: &str, handoff_hint: Option<&Pa
     // Unchanged bytes are not rewritten, so a launch leaves a tracked instruction
     // file untouched (no mtime churn, no git stat refresh); a changed one keeps
     // its mode.
-    if std::fs::read(path).ok().as_deref() == Some(new_contents.as_bytes()) {
-        return Ok(());
+    if std::fs::read(path).ok().as_deref() != Some(new_contents.as_bytes()) {
+        crate::atomic::atomic_write_with_mode(path, &new_contents, crate::atomic::mode_of(path))?;
     }
-    crate::atomic::atomic_write_with_mode(path, new_contents, crate::atomic::mode_of(path))?;
+    set_owned(root, &name, owned.then(|| digest(new_contents.as_bytes())))?;
     Ok(())
+}
+
+// ---- ownership of generated context files ----
+//
+// A launch creates `CLAUDE.local.md` or `AGENTS.md` when the checkout has none.
+// Untracked and unignored, that file read as the user's work and blocked
+// `ws base@feature --merge`. ws records the hash of each file it created and
+// last wrote; a file is ws's own only while it is untracked and still has
+// exactly those bytes. Anything else (tracked, staged, edited, pre-existing,
+// or written by an older ws that kept no record) is the user's.
+
+fn ownership_file(root: &Path) -> std::path::PathBuf {
+    root.join(".ws/local/generated-context.toml")
+}
+
+fn digest(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn records(root: &Path) -> toml::Table {
+    std::fs::read_to_string(ownership_file(root))
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn set_owned(root: &Path, name: &str, hash: Option<String>) -> Result<()> {
+    let mut t = records(root);
+    let changed = match hash {
+        Some(h) => {
+            t.insert(name.to_string(), toml::Value::String(h.clone()))
+                .and_then(|v| v.as_str().map(String::from))
+                != Some(h)
+        }
+        None => t.remove(name).is_some(),
+    };
+    if changed {
+        crate::atomic::atomic_write(&ownership_file(root), toml::to_string(&t)?)?;
+    }
+    Ok(())
+}
+
+/// Whether `name` at `root` is still exactly the file ws generated.
+fn owns(root: &Path, name: &str) -> bool {
+    let Some(want) = records(root).get(name).and_then(|v| v.as_str()).map(String::from) else {
+        return false;
+    };
+    std::fs::read(root.join(name)).is_ok_and(|b| digest(&b) == want)
+}
+
+/// Generated context files in this checkout that are still ws's own: recorded,
+/// byte-identical to what ws wrote, and untracked. Readiness, the merge gate
+/// and the post-merge cleanup all ask this one question.
+pub fn owned_untracked(root: &Path) -> Vec<String> {
+    records(root)
+        .keys()
+        .filter(|name| owns(root, name))
+        .filter(|name| {
+            !crate::git::raw(root, &["ls-files", "--error-unmatch", "--", name])
+                .is_ok_and(|o| o.status.success())
+        })
+        .cloned()
+        .collect()
 }
 
 /// Replace the region between BEGIN..END (inclusive) with `block`, or append

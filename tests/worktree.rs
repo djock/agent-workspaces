@@ -426,3 +426,66 @@ fn launching_a_feature_worktree_leaves_no_lock_file_in_the_checkout() {
     assert!(!status.contains(".lock"), "no lock sidecar in the checkout:\n{status}");
     assert!(!wt.join("AGENTS.md.lock").exists() && !wt.join("CLAUDE.md.lock").exists());
 }
+
+/// The launch writes `CLAUDE.local.md` / `AGENTS.md` into a checkout that has no
+/// ignore rule for them. Untouched, they are ws's own and do not block the
+/// merge; edited, or there before ws, they are the user's and do.
+#[test]
+fn generated_context_files_do_not_block_a_merge_but_edited_ones_do() {
+    let env = Env::new();
+    let claude = env.fake_claude();
+    let codex = env.fake_codex();
+    let base = base_workspace(&env, "api");
+    let open = |spec: &str, flag: &str| {
+        env.cmd()
+            .env("WS_CLAUDE_BIN", &claude)
+            .env("WS_CODEX_BIN", &codex)
+            .env("WS_AGY_BIN", &codex)
+            .env("WS_NO_EXEC", "1")
+            .args([spec, flag])
+            .assert()
+            .success();
+    };
+    let commit_task = |wt: &std::path::Path| {
+        let name = format!("task-{}.txt", wt.file_name().unwrap().to_string_lossy());
+        std::fs::write(wt.join(&name), "done\n").unwrap();
+        git(wt, &["add", &name]);
+        git(wt, &["-c", "user.email=d@e", "-c", "user.name=D", "commit", "-q", "-m", "task"]);
+    };
+
+    // Clean case: three agents, only the task committed, merge lands.
+    for flag in ["-claude", "-codex", "-agy"] {
+        open("api@ok", flag);
+    }
+    let wt = env.root.join("api@ok");
+    assert!(wt.join("CLAUDE.local.md").is_file() && wt.join("AGENTS.md").is_file());
+    commit_task(&wt);
+    env.cmd().args(["api@ok", "--merge"]).assert().success();
+    assert!(base.join("task-api@ok.txt").is_file(), "the task reached the base");
+    let base_meta = std::fs::read_to_string(base.join(".ws/workspace.toml")).unwrap();
+    assert!(!base_meta.contains("agy"), "the feature's agent stayed out of the base: {base_meta}");
+    assert!(!wt.exists(), "the worktree was removed");
+
+    // Edited by the user: theirs now, so the merge refuses and keeps it.
+    open("api@edit", "-claude");
+    let wt = env.root.join("api@edit");
+    let mut body = std::fs::read_to_string(wt.join("CLAUDE.local.md")).unwrap();
+    body.push_str("\nmy own note\n");
+    std::fs::write(wt.join("CLAUDE.local.md"), &body).unwrap();
+    commit_task(&wt);
+    env.cmd()
+        .args(["api@edit", "--merge"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("CLAUDE.local.md"));
+    assert_eq!(std::fs::read_to_string(wt.join("CLAUDE.local.md")).unwrap(), body);
+
+    // There before ws: also the user's.
+    env.cmd().arg("api@pre").assert().success();
+    let wt = env.root.join("api@pre");
+    std::fs::write(wt.join("AGENTS.md"), "# mine\n").unwrap();
+    open("api@pre", "-codex");
+    commit_task(&wt);
+    env.cmd().args(["api@pre", "--merge"]).assert().failure();
+    assert!(std::fs::read_to_string(wt.join("AGENTS.md")).unwrap().starts_with("# mine"));
+}

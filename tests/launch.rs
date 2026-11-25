@@ -1067,3 +1067,44 @@ fn a_remembered_loco_needs_this_machines_consent() {
     let c = std::fs::read_to_string(&consent).unwrap_or_default();
     assert!(c.trim().is_empty(), "-sane withdraws it: {c}");
 }
+
+/// A SessionStart reporting a different conversation than the exact resume
+/// asked for commits nothing: the recorded id and default stay, the attempt
+/// stays pending.
+#[test]
+fn a_hook_reporting_the_wrong_conversation_commits_nothing() {
+    let env = Env::new();
+    let claude = env.fake_claude();
+    let codex = env.fake_codex();
+    let root = env.root.join("wrong");
+    let launch = |a: &[&str], hooks: bool| {
+        let mut c = env.cmd();
+        c.env("WS_CLAUDE_BIN", &claude).env("WS_CODEX_BIN", &codex).env("WS_NO_EXEC", "1");
+        if !hooks {
+            c.env("WS_FAKE_NO_HOOKS", "1");
+        }
+        c.args(a).assert().success();
+    };
+    launch(&["wrong", "-codex"], true);
+    launch(&["wrong", "-claude"], true);
+    let state = || std::fs::read_to_string(root.join(".ws/local/state.toml")).unwrap();
+    let before = state();
+    launch(&["wrong", "-codex"], false); // resumes the saved codex id
+    let attempt: toml::Table = toml::from_str(
+        &std::fs::read_to_string(root.join(".ws/local/launch-attempt.toml")).unwrap(),
+    )
+    .unwrap();
+    env.cmd()
+        .env("WS_WORKSPACE", "wrong")
+        .env("WS_DIR", &root)
+        .env("WS_AGENT", "codex")
+        .env("WS_LAUNCH_ATTEMPT", attempt["id"].as_str().unwrap())
+        .args(["internal", "session-start"])
+        .write_stdin(r#"{"source":"startup","session_id":"not-the-one"}"#)
+        .assert()
+        .success();
+    assert_eq!(state(), before, "identity untouched");
+    let meta = std::fs::read_to_string(root.join(".ws/workspace.toml")).unwrap();
+    assert!(meta.contains("default_agent = \"claude\""), "{meta}");
+    assert!(root.join(".ws/local/launch-attempt.toml").exists(), "still pending");
+}

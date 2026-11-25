@@ -2,7 +2,6 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use anyhow::{anyhow, bail, Context, Result};
 use argon2::Argon2;
-use rand::RngCore;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -134,22 +133,25 @@ impl FileStore {
         let (salt, rest) = bytes.split_at(16);
         let (nonce, ct) = rest.split_at(12);
         let key = self.derive_key(salt)?;
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+        let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key));
+        let nonce = <&Nonce<_>>::try_from(nonce)
+            .map_err(|_| anyhow!("corrupt secrets file (bad nonce)"))?;
         let pt = cipher
-            .decrypt(Nonce::from_slice(nonce), ct)
+            .decrypt(nonce, ct)
             .map_err(|_| anyhow!("wrong password or corrupt secrets file"))?;
         serde_json::from_slice(&pt).context("corrupt secrets file (bad json)")
     }
     fn save(&self, map: &BTreeMap<String, String>) -> Result<()> {
         let mut salt = [0u8; 16];
         let mut nonce = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut salt);
-        rand::thread_rng().fill_bytes(&mut nonce);
+        // The thread-local CSPRNG, as before the rand 0.10 move.
+        rand::fill(&mut salt);
+        rand::fill(&mut nonce);
         let key = self.derive_key(&salt)?;
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+        let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key));
         let pt = serde_json::to_vec(map)?;
         let ct = cipher
-            .encrypt(Nonce::from_slice(&nonce), pt.as_ref())
+            .encrypt(&Nonce::from(nonce), pt.as_ref())
             .map_err(|e| anyhow!("encryption failed: {e}"))?;
         let mut out = Vec::with_capacity(28 + ct.len());
         out.extend_from_slice(&salt);

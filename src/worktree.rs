@@ -85,6 +85,48 @@ fn feature_user_dirt(porcelain: &str) -> Vec<&str> {
     dirt
 }
 
+/// `feature_user_dirt` for the checkout at `dir`, also minus the context files
+/// ws generated there and nobody has touched since (`context::owned_untracked`).
+fn feature_dirt_in(dir: &Path, porcelain: &str) -> Vec<String> {
+    let ours = crate::context::owned_untracked(dir);
+    let meta_only = meta_bookkeeping_only(dir);
+    feature_user_dirt(porcelain)
+        .into_iter()
+        .filter(|l| match l.strip_prefix("?? ") {
+            Some(p) => !ours.iter().any(|o| o == p.trim_matches('"')),
+            None => true,
+        })
+        .filter(|l| !(meta_only && *l == MODIFIED_META))
+        .map(String::from)
+        .collect()
+}
+
+/// The unstaged modification of the tracked workspace identity file.
+const MODIFIED_META: &str = " M .ws/workspace.toml";
+
+/// Keys a launch writes into `.ws/workspace.toml` on its own: which agent the
+/// worktree last opened with and its tab color. Merging them would hand the
+/// feature's agent to the base.
+const META_BOOKKEEPING_KEYS: &[&str] = &["default_agent", "color"];
+
+/// Whether the worktree's `.ws/workspace.toml` differs from HEAD only in
+/// [`META_BOOKKEEPING_KEYS`]. Anything else (a posture, an objective, a file
+/// that no longer parses) is a real change and stays dirt.
+fn meta_bookkeeping_only(dir: &Path) -> bool {
+    let strip = |text: &str| -> Option<toml::Table> {
+        let mut t: toml::Table = toml::from_str(text).ok()?;
+        for k in META_BOOKKEEPING_KEYS {
+            t.remove(*k);
+        }
+        Some(t)
+    };
+    let Some(head) = crate::git::maybe(dir, &["show", "HEAD:.ws/workspace.toml"]) else {
+        return false;
+    };
+    let Ok(now) = std::fs::read_to_string(dir.join(".ws/workspace.toml")) else { return false };
+    matches!((strip(&head), strip(&now)), (Some(a), Some(b)) if a == b)
+}
+
 /// The base's uncommitted work that stands in the way of merging `branch`:
 /// `user_dirt`, minus a locally modified *tracked* `.ws/timeline.jsonl`.
 ///
@@ -256,7 +298,7 @@ pub fn head_sha(dir: &Path) -> Result<String> {
 /// own git commands; ws's bookkeeping files are not the user's work.
 pub fn is_clean(dir: &Path) -> Result<bool> {
     let porcelain = crate::git::ok(dir, &["--no-optional-locks", "status", "--porcelain"])?;
-    Ok(feature_user_dirt(&porcelain).is_empty())
+    Ok(feature_dirt_in(dir, &porcelain).is_empty())
 }
 
 /// Compute readiness for one feature worktree.
@@ -302,12 +344,11 @@ fn readiness_with(
             blockers.push(Blocker::Live { workspace: base_ws.to_string(), pid });
         }
     }
-    let feature_dirt = feature_user_dirt(&crate::git::ok(
+    let feature_dirt = feature_dirt_in(
         feature_path,
-        &["--no-optional-locks", "status", "--porcelain"],
-    )?)
+        &crate::git::ok(feature_path, &["--no-optional-locks", "status", "--porcelain"])?,
+    )
     .into_iter()
-    .map(String::from)
     .collect::<Vec<_>>();
     if !feature_dirt.is_empty() {
         blockers.push(Blocker::FeatureDirty(feature_dirt));
@@ -349,7 +390,7 @@ pub fn add_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
 /// leave the change stranded in a directory this function then deletes.
 pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
     let porcelain = crate::git::ok(path, &["status", "--porcelain"])?;
-    let dirty = feature_user_dirt(&porcelain);
+    let dirty = feature_dirt_in(path, &porcelain);
     if !dirty.is_empty() {
         bail!(
             "{} has uncommitted changes — commit or discard them first:\n{}",
@@ -454,6 +495,22 @@ pub fn merge_worktree(base: &Path, path: &Path, branch: &str) -> Result<()> {
         } else {
             std::fs::remove_file(&f).with_context(|| format!("cannot remove {}", f.display()))?;
         }
+    }
+
+    // Generated context files, revalidated now rather than trusted from the
+    // check above: only one still untracked and byte-identical to what ws wrote
+    // is removed. Anything else makes the removal below refuse, loudly.
+    for name in crate::context::owned_untracked(path) {
+        let _ = std::fs::remove_file(path.join(name));
+    }
+    // The launch-written keys in the tracked identity file go back to HEAD, so
+    // the removal below does not refuse a merged worktree over them.
+    let meta_status = crate::git::ok(
+        path,
+        &["--no-optional-locks", "status", "--porcelain", "--", ".ws/workspace.toml"],
+    )?;
+    if meta_status.lines().any(|l| l == MODIFIED_META) && meta_bookkeeping_only(path) {
+        crate::git::ok(path, &["checkout", "--", ".ws/workspace.toml"])?;
     }
 
     let path_s = path.to_string_lossy().to_string();
