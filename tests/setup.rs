@@ -204,3 +204,58 @@ fn setup_backup_merges_and_never_drops_a_prior_original() {
         .unwrap_or_default();
     assert!(backup.contains("other-statusline"), "run-1 original must survive: {backup}");
 }
+
+/// `CODEX_HOME` selects the profile Codex reads hooks from. Setup used to write
+/// `~/.codex` regardless; each profile also keeps its own footer backup, and
+/// uninstall restores every profile setup touched.
+#[test]
+fn setup_follows_codex_home_and_uninstall_restores_each_profile() {
+    let env = Env::new();
+    let shim = env.fake_codex();
+    let a = env.home.path().join("profile-a");
+    let b = env.home.path().join("profile-b");
+    for (dir, footer) in [(&a, "model"), (&b, "current-dir")] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("config.toml"), format!("[tui]\nstatus_line = [\"{footer}\"]\n"))
+            .unwrap();
+        std::fs::write(
+            dir.join("hooks.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/mine"}]}]}}"#,
+        )
+        .unwrap();
+    }
+    for dir in [&a, &b] {
+        env.cmd()
+            .env("WS_CODEX_BIN", &shim)
+            .env("CODEX_HOME", dir)
+            .arg("setup")
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("profile-"));
+    }
+    assert!(!env.home.path().join(".codex/hooks.json").exists(), "default profile left alone");
+    for dir in [&a, &b] {
+        let hooks = std::fs::read_to_string(dir.join("hooks.json")).unwrap();
+        assert!(hooks.contains("session-start.sh"), "{}: {hooks}", dir.display());
+        assert!(hooks.contains("/usr/local/bin/mine"), "unrelated hook kept: {hooks}");
+    }
+
+    // Uninstall from a third, unrelated selection still cleans both.
+    let _ = env
+        .cmd()
+        .env("WS_CODEX_BIN", &shim)
+        .env("CODEX_HOME", env.home.path().join("profile-c"))
+        .args(["-uninstall", "--force"])
+        .assert();
+    for (dir, footer) in [(&a, "model"), (&b, "current-dir")] {
+        let cfg = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(
+            cfg.contains(&format!("[\"{footer}\"]")),
+            "{} restored its own: {cfg}",
+            dir.display()
+        );
+        let hooks = std::fs::read_to_string(dir.join("hooks.json")).unwrap();
+        assert!(!hooks.contains("session-start.sh"), "ws hooks removed: {hooks}");
+        assert!(hooks.contains("/usr/local/bin/mine"), "unrelated hook kept: {hooks}");
+    }
+}

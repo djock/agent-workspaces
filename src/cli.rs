@@ -83,6 +83,9 @@ pub enum Cmd {
         spec: String,
         merge: bool,
         from_session: bool,
+        /// Launch flags for opening the feature workspace, the same set
+        /// `ws <name>` takes. Never set together with `merge`.
+        launch: LaunchFlags,
     },
     /// `ws <base> -features` — the base's feature worktrees and what merging
     /// each would do.
@@ -222,6 +225,7 @@ pub fn help_text() -> &'static str {
          Worktrees\n\
          \x20 ws <base>@<feature>          create a git worktree workspace off <base>,\n\
          \x20                                or open it once it exists\n\
+         \x20                                (takes the launch flags; with any, creates and opens)\n\
          \x20 ws <base>@<feature> --merge  merge it back (--no-ff) and remove it\n\
          \x20                                (--from-session when run inside <base>'s own session)\n\
          \x20 ws <base> -features          list its feature worktrees and whether\n\
@@ -612,17 +616,26 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
                 return parse_done_flags(Some(name.to_string()), rest.into_iter().skip(1));
             }
             let (mut merge, mut from_session) = (false, false);
-            for a in rest {
+            let mut launch = LaunchFlags::default();
+            let mut it = rest.into_iter();
+            while let Some(a) = it.next() {
                 match a.as_str() {
                     "--merge" => merge = true,
                     "--from-session" => from_session = true,
-                    other => bail!("unexpected argument: {other}"),
+                    other => {
+                        if !launch.take(name, other, &mut it)? {
+                            bail!("unexpected argument: {other}");
+                        }
+                    }
                 }
             }
             if from_session && !merge {
                 bail!("--from-session only applies to --merge");
             }
-            Ok(Cmd::Worktree { spec: name.to_string(), merge, from_session })
+            if merge && !launch.is_empty() {
+                bail!("--merge does not launch an agent; drop the launch flags");
+            }
+            Ok(Cmd::Worktree { spec: name.to_string(), merge, from_session, launch })
         }
         name => {
             // launch: ws <name> [-claude|-codex] [--fresh|-fresh] [--agent X] [--force] [--handoff]
@@ -632,11 +645,7 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             // with `-fresh`. Rather than keep a no-op that reads like a feature,
             // it is rejected with a message saying why — silently accepting it
             // would leave users believing they had opted into something.
-            let mut agent = None;
-            let mut mode: Option<crate::agents::LaunchMode> = None;
-            let mut fresh = false;
-            let mut force = false;
-            let mut handoff = false;
+            let mut launch = LaunchFlags::default();
             let mut features = false;
             let mut porcelain = false;
             let (mut done, mut undo, mut declined) = (false, false, false);
@@ -651,33 +660,11 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
                     // it — `ws <base> -features`, not `ws -features <base>`.
                     "-features" => features = true,
                     "--porcelain" => porcelain = true,
-                    "--agent" => agent = it.next(),
-                    "-claude" => agent = Some("claude".into()),
-                    "-codex" => agent = Some("codex".into()),
-                    "-agy" | "-gemini" => agent = Some("agy".into()),
-                    // The two postures are one setting, so asking for both is a
-                    // contradiction rather than a last-one-wins: a launch that
-                    // quietly picked one of them could bypass every permission
-                    // check on the strength of a typo.
-                    "-loco" | "--loco" | "-sane" | "--sane" => {
-                        let want = if a.trim_start_matches('-').starts_with("loco") {
-                            crate::agents::LaunchMode::Loco
-                        } else {
-                            crate::agents::LaunchMode::Sane
-                        };
-                        if mode.is_some_and(|m| m != want) {
-                            bail!("-loco and -sane are opposites; pick one");
+                    other => {
+                        if !launch.take(name, other, &mut it)? {
+                            bail!("unexpected argument: {other}");
                         }
-                        mode = Some(want);
                     }
-                    "--fresh" | "-fresh" => fresh = true,
-                    "--force" => force = true,
-                    "--handoff" => handoff = true,
-                    "-resume" | "--resume" => bail!(
-                        "-resume is not a flag: resuming is the default. \
-                         Use `ws {name}` to resume, or `ws {name} --fresh` to start a new session."
-                    ),
-                    other => bail!("unexpected argument: {other}"),
                 }
             }
             if done {
@@ -695,8 +682,63 @@ pub fn parse(args: Vec<String>) -> Result<Cmd> {
             if porcelain {
                 bail!("--porcelain only applies to `ws <base> -features`");
             }
+            let LaunchFlags { agent, mode, fresh, force, handoff } = launch;
             Ok(Cmd::Launch { name: name.to_string(), agent, mode, fresh, force, handoff })
         }
+    }
+}
+
+/// The flags that shape a launch, shared by `ws <name>` and `ws <base>@<feature>`.
+#[derive(Debug, Default, PartialEq)]
+pub struct LaunchFlags {
+    pub agent: Option<String>,
+    pub mode: Option<crate::agents::LaunchMode>,
+    pub fresh: bool,
+    pub force: bool,
+    pub handoff: bool,
+}
+
+impl LaunchFlags {
+    pub fn is_empty(&self) -> bool {
+        *self == LaunchFlags::default()
+    }
+
+    /// Consume `a` (and its value, for `--agent`) if it is a launch flag.
+    /// `Ok(false)` means the flag is not one of these.
+    fn take(&mut self, name: &str, a: &str, it: &mut impl Iterator<Item = String>) -> Result<bool> {
+        match a {
+            "--agent" => self.agent = it.next(),
+            "-claude" => self.agent = Some("claude".into()),
+            "-codex" => self.agent = Some("codex".into()),
+            "-agy" | "-gemini" => self.agent = Some("agy".into()),
+            // The two postures are one setting, so asking for both is a
+            // contradiction rather than a last-one-wins: a launch that
+            // quietly picked one of them could bypass every permission
+            // check on the strength of a typo.
+            "-loco" | "--loco" | "-sane" | "--sane" => {
+                let want = if a.trim_start_matches('-').starts_with("loco") {
+                    crate::agents::LaunchMode::Loco
+                } else {
+                    crate::agents::LaunchMode::Sane
+                };
+                if self.mode.is_some_and(|m| m != want) {
+                    bail!("-loco and -sane are opposites; pick one");
+                }
+                self.mode = Some(want);
+            }
+            "--fresh" | "-fresh" => self.fresh = true,
+            "--force" => self.force = true,
+            "--handoff" => self.handoff = true,
+            // `-resume` was accepted here and did nothing: resuming is already
+            // the default. Rejected with a reason rather than kept as a no-op
+            // that reads like a feature.
+            "-resume" | "--resume" => bail!(
+                "-resume is not a flag: resuming is the default. \
+                 Use `ws {name}` to resume, or `ws {name} --fresh` to start a new session."
+            ),
+            _ => return Ok(false),
+        }
+        Ok(true)
     }
 }
 
@@ -1024,12 +1066,45 @@ mod tests {
     fn a_name_with_an_at_parses_as_a_worktree_not_a_launch() {
         assert_eq!(
             p(&["api@retry"]),
-            Cmd::Worktree { spec: "api@retry".into(), merge: false, from_session: false }
+            Cmd::Worktree {
+                spec: "api@retry".into(),
+                merge: false,
+                from_session: false,
+                launch: LaunchFlags::default()
+            }
         );
         assert_eq!(
             p(&["api@retry", "--merge"]),
-            Cmd::Worktree { spec: "api@retry".into(), merge: true, from_session: false }
+            Cmd::Worktree {
+                spec: "api@retry".into(),
+                merge: true,
+                from_session: false,
+                launch: LaunchFlags::default()
+            }
         );
+    }
+
+    #[test]
+    fn a_worktree_takes_the_same_launch_flags_as_a_named_workspace() {
+        assert_eq!(
+            p(&["api@retry", "-codex", "--fresh", "--handoff", "-sane", "--force"]),
+            Cmd::Worktree {
+                spec: "api@retry".into(),
+                merge: false,
+                from_session: false,
+                launch: LaunchFlags {
+                    agent: Some("codex".into()),
+                    mode: Some(crate::agents::LaunchMode::Sane),
+                    fresh: true,
+                    force: true,
+                    handoff: true,
+                },
+            }
+        );
+        let err = |a: &[&str]| parse(a.iter().map(|x| x.to_string()).collect()).unwrap_err();
+        assert!(err(&["api@retry", "--merge", "-codex"]).to_string().contains("--merge"));
+        assert!(err(&["api@retry", "-loco", "-sane"]).to_string().contains("opposites"));
+        assert!(err(&["api@retry", "-resume"]).to_string().contains("resuming is the default"));
     }
 
     // ---- refocus: the new surface, and proof the old surface is gone ----
@@ -1494,7 +1569,12 @@ mod tests {
     fn from_session_only_applies_to_a_merge() {
         assert_eq!(
             p(&["api@retry", "--merge", "--from-session"]),
-            Cmd::Worktree { spec: "api@retry".into(), merge: true, from_session: true }
+            Cmd::Worktree {
+                spec: "api@retry".into(),
+                merge: true,
+                from_session: true,
+                launch: LaunchFlags::default()
+            }
         );
         assert!(parse(vec!["api@retry".into(), "--from-session".into()]).is_err());
     }

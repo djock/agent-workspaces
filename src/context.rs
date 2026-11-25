@@ -34,7 +34,17 @@ pub fn regenerate_with_handoff(
     workspace_name: &str,
     handoff_hint: Option<&Path>,
 ) -> Result<()> {
-    crate::txn::transaction(path, || regenerate_locked(path, workspace_name, handoff_hint))
+    // The lock lives under the workspace's ignored `.ws/local/`, not beside the
+    // file: a root-level `AGENTS.md.lock` is untracked dirt in the checkout, and
+    // it blocked `ws base@feature --merge`. An older ws still locks the sidecar,
+    // so when one exists it is taken too (after ours, never created): both
+    // binaries then serialise on it.
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let _ours = crate::txn::acquire_at(&dir.join(".ws/local").join(format!("{name}.lock")), path)?;
+    let legacy = crate::txn::lock_path(path);
+    let _theirs = if legacy.exists() { Some(crate::txn::acquire_at(&legacy, path)?) } else { None };
+    regenerate_locked(path, workspace_name, handoff_hint)
 }
 
 fn regenerate_locked(path: &Path, workspace_name: &str, handoff_hint: Option<&Path>) -> Result<()> {
@@ -48,7 +58,14 @@ fn regenerate_locked(path: &Path, workspace_name: &str, handoff_hint: Option<&Pa
     // user's own prose, and `fs::write` truncates before it writes. A crash, a
     // full disk or a signal in that gap destroys the prose with nothing left
     // to recover from. `atomic_write` also creates the parent directory.
-    crate::atomic::atomic_write(path, new_contents)?;
+    //
+    // Unchanged bytes are not rewritten, so a launch leaves a tracked instruction
+    // file untouched (no mtime churn, no git stat refresh); a changed one keeps
+    // its mode.
+    if std::fs::read(path).ok().as_deref() == Some(new_contents.as_bytes()) {
+        return Ok(());
+    }
+    crate::atomic::atomic_write_with_mode(path, new_contents, crate::atomic::mode_of(path))?;
     Ok(())
 }
 

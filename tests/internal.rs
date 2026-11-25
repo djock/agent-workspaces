@@ -556,23 +556,24 @@ fn the_conversation_that_armed_it_is_not_asked() {
     assert!(proj.join(".ws/local/pending-handoff").exists());
 }
 
-/// A fresh `ws <name>` launch of Claude writes its new session id before exec,
-/// so the hook sees `prior == current`. That must still count as fresh, or the
-/// "handoff waiting" banner never shows on a launch.
+/// A fresh `ws <name>` launch of Claude starts under a new id while state.toml
+/// still names the previous conversation (the new id is only pending until
+/// this hook confirms it). That counts as fresh, so the "handoff waiting"
+/// banner shows on a launch.
 #[test]
 fn a_fresh_claude_launch_still_gets_the_waiting_banner() {
     let env = Env::new();
     let proj = adopt_ws(&env, "h6");
     std::fs::create_dir_all(proj.join(".ws/handoffs")).unwrap();
     std::fs::write(proj.join(".ws/handoffs/w.md"), "# Handoff").unwrap();
-    let start = || {
+    let start = |id: &str| {
         let out = env
             .cmd()
             .env("WS_WORKSPACE", "h6")
             .env("WS_DIR", &proj)
             .env("WS_AGENT", "claude")
             .args(["internal", "session-start"])
-            .write_stdin(r#"{"source":"startup","session_id":"c1"}"#)
+            .write_stdin(format!(r#"{{"source":"startup","session_id":"{id}"}}"#))
             .assert()
             .success()
             .get_output()
@@ -580,9 +581,9 @@ fn a_fresh_claude_launch_still_gets_the_waiting_banner() {
             .clone();
         String::from_utf8(out).unwrap()
     };
-    start(); // records c1, as the launch would have
+    start("c0"); // an earlier conversation
     std::fs::remove_file(proj.join(".ws/local/handoff-notice.stamp")).ok();
-    let out = start();
+    let out = start("c1");
     assert!(out.contains("handoff waiting") && out.contains("w.md"), "{out}");
 }
 

@@ -138,10 +138,18 @@ impl Agent for ClaudeAgent {
                 // the timeline, and this is the only place a Claude id is minted for
                 // an interactive session.
                 let id = uuid::Uuid::new_v4().to_string();
-                // The id is recorded here so `--resume` can find it; the
-                // *lineage* is recorded by the SessionStart hook, which is the
-                // only place both agents' ids are observable from one code path.
-                if let Err(e) = contract::write_session_id(&ws.state_toml(), self.id(), &id) {
+                // Recorded as *pending*, not as the session: the last confirmed
+                // id stays the one a later launch resumes until the SessionStart
+                // hook reports this one running. Writing it as `session_id` here
+                // made the hook see no change, so the old → new edge in
+                // `ws -conversations` was never recorded, and a launch that died
+                // before starting left nothing to resume.
+                if let Err(e) = contract::set_agent_field(
+                    &ws.state_toml(),
+                    self.id(),
+                    "pending_session_id",
+                    toml::Value::String(id.clone()),
+                ) {
                     // `write_session_id` refuses to overwrite a state.toml it
                     // could not parse, and that protection must not become a
                     // launch failure: the id above still starts Claude, it just
@@ -239,11 +247,12 @@ mod tests {
         let cmd = ClaudeAgent.launch(&ws, &ctx).unwrap();
         let a = args_of(&cmd);
         assert_eq!(a[0], "--session-id");
-        // recorded to state.toml
+        // recorded as pending; the hook confirms it
         assert_eq!(
-            crate::contract::read_session_id(&ws.state_toml(), "claude"),
+            crate::contract::read_agent_str(&ws.state_toml(), "claude", "pending_session_id"),
             Some(a[1].clone())
         );
+        assert_eq!(crate::contract::read_session_id(&ws.state_toml(), "claude"), None);
     }
 
     #[test]

@@ -2,22 +2,37 @@ use std::path::PathBuf;
 
 use crate::workspace::Workspace;
 
-/// Newest `.ws/handoffs/*.md` by mtime, if any exist.
+/// Newest `.ws/handoffs/*.md` by creation order, if any exist.
+///
+/// Creation order is the file name, not the mtime: every handoff `ws -rotate`
+/// writes starts with its UTC timestamp, so the name is stable when the file is
+/// later edited (a successor report) or copied — and an edited older handoff
+/// used to win the mtime lookup over the one actually armed. Same-second files
+/// take a `-2`, `-3` suffix and order by it. Names that do not start with a date
+/// (hand-written ones) count as older than any dated one; among themselves,
+/// and for every other tie, plain name order decides.
 pub fn latest_handoff(ws: &Workspace) -> Option<PathBuf> {
     let dir = ws.ws_dir().join("handoffs");
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-    for e in std::fs::read_dir(&dir).ok()?.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("md") {
-            continue;
+    std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md") && p.is_file())
+        .max_by_key(|p| order_key(p.file_stem().and_then(|s| s.to_str()).unwrap_or_default()))
+}
+
+/// `(dated, stem without a same-second suffix, suffix)`.
+fn order_key(stem: &str) -> (bool, String, u32) {
+    let dated = stem.len() >= 10
+        && stem.as_bytes()[..4].iter().all(u8::is_ascii_digit)
+        && stem.as_bytes()[4] == b'-';
+    let (base, n) = match stem.rsplit_once('-') {
+        Some((b, n)) if !n.is_empty() && n.len() <= 3 && n.bytes().all(|c| c.is_ascii_digit()) => {
+            (b, n.parse().unwrap_or(1))
         }
-        if let Ok(m) = e.metadata().and_then(|m| m.modified()) {
-            if newest.as_ref().is_none_or(|(t, _)| m > *t) {
-                newest = Some((m, p));
-            }
-        }
-    }
-    newest.map(|(_, p)| p)
+        _ => (stem, 1),
+    };
+    (dated, base.to_string(), n)
 }
 
 /// An armed handoff older than this is out of date. Generous, because the
@@ -176,6 +191,21 @@ mod tests {
         let p = dir.join(name);
         std::fs::write(&p, "# Handoff").unwrap();
         p
+    }
+
+    #[test]
+    fn latest_is_creation_order_and_ignores_a_later_edit() {
+        let td = TempDir::new().unwrap();
+        let w = ws(&td);
+        handoff(&w, "rotate-notes.md");
+        handoff(&w, "2026-10-05-1028-legacy.md");
+        let newest = handoff(&w, "2026-11-24T120000Z-me-2.md");
+        handoff(&w, "2026-11-24T120000Z-me.md");
+        // An older handoff edited last (a successor report) must not win.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(w.ws_dir().join("handoffs/2026-10-05-1028-legacy.md"), "# edited").unwrap();
+        assert_eq!(latest_handoff(&w), Some(newest.clone()));
+        assert_eq!(latest_handoff(&w), Some(newest), "the same answer every time");
     }
 
     #[test]

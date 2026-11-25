@@ -79,6 +79,32 @@ const PID_TRAILER: &str = "ws-pid:";
 /// never reclaims it. `agentstate` learned this for session records and wrote it
 /// down; this is the same rule for the same reason, and now the same code.
 const START_TRAILER: &str = "ws-start:";
+/// The checkout the snapshot was taken in. Linked worktrees share one ref
+/// namespace, so without it a sibling checkout reported (and offered to restore
+/// over itself) a tree that was never its own.
+const WORKTREE_TRAILER: &str = "ws-worktree:";
+/// The agent whose session took it. agy reports no session end, so its
+/// snapshots outlive every exit, clean or not.
+const AGENT_TRAILER: &str = "ws-agent:";
+
+/// The env var a launch sets to its own pid. ws `exec`s into the agent, so
+/// that pid *is* the agent for the whole session. The hook writing the
+/// snapshot is a short-lived child: recording its own pid made every snapshot
+/// look orphaned the moment the hook exited.
+pub const SESSION_PID_ENV: &str = "WS_SESSION_PID";
+
+/// The process that owns this session: the launch's pid when ws launched it,
+/// else (an older launcher) this process, as before.
+fn owner_pid() -> u32 {
+    std::env::var(SESSION_PID_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(std::process::id)
+}
+
+fn checkout_id(root: &Path) -> String {
+    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()).display().to_string()
+}
 
 /// Take a snapshot of the working tree for `conversation`.
 ///
@@ -140,10 +166,14 @@ pub fn snapshot(root: &Path, conversation: &str) -> Result<Option<String>> {
          Restore one file with: git checkout {refname} -- <path>\n\n\
          {BASE_TRAILER} {}\n\
          {PID_TRAILER} {}\n\
-         {START_TRAILER} {}\n",
+         {START_TRAILER} {}\n\
+         {WORKTREE_TRAILER} {}\n\
+         {AGENT_TRAILER} {}\n",
         base.clone().unwrap_or_else(|| "none".into()),
-        std::process::id(),
-        crate::agentstate::start_time(std::process::id()).unwrap_or_else(|| "none".into()),
+        owner_pid(),
+        crate::agentstate::start_time(owner_pid()).unwrap_or_else(|| "none".into()),
+        checkout_id(root),
+        std::env::var("WS_AGENT").ok().filter(|a| !a.is_empty()).unwrap_or_else(|| "none".into()),
     );
 
     let mut args: Vec<String> = vec!["commit-tree".into(), tree, "-m".into(), message];
@@ -208,6 +238,10 @@ pub struct Snapshot {
     /// The start time of the process named by `pid`, as `ps` printed it when the
     /// snapshot was written. Compared as text against `ps` today.
     pub start: Option<String>,
+    /// The checkout it was taken in; `None` for snapshots older ws wrote.
+    pub worktree: Option<String>,
+    /// The agent whose session took it.
+    pub agent: Option<String>,
     /// Human-readable, for the notice.
     pub when: String,
     /// The same instant as seconds since the epoch, for `gc`. Taken from git
@@ -247,6 +281,8 @@ pub fn all(root: &Path) -> Vec<Snapshot> {
                 base: trailer(BASE_TRAILER),
                 pid: trailer(PID_TRAILER).and_then(|p| p.parse().ok()),
                 start: trailer(START_TRAILER),
+                worktree: trailer(WORKTREE_TRAILER),
+                agent: trailer(AGENT_TRAILER),
                 refname,
                 commit,
                 when,
@@ -273,8 +309,14 @@ pub fn all(root: &Path) -> Vec<Snapshot> {
 /// ws) falls back to liveness alone rather than being called dead.
 pub fn orphans(root: &Path, conversation: Option<&str>) -> Vec<Snapshot> {
     let mine = conversation.map(ref_name);
-    let candidates: Vec<Snapshot> =
-        all(root).into_iter().filter(|s| Some(&s.refname) != mine.as_ref()).collect();
+    let here = checkout_id(root);
+    let candidates: Vec<Snapshot> = all(root)
+        .into_iter()
+        .filter(|s| Some(&s.refname) != mine.as_ref())
+        // Another checkout's snapshot is that checkout's to report. A legacy
+        // snapshot with no worktree recorded is still reported, as before.
+        .filter(|s| s.worktree.as_deref().is_none_or(|w| w == here))
+        .collect();
 
     // One `ps` for every pid at once, like `agentstate::by_directory`: asking per
     // snapshot would scale a launch-time check with the number of crashed
@@ -307,7 +349,20 @@ pub fn recovery_notice(root: &Path, conversation: Option<&str>) -> Option<String
         return None;
     }
     let head_now = head(root);
-    let mut out = String::from("A previous session ended without closing cleanly.\n");
+    let quiet = |s: &Snapshot| {
+        s.agent.as_deref().is_some_and(|a| {
+            crate::agents::for_id(a).is_ok_and(|ag| !ag.supports_event("SessionEnd"))
+        })
+    };
+    let mut out = if orphans.iter().all(quiet) {
+        // No exit signal exists for these, so "crashed" would be a guess.
+        String::from(
+            "A previous session left a snapshot (its agent does not report a clean exit, so \
+             it may simply have ended).\n",
+        )
+    } else {
+        String::from("A previous session ended without closing cleanly.\n")
+    };
     for s in &orphans {
         out.push_str(&format!("  saved {} at {}\n", s.when, s.refname));
         match (&s.base, &head_now) {

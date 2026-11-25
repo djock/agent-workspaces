@@ -137,8 +137,62 @@ pub fn claude_settings_path() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude").join("settings.json")
 }
 
+/// The Codex profile in use: `$CODEX_HOME` when set, else `~/.codex`. Codex
+/// reads its hooks, config and prompts from here, so every Codex path ws writes
+/// derives from this one place.
+pub fn codex_home() -> PathBuf {
+    match std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty()) {
+        Some(v) => PathBuf::from(v),
+        None => default_codex_home(),
+    }
+}
+
+fn default_codex_home() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".codex")
+}
+
 pub fn codex_hooks_path() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".codex").join("hooks.json")
+    codex_home().join("hooks.json")
+}
+
+fn codex_homes_record() -> PathBuf {
+    crate::config::ws_config_dir().join("codex-homes")
+}
+
+/// Note a Codex profile `ws setup` configured, so uninstall can clean every
+/// one of them and not only the profile selected when it runs.
+pub fn remember_codex_home(home: &Path) -> Result<()> {
+    let mut homes = recorded_codex_homes();
+    if !homes.iter().any(|h| h == home) {
+        homes.push(home.to_path_buf());
+        let body: String = homes.iter().map(|h| format!("{}\n", h.display())).collect();
+        crate::atomic::atomic_write(&codex_homes_record(), body)?;
+    }
+    Ok(())
+}
+
+fn recorded_codex_homes() -> Vec<PathBuf> {
+    std::fs::read_to_string(codex_homes_record())
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Every Codex profile setup has touched, plus the current one, without repeats.
+pub fn known_codex_homes() -> Vec<PathBuf> {
+    let mut homes = recorded_codex_homes();
+    let current = codex_home();
+    if !homes.contains(&current) {
+        homes.insert(0, current);
+    }
+    homes
+}
+
+pub fn forget_codex_homes() {
+    let _ = std::fs::remove_file(codex_homes_record());
 }
 
 /// agy's shared hooks file. `~/.gemini/antigravity-cli/hooks.json` is not it:
@@ -152,7 +206,7 @@ pub fn agy_hooks_path() -> PathBuf {
 }
 
 pub fn codex_config_path() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".codex").join("config.toml")
+    codex_home().join("config.toml")
 }
 
 fn shell_quote(value: &str) -> String {
@@ -484,8 +538,20 @@ pub fn register_statuslines(ws_bin: &Path) -> Result<()> {
     Ok(())
 }
 
-fn codex_statusline_backup_path() -> PathBuf {
-    crate::config::ws_config_dir().join("codex-statusline-backup.toml")
+/// One backup per profile: setting up a second `CODEX_HOME` must not replace
+/// the first profile's saved footer. The default profile keeps the original
+/// name so an existing backup is still found.
+fn codex_statusline_backup_path(home: &Path) -> PathBuf {
+    let dir = crate::config::ws_config_dir();
+    if home == default_codex_home() {
+        return dir.join("codex-statusline-backup.toml");
+    }
+    // FNV-1a: stable across Rust releases, unlike the std hasher.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in home.to_string_lossy().bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    dir.join(format!("codex-statusline-backup-{h:016x}.toml"))
 }
 
 fn codex_tui(doc: &DocumentMut) -> Result<Option<&Table>> {
@@ -547,7 +613,11 @@ fn codex_status_line_array(values: &[&str]) -> Array {
 /// Claude status-line command. The original Codex footer is backed up once and
 /// restored by uninstall. toml_edit preserves unrelated comments and layout.
 pub fn register_codex_statusline() -> Result<()> {
-    let path = codex_config_path();
+    register_codex_statusline_in(&codex_home())
+}
+
+pub fn register_codex_statusline_in(home: &Path) -> Result<()> {
+    let path = home.join("config.toml");
     let source = match std::fs::read_to_string(&path) {
         Ok(source) => source,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -561,7 +631,7 @@ pub fn register_codex_statusline() -> Result<()> {
         )
     })?;
 
-    let backup_path = codex_statusline_backup_path();
+    let backup_path = codex_statusline_backup_path(home);
     match std::fs::read_to_string(&backup_path) {
         Ok(source) => {
             toml::from_str::<CodexStatuslineBackup>(&source).with_context(|| {
@@ -590,8 +660,13 @@ pub fn register_codex_statusline() -> Result<()> {
 
 /// Restore the Codex footer that existed before ws setup. If the user changed
 /// the footer after setup, leave their newer value and the backup untouched.
+#[cfg(test)]
 pub fn unregister_codex_statusline() -> Result<usize> {
-    let path = codex_config_path();
+    unregister_codex_statusline_in(&codex_home())
+}
+
+pub fn unregister_codex_statusline_in(home: &Path) -> Result<usize> {
+    let path = home.join("config.toml");
     let source = match std::fs::read_to_string(&path) {
         Ok(source) => source,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -606,7 +681,7 @@ pub fn unregister_codex_statusline() -> Result<usize> {
         return Ok(0);
     }
 
-    let backup_path = codex_statusline_backup_path();
+    let backup_path = codex_statusline_backup_path(home);
     let backup: CodexStatuslineBackup = match std::fs::read_to_string(&backup_path) {
         Ok(source) => toml::from_str(&source).with_context(|| {
             format!("{} is corrupt (refusing to modify)", backup_path.display())
@@ -944,6 +1019,8 @@ mod tests {
         let d = TempDir::new().unwrap();
         std::env::set_var("HOME", d.path());
         std::env::set_var("XDG_CONFIG_HOME", d.path().join(".config"));
+        // A developer's own CODEX_HOME would point these tests at a real profile.
+        std::env::remove_var("CODEX_HOME");
         d
     }
 
@@ -1191,7 +1268,7 @@ mod tests {
         );
         assert_eq!(codex_status_line_colors_of(codex_tui(&doc).unwrap()).unwrap(), Some(true));
 
-        let backup = std::fs::read_to_string(codex_statusline_backup_path()).unwrap();
+        let backup = std::fs::read_to_string(codex_statusline_backup_path(&codex_home())).unwrap();
         let backup: CodexStatuslineBackup = toml::from_str(&backup).unwrap();
         assert_eq!(backup.status_line, Some(vec!["model".into(), "current-dir".into()]));
         assert_eq!(backup.status_line_use_colors, Some(false));
@@ -1232,7 +1309,7 @@ mod tests {
             Some(vec!["model".into(), "weekly-limit".into()])
         );
         assert_eq!(codex_status_line_colors_of(codex_tui(&doc).unwrap()).unwrap(), None);
-        assert!(!codex_statusline_backup_path().exists());
+        assert!(!codex_statusline_backup_path(&codex_home()).exists());
     }
 
     #[test]
@@ -1245,7 +1322,7 @@ mod tests {
 
         assert!(register_codex_statusline().is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-        assert!(!codex_statusline_backup_path().exists());
+        assert!(!codex_statusline_backup_path(&codex_home()).exists());
     }
 
     #[test]

@@ -29,6 +29,8 @@ impl Env {
             // suite's output depend on what is published. Tests that mean to
             // exercise the notice set the cache file and unset this.
             .env("WS_NO_UPDATE_CHECK", "1")
+            // A developer's own Codex profile must never be the one under test.
+            .env_remove("CODEX_HOME")
             // A real `agy` on the developer's PATH would otherwise count as
             // installed, and setup/doctor output would depend on the machine.
             // Tests that want agy point this at `fake_codex()`, which logs its
@@ -110,8 +112,10 @@ impl Env {
              echo \"WSW: $WS_WORKSPACE\"\n\
              echo \"WSDIR: $WS_DIR\"\n\
              }} >> \"{}\"\n\
+             {}\
              exit 0\n",
-            log.display()
+            log.display(),
+            fake_session_start()
         );
         let mut f = std::fs::File::create(&bin).unwrap();
         f.write_all(script.as_bytes()).unwrap();
@@ -143,8 +147,10 @@ impl Env {
              echo \"WSW: $WS_WORKSPACE\"\n\
              echo \"WSDIR: $WS_DIR\"\n\
              }} >> \"{}\"\n\
+             {}\
              exit 0\n",
-            log.display()
+            log.display(),
+            fake_session_start()
         );
         let mut f = std::fs::File::create(&bin).unwrap();
         f.write_all(script.as_bytes()).unwrap();
@@ -178,4 +184,26 @@ impl Env {
         );
         std::fs::write(dir.join("rollout-test.jsonl"), format!("{line}\n")).unwrap();
     }
+}
+
+/// What a real agent with ws's hooks installed does on startup: run
+/// `ws internal session-start` with the session it is on. Without it a launch
+/// is never confirmed, and the switch and handoff it intended never commit.
+/// `WS_FAKE_NO_HOOKS=1` makes the fake behave like an agent whose hooks do not
+/// run (untrusted Codex hooks, a crash before startup).
+fn fake_session_start() -> String {
+    let ws = assert_cmd::cargo::cargo_bin("ws");
+    format!(
+        "if [ -n \"$WS_LAUNCH_ATTEMPT\" ] && [ -z \"$WS_FAKE_NO_HOOKS\" ]; then\n\
+         id=''; src=startup; prev=''\n\
+         for a in \"$@\"; do\n\
+         case \"$prev\" in --session-id) id=\"$a\";; --resume|resume|--conversation) id=\"$a\"; src=resume;; esac\n\
+         prev=\"$a\"\n\
+         done\n\
+         [ -z \"$id\" ] && id=\"fake-$$-$(date +%s)\"\n\
+         printf '{{\"source\":\"%s\",\"session_id\":\"%s\",\"cwd\":\"%s\"}}' \"$src\" \"$id\" \"$(pwd)\" \
+         | '{}' internal session-start >/dev/null 2>&1\n\
+         fi\n",
+        ws.display()
+    )
 }

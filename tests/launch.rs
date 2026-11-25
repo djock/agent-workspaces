@@ -225,6 +225,7 @@ fn codex_without_a_recorded_session_launches_fresh_and_explains() {
     env.cmd()
         .env("WS_CODEX_BIN", &shim)
         .env("WS_NO_EXEC", "1")
+        .env("WS_FAKE_NO_HOOKS", "1")
         .args(["loopproj", "--agent", "codex"])
         .assert()
         .success();
@@ -233,6 +234,7 @@ fn codex_without_a_recorded_session_launches_fresh_and_explains() {
         .cmd()
         .env("WS_CODEX_BIN", &shim)
         .env("WS_NO_EXEC", "1")
+        .env("WS_FAKE_NO_HOOKS", "1")
         .args(["loopproj", "--agent", "codex"])
         .output()
         .unwrap();
@@ -332,6 +334,7 @@ fn re_reporting_the_same_session_id_is_not_a_rotation() {
     env.cmd()
         .env("WS_CODEX_BIN", &shim)
         .env("WS_NO_EXEC", "1")
+        .env("WS_FAKE_NO_HOOKS", "1")
         .args(["sameproj", "--agent", "codex"])
         .assert()
         .success();
@@ -902,4 +905,165 @@ fn codex_launches_in_the_remembered_posture_too() {
         2,
         "codex must get its own spelling, on the remembered launch too: {log}"
     );
+}
+
+/// The refusal names the selected agent's override, not always WS_CLAUDE_BIN.
+#[test]
+fn a_missing_agent_names_its_own_override_variable() {
+    for (flag, var) in
+        [("-codex", "WS_CODEX_BIN"), ("-agy", "WS_AGY_BIN"), ("-gemini", "WS_AGY_BIN")]
+    {
+        let env = Env::new();
+        let missing = env.home.path().join("no-such-agent");
+        env.cmd()
+            .env(var, &missing)
+            .env("WS_NO_EXEC", "1")
+            .args(["proj", flag])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(format!("set {var}")))
+            .stderr(predicate::str::contains(missing.to_str().unwrap()));
+    }
+}
+
+/// A switch commits only when the new agent reports that it started. One whose
+/// hooks never run (an exec that failed, untrusted Codex hooks) leaves the
+/// workspace on its old agent, says so on the next launch, and a retry that
+/// does start records exactly one switch.
+#[test]
+fn a_switch_that_never_starts_leaves_the_workspace_as_it_was() {
+    let env = Env::new();
+    let claude = env.fake_claude();
+    let codex = env.fake_codex();
+    let root = env.root.join("sw");
+    let launch = |agent: Option<&str>, hooks: bool| {
+        let mut c = env.cmd();
+        c.env("WS_CLAUDE_BIN", &claude).env("WS_CODEX_BIN", &codex).env("WS_NO_EXEC", "1");
+        if !hooks {
+            c.env("WS_FAKE_NO_HOOKS", "1");
+        }
+        c.arg("sw");
+        if let Some(a) = agent {
+            c.args(["--agent", a]);
+        }
+        c.output().unwrap()
+    };
+    launch(None, true);
+    let handoffs = root.join(".ws/handoffs");
+    std::fs::write(handoffs.join("2026-11-25T100000Z-me.md"), "# Handoff").unwrap();
+    std::fs::write(root.join(".ws/local/pending-handoff"), "2026-11-25T100000Z-me.md").unwrap();
+
+    launch(Some("codex"), false);
+    let meta = std::fs::read_to_string(root.join(".ws/workspace.toml")).unwrap();
+    assert!(meta.contains("default_agent = \"claude\""), "not switched yet: {meta}");
+    let tl = std::fs::read_to_string(root.join(".ws/timeline.jsonl")).unwrap();
+    assert!(!tl.contains("agent-switch"), "{tl}");
+    assert!(root.join(".ws/local/pending-handoff").exists(), "the handoff still waits");
+
+    let out = launch(Some("codex"), true);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("never reported that it started"), "{stderr}");
+    assert!(stderr.contains("still on claude"), "{stderr}");
+    let meta = std::fs::read_to_string(root.join(".ws/workspace.toml")).unwrap();
+    assert!(meta.contains("default_agent = \"codex\""), "switched once it started: {meta}");
+    let tl = std::fs::read_to_string(root.join(".ws/timeline.jsonl")).unwrap();
+    assert_eq!(tl.matches("agent-switch").count(), 1, "{tl}");
+    assert!(!root.join(".ws/local/launch-attempt.toml").exists(), "attempt cleared");
+}
+
+/// A fresh Claude launch records the old → new edge. The new id used to be
+/// written before exec, so the hook saw no change and the edge was lost. A
+/// replayed SessionStart adds nothing.
+#[test]
+fn a_fresh_claude_launch_records_where_it_came_from() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    launch_cmd(&env, &shim).arg("lin").assert().success();
+    let root = env.root.join("lin");
+    let first = std::fs::read_to_string(root.join(".ws/local/state.toml")).unwrap();
+    launch_cmd(&env, &shim).args(["lin", "--fresh"]).assert().success();
+    let state: toml::Table =
+        toml::from_str(&std::fs::read_to_string(root.join(".ws/local/state.toml")).unwrap())
+            .unwrap();
+    let new_id = state["claude"]["session_id"].as_str().unwrap().to_string();
+    assert!(!first.contains(&new_id), "a new conversation");
+    assert!(state["claude"].get("pending_session_id").is_none(), "pending cleared: {state:?}");
+
+    let rotated = |tl: &str| {
+        tl.lines()
+            .filter(|l| {
+                l.contains("\"rotated\"") && l.contains(&new_id) && !l.contains("\"from\":null")
+            })
+            .count()
+    };
+    let tl = std::fs::read_to_string(root.join(".ws/timeline.jsonl")).unwrap();
+    assert_eq!(rotated(&tl), 1, "old → new recorded once: {tl}");
+
+    env.cmd()
+        .env("WS_WORKSPACE", "lin")
+        .env("WS_DIR", &root)
+        .env("WS_AGENT", "claude")
+        .args(["internal", "session-start"])
+        .write_stdin(format!(r#"{{"source":"startup","session_id":"{new_id}"}}"#))
+        .assert()
+        .success();
+    let tl = std::fs::read_to_string(root.join(".ws/timeline.jsonl")).unwrap();
+    assert_eq!(rotated(&tl), 1, "a replay adds nothing: {tl}");
+}
+
+/// A Claude launch that never starts keeps the previous conversation as the one
+/// a bare launch resumes.
+#[test]
+fn a_fresh_claude_launch_that_never_starts_keeps_the_old_conversation() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    launch_cmd(&env, &shim).arg("keep").assert().success();
+    let state = env.root.join("keep/.ws/local/state.toml");
+    let read =
+        || -> toml::Table { toml::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap() };
+    let old = read()["claude"]["session_id"].as_str().unwrap().to_string();
+    launch_cmd(&env, &shim)
+        .env("WS_FAKE_NO_HOOKS", "1")
+        .args(["keep", "--fresh"])
+        .assert()
+        .success();
+    assert_eq!(read()["claude"]["session_id"].as_str(), Some(old.as_str()));
+    launch_cmd(&env, &shim).arg("keep").assert().success();
+    assert!(
+        env.argv_log()
+            .lines()
+            .rfind(|l| l.starts_with("ARGS:"))
+            .unwrap()
+            .contains(&format!("--resume {old}")),
+        "{}",
+        env.argv_log()
+    );
+}
+
+/// A tracked `mode = "loco"` that this machine never agreed to (a clone, a
+/// teammate's commit) launches with the agent's own permission checks. Typing
+/// `-loco` once is the consent; after that the remembered posture applies.
+#[test]
+fn a_remembered_loco_needs_this_machines_consent() {
+    let env = Env::new();
+    let shim = env.fake_claude();
+    launch_cmd(&env, &shim).arg("cl").assert().success();
+    let toml = env.root.join("cl/.ws/workspace.toml");
+    let body = std::fs::read_to_string(&toml).unwrap();
+    std::fs::write(&toml, format!("{body}mode = \"loco\"\n")).unwrap();
+
+    let out = launch_cmd(&env, &shim).arg("cl").output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("not agreed to"), "{stderr}");
+    let last = |log: String| log.lines().rfind(|l| l.starts_with("ARGS:")).unwrap().to_string();
+    assert!(!last(env.argv_log()).contains("dangerously"), "{}", env.argv_log());
+
+    launch_cmd(&env, &shim).args(["cl", "-loco"]).assert().success();
+    launch_cmd(&env, &shim).arg("cl").assert().success();
+    assert!(last(env.argv_log()).contains("--dangerously-skip-permissions"), "{}", env.argv_log());
+
+    launch_cmd(&env, &shim).args(["cl", "-sane"]).assert().success();
+    let consent = env.home.path().join(".config/ws/loco-consent");
+    let c = std::fs::read_to_string(&consent).unwrap_or_default();
+    assert!(c.trim().is_empty(), "-sane withdraws it: {c}");
 }

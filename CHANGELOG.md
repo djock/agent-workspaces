@@ -6,6 +6,48 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- An agent switch, and a handoff accepted at the launch prompt, are committed
+  only when the new agent's SessionStart hook reports that it started. A launch
+  that failed used to leave the workspace switched to the new agent, the
+  handoff marked consumed and the pending offer gone. The next launch now
+  reports a launch that never started.
+- Declining the handoff prompt starts a fresh conversation. It no longer asks
+  the resume question next, and nothing points the agent at the declined
+  handoff. An unreadable terminal leaves the handoff waiting.
+- Handoffs are ordered by their timestamped name, not by mtime. One handoff
+  is chosen per launch and used in the context file, the prompt and the switch
+  record.
+- Two `ws -rotate` runs in the same second no longer overwrite each other; the
+  second gets a `-2` suffix.
+- A fresh Claude launch records its link to the previous conversation in
+  `ws -conversations`. If it never starts, the previous conversation stays the
+  one a bare launch resumes.
+- `ws setup`, `-doctor` and `-uninstall` follow `CODEX_HOME`. Each Codex profile
+  keeps its own status-line backup, and uninstall cleans every profile that
+  setup configured.
+- `ws <base>@<feature>` takes the same launch flags as `ws <name>`
+  (`-codex`, `--fresh`, `--handoff`, `-loco`/`-sane`, `--force`).
+- A missing agent's error names its own override variable (`WS_CODEX_BIN`,
+  `WS_AGY_BIN`).
+- Autosave snapshots record the agent session's process, not the short-lived
+  hook, plus the checkout and agent. Live sessions and sibling worktrees no
+  longer trigger a false "did not close cleanly" notice. agy snapshots are
+  reported without claiming a crash.
+- Regenerating `AGENTS.md`/`CLAUDE.md` locks under `.ws/local/` and skips
+  unchanged writes, so no `*.lock` sidecar is left in the checkout to block a
+  worktree merge.
+
+### Security
+
+- A `mode = "loco"` in the tracked `workspace.toml` applies only on a machine
+  where the user typed `-loco` for that workspace.
+- `ws -update` downloads the release itself, verifies `SHA256SUMS.minisig`
+  against its built-in key and the tarball against `SHA256SUMS`, checks the
+  unpacked binary's version, then swaps it in with one rename. It no longer
+  runs the release's `install.sh`.
+
 ## [0.21.0] — 2026-11-25
 
 ### Added

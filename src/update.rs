@@ -73,12 +73,7 @@ pub fn run(check: bool, force: bool) -> Result<()> {
     }
 
     let current_exe = std::env::current_exe().context("cannot locate the current ws binary")?;
-    let install_dir = current_exe
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine the ws install directory"))?;
     let temp = TempDir::new()?;
-    let installer = temp.path().join("install.sh");
-
     // Plain text throughout: what is changing,
     // each thing installed, then what is new.
     println!();
@@ -89,40 +84,14 @@ pub fn run(check: bool, force: bool) -> Result<()> {
     }
     println!();
 
-    run_gh(
-        &repository,
-        &[
-            "release",
-            "download",
-            &latest,
-            "--repo",
-            &repository,
-            "--pattern",
-            "install.sh",
-            "--dir",
-            temp.path()
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("temporary path is not valid UTF-8"))?,
-        ],
-    )
-    .context("failed to download the release installer")?;
-
-    let status = Command::new("sh")
-        .arg(&installer)
-        .arg("--version")
-        .arg(&latest)
-        .arg("--install-dir")
-        .arg(install_dir)
-        .arg("--no-setup")
-        .env("WS_REPOSITORY", &repository)
-        // This command narrates the update; the installer keeps to warnings.
-        .env("WS_INSTALL_QUIET", "1")
-        .env("GH_NO_UPDATE_NOTIFIER", "1")
-        .status()
-        .context("failed to run the release installer")?;
-    if !status.success() {
-        bail!("release installer exited with {status}");
-    }
+    // Download, verify and install in this process. The updater used to run the
+    // release's `install.sh` and let it check the signature — so a tampered
+    // release could swap the checker along with the binary, and the running ws
+    // executed a script it had not authenticated. Now nothing from the release
+    // runs until its signature has been checked against the key built into
+    // this binary.
+    let staged = fetch_verified(&repository, &latest, latest_version, temp.path())?;
+    install_over(&staged, &current_exe)?;
     println!("  agent-workspaces\n");
     println!("  Installed ws → {}", crate::picker::home_relative(&current_exe));
 
@@ -491,6 +460,128 @@ fn latest_tag(repository: &str) -> Result<String> {
     Ok(tag.to_string())
 }
 
+/// The minisign key releases are signed with — the same one `install.sh`
+/// carries. `WS_MINISIGN_PUBKEY` replaces it, for tests and forks.
+const MINISIGN_PUBKEY: &str = "RWRRVgoYi1K98UjElv5KinneRvR3GacpBkVfML4iKQFNg7/RjvRBAhHH";
+
+/// The release asset built for this machine.
+fn release_target() -> Result<String> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Ok("aarch64-apple-darwin".into()),
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl".into()),
+        (os, arch) => bail!(
+            "no prebuilt ws for {os}/{arch}; build from source with ./install.sh --build-from-source"
+        ),
+    }
+}
+
+/// Download the release binary, check `SHA256SUMS.minisig` against the built-in
+/// key and the tarball against `SHA256SUMS`, unpack it, and make sure the
+/// result runs and is the version asked for. Returns the unpacked binary.
+fn fetch_verified(repository: &str, tag: &str, version: &str, dir: &Path) -> Result<PathBuf> {
+    let asset = format!("ws-v{version}-{}.tar.gz", release_target()?);
+    let dir_s = dir.to_str().ok_or_else(|| anyhow::anyhow!("temporary path is not valid UTF-8"))?;
+    run_gh(
+        repository,
+        &[
+            "release",
+            "download",
+            tag,
+            "--repo",
+            repository,
+            "--pattern",
+            &asset,
+            "--pattern",
+            "SHA256SUMS",
+            "--pattern",
+            "SHA256SUMS.minisig",
+            "--dir",
+            dir_s,
+        ],
+    )
+    .context("failed to download the release")?;
+
+    let sums = std::fs::read(dir.join("SHA256SUMS"))
+        .with_context(|| format!("release {tag} has no SHA256SUMS"))?;
+    let sig = std::fs::read_to_string(dir.join("SHA256SUMS.minisig"))
+        .with_context(|| format!("release {tag} is not signed (no SHA256SUMS.minisig)"))?;
+    verify_signature(&sums, &sig).with_context(|| format!("release {tag} failed verification"))?;
+
+    let tarball =
+        std::fs::read(dir.join(&asset)).with_context(|| format!("release {tag} has no {asset}"))?;
+    let want = String::from_utf8_lossy(&sums)
+        .lines()
+        .find_map(|l| {
+            let (hash, name) = l.split_once(char::is_whitespace)?;
+            (name.trim().trim_start_matches('*') == asset).then(|| hash.to_ascii_lowercase())
+        })
+        .ok_or_else(|| anyhow::anyhow!("SHA256SUMS does not list {asset}"))?;
+    let got = sha256_hex(&tarball);
+    if got != want {
+        bail!("{asset} does not match its signed checksum (got {got}, signed {want})");
+    }
+
+    let out = dir.join("unpacked");
+    std::fs::create_dir_all(&out)?;
+    let status = Command::new("tar")
+        .arg("-xzf")
+        .arg(dir.join(&asset))
+        .arg("-C")
+        .arg(&out)
+        .status()
+        .context("failed to run tar")?;
+    if !status.success() {
+        bail!("could not unpack {asset}");
+    }
+    let bin = out.join("ws");
+    let reported = Command::new(&bin)
+        .arg("--version")
+        .env("WS_NO_UPDATE_CHECK", "1")
+        .output()
+        .with_context(|| format!("the downloaded ws does not run ({})", bin.display()))?;
+    let reported = String::from_utf8_lossy(&reported.stdout);
+    if !reported.split_whitespace().any(|w| w.trim_start_matches('v') == version) {
+        bail!("the downloaded ws reports {:?}, not {version}", reported.trim());
+    }
+    Ok(bin)
+}
+
+fn verify_signature(message: &[u8], signature: &str) -> Result<()> {
+    let key = std::env::var("WS_MINISIGN_PUBKEY").unwrap_or_else(|_| MINISIGN_PUBKEY.to_string());
+    let pk = minisign_verify::PublicKey::from_base64(key.trim())
+        .map_err(|e| anyhow::anyhow!("bad release public key: {e}"))?;
+    let sig = minisign_verify::Signature::decode(signature)
+        .map_err(|e| anyhow::anyhow!("unreadable signature: {e}"))?;
+    pk.verify(message, &sig, false).map_err(|e| anyhow::anyhow!("signature does not verify: {e}"))
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Put `staged` in place of `current` with one rename in the same directory,
+/// so a failure at any point leaves the installed ws exactly as it was.
+fn install_over(staged: &Path, current: &Path) -> Result<()> {
+    let dir = current.parent().ok_or_else(|| anyhow::anyhow!("no install directory"))?;
+    let tmp = dir.join(format!(".ws.update.{}", std::process::id()));
+    let res = (|| -> Result<()> {
+        std::fs::copy(staged, &tmp).with_context(|| format!("cannot write {}", tmp.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+        }
+        std::fs::rename(&tmp, current)
+            .with_context(|| format!("cannot replace {}", current.display()))?;
+        Ok(())
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
 fn run_gh(_repository: &str, args: &[&str]) -> Result<String> {
     let gh = std::env::var("WS_GH_BIN").unwrap_or_else(|_| "gh".to_string());
     let output = Command::new(&gh)
@@ -543,7 +634,37 @@ impl Drop for TempDir {
 
 #[cfg(test)]
 mod tests {
-    use super::{strip_markdown, summarize, validate_version, version_greater, MORE};
+    use super::{
+        sha256_hex, strip_markdown, summarize, validate_version, verify_signature, version_greater,
+        MORE,
+    };
+
+    /// A throwaway key, not the release key: the fixture proves the check runs
+    /// and that a changed message or a different key is refused.
+    const TEST_KEY: &str = "RWQMbzTNEEpVtwvUA5T5SMhSV4gwHN7DNJhdOxgfr6SDgpCPAlghxmXI";
+    const TEST_MSG: &[u8] = b"abc  ws-v9.9.9-x.tar.gz\n";
+    const TEST_SIG: &str = "untrusted comment: signature from minisign secret key
+RUQMbzTNEEpVtyjY3z0wAZ6PL555DxuyD60eew+STUz+VSyxDOlRJ5bpTS5Mog3Hs6XYJezHftP4hRJ3uXm+/KqJW0dyZf9E8w0=
+trusted comment: test
+T7kQSO3nDT2LXMbqwEqk7C0ACWSRRCL7HE4Er2aKMzc6G5gjHTp5ByDedHhlFdVycZIIgtw3y/3Co7WYY7lDDQ==
+";
+
+    #[test]
+    fn the_updater_checks_the_signature_itself() {
+        std::env::set_var("WS_MINISIGN_PUBKEY", TEST_KEY);
+        assert!(verify_signature(TEST_MSG, TEST_SIG).is_ok());
+        assert!(verify_signature(b"abd  ws-v9.9.9-x.tar.gz\n", TEST_SIG).is_err(), "tampered sums");
+        std::env::remove_var("WS_MINISIGN_PUBKEY");
+        assert!(verify_signature(TEST_MSG, TEST_SIG).is_err(), "the release key did not sign this");
+    }
+
+    #[test]
+    fn sha256_matches_a_known_digest() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 
     const CHANGELOG: &str = "\
 # Changelog

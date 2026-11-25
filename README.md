@@ -257,13 +257,20 @@ ws my-project -sane     # back to asking before anything but edits
 ```
 
 It is remembered in `.ws/workspace.toml`, which is **tracked and committed** —
-so a recorded `loco` travels to whoever clones the workspace, on a machine that
-never chose it. That is why every loco launch announces itself on stderr,
-including the ones that did not type the flag. To stop a workspace being loco
-for everyone, launch it with `-sane` and commit the change (or remove the `mode`
-line by hand to return to the agent's default).
+so a recorded `loco` travels to whoever clones the workspace. A remembered loco
+only applies on a machine where you typed `-loco` for that workspace yourself
+(recorded in ws's own config directory, never in the repository). Elsewhere the
+launch keeps the agent's own permission checks and says why; `ws <name> -loco`
+once agrees, `-sane` withdraws it. Every loco launch still announces itself on
+stderr. To stop a workspace being loco for everyone, launch it with `-sane` and
+commit the change (or remove the `mode` line by hand to return to the agent's
+default).
 
-Switching from one agent to the other automatically points the new agent at the latest available handoff. For the smoothest continuation, ask the current agent to write a concise handoff before switching.
+Switching from one agent to the other automatically points the new agent at the latest available handoff (newest by its timestamped file name).
+The switch, and a handoff you accepted at the prompt, take effect when the new
+agent's SessionStart hook reports that it started. If it never does (the binary
+failed, or Codex's hooks are not trusted yet), the workspace stays on its
+previous agent with the handoff still waiting, and the next launch says so. For the smoothest continuation, ask the current agent to write a concise handoff before switching.
 
 Useful commands:
 
@@ -280,6 +287,7 @@ ws <name> --fresh              Start a fresh agent session
 ws <name> --handoff            Include the latest handoff
 ws <name> --force              Take over a workspace another process holds
 ws <base>@<feature>            Create a git worktree workspace, or open it
+ws <base>@<feature> -codex     Same launch flags as ws <name>; with any flag, creates and opens
 ws <base>@<feature> --merge    Merge it back and remove it
 ws -search <text>              Search workspace content
 ws -adopt [<name>]             Adopt the current directory

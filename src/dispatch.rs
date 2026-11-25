@@ -349,12 +349,7 @@ pub fn run(
     let cfg = crate::config::load();
     let agent = crate::agents::for_id(agent.as_deref().unwrap_or(&cfg.default_agent))?;
     if !agent.is_installed() {
-        bail!(
-            "{} is not installed or not on PATH (looked for `{}`). Install it, or set WS_{}_BIN.",
-            agent.id(),
-            agent.binary(),
-            agent.id().to_uppercase()
-        );
+        return Err(crate::agents::not_installed(agent.as_ref()));
     }
     let root = dispatch_root();
 

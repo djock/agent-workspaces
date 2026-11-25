@@ -144,14 +144,14 @@ fn a_live_sessions_snapshot_is_not_reported_at_launch() {
     let env = Env::new();
     let proj = workspace(&env, "proj");
     std::fs::write(proj.join("a.txt"), "work\n").unwrap();
-    // Written by the `ws` the hook spawns... which has exited by now, so record
-    // this test process instead: alive by definition for as long as it runs.
-    hook(&env, "proj", &proj, "stop", "conv-live").assert().success();
-    let tree = git(&proj, &["rev-parse", "refs/ws/session/conv-live^{tree}"]);
-    let head = git(&proj, &["rev-parse", "HEAD"]);
-    let msg = format!("ws autosave\n\nws-base: {head}\nws-pid: {}\n", std::process::id());
-    let commit = git(&proj, &["commit-tree", &tree, "-m", &msg]);
-    git(&proj, &["update-ref", "refs/ws/session/conv-live", &commit]);
+    // The launch hands the session's pid to its hooks; this test process stands
+    // in for the agent, alive for as long as the test runs. The hook itself has
+    // exited by the time the launch below looks, which is what the old snapshot
+    // recorded — and what made every live session look crashed.
+    hook(&env, "proj", &proj, "stop", "conv-live")
+        .env("WS_SESSION_PID", std::process::id().to_string())
+        .assert()
+        .success();
 
     let claude = env.fake_claude();
     env.cmd()
@@ -175,4 +175,51 @@ fn a_workspace_that_is_not_a_repo_is_left_alone() {
     std::fs::write(proj.join("a.txt"), "work\n").unwrap();
 
     hook(&env, "plain", &proj, "stop", "conv-a").assert().success();
+}
+
+/// Linked worktrees share the ref namespace. A snapshot taken in one checkout
+/// is not reported (or offered for restore) in another.
+#[test]
+fn a_snapshot_from_another_checkout_is_not_reported_here() {
+    let env = Env::new();
+    let proj = workspace(&env, "proj");
+    let other = env.home.path().join("other-checkout");
+    git(&proj, &["worktree", "add", "-q", "-b", "side", other.to_str().unwrap()]);
+    std::fs::write(other.join("a.txt"), "work\n").unwrap();
+    // A crashed session over there: pid 0 is never alive.
+    hook(&env, "proj", &other, "stop", "conv-there").env("WS_SESSION_PID", "0").assert().success();
+    assert!(!git(&proj, &["for-each-ref", "refs/ws/session"]).trim().is_empty());
+
+    let claude = env.fake_claude();
+    env.cmd()
+        .env("WS_CLAUDE_BIN", &claude)
+        .env("WS_NO_EXEC", "1")
+        .current_dir(&proj)
+        .arg("proj")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ended without closing cleanly").not());
+}
+
+/// agy reports no session end, so a snapshot it leaves is not called a crash.
+#[test]
+fn an_agy_snapshot_is_reported_without_claiming_a_crash() {
+    let env = Env::new();
+    let proj = workspace(&env, "proj");
+    std::fs::write(proj.join("a.txt"), "work\n").unwrap();
+    hook(&env, "proj", &proj, "stop", "conv-agy")
+        .env("WS_AGENT", "agy")
+        .env("WS_SESSION_PID", "0")
+        .assert()
+        .success();
+    let claude = env.fake_claude();
+    env.cmd()
+        .env("WS_CLAUDE_BIN", &claude)
+        .env("WS_NO_EXEC", "1")
+        .current_dir(&proj)
+        .arg("proj")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("does not report a clean exit"))
+        .stdout(predicate::str::contains("refs/ws/session/conv-agy"));
 }

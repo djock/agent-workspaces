@@ -28,9 +28,12 @@ on a fixed date, so the fix can be scheduled against it.
 
 Stated plainly rather than left for a reader to discover:
 
-- **Releases are authenticated only by TLS.** Assets carry SHA-256 checksums, but
-  nothing is signed, and the updater bootstrap does not verify a signature. A
-  compromised release host is not something `ws` currently detects.
+- **Release signatures rest on one minisign key.** `SHA256SUMS` is signed, and
+  both `install.sh` and `ws -update` check that signature against the public key
+  they carry before anything from the release is installed or run. `ws -update`
+  verifies inside the running binary and runs no downloaded script. A first
+  install still trusts the `install.sh` you fetched, and a stolen signing key
+  would defeat both checks.
 - **A `hooks.toml` entry runs your command inside the agent's context**, on every
   matching event, with the hook payload on stdin. That is the point of the
   feature, and it is also its whole risk surface. Two deliberate limits: the file
