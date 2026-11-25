@@ -41,8 +41,8 @@ pub fn rgb(color: &str) -> Option<(u8, u8, u8)> {
 /// that two workspaces created back to back are unlikely to look alike; the
 /// result is written to `workspace.toml` and never re-rolled.
 pub fn alloc_color() -> &'static str {
-    use rand::seq::SliceRandom;
-    PALETTE.choose(&mut rand::thread_rng()).copied().unwrap_or("blue")
+    use rand::seq::IndexedRandom;
+    PALETTE.choose(&mut rand::rng()).copied().unwrap_or("blue")
 }
 
 /// Strip the bytes that would make text *do* something on its way to a terminal.

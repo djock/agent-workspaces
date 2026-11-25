@@ -8,6 +8,24 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `main` builds again after the rand 0.10 / aes-gcm 0.11 bump: the secret
+  store uses `rand::fill` and typed AES-GCM key and nonce conversions. The
+  file format is unchanged, so stores written by 0.21.0 still open, and a bad
+  nonce is reported as a corrupt file.
+- Switching back to a saved agy conversation is confirmed by its first
+  `PreInvocation` (agy 1.5.17 sends no SessionStart on resume), and only with
+  the exact conversation id, from inside the workspace. The next launch no
+  longer warns that it never started.
+- A hook that reports a different conversation than the launch asked for
+  commits nothing. Confirmation runs under a lock and returns write errors
+  while keeping the launch retriable. Its timeline rows carry the attempt id,
+  so a retry records the switch once.
+- `CLAUDE.local.md` / `AGENTS.md` that ws created and nobody edited no longer
+  block `ws base@feature --merge`, and neither does the launch's
+  `default_agent`/`color` change to the tracked `.ws/workspace.toml`. Both are
+  put back before the worktree is removed. Edited, staged, tracked or
+  pre-existing instruction files still block it.
+
 - An agent switch, and a handoff accepted at the launch prompt, are committed
   only when the new agent's SessionStart hook reports that it started. A launch
   that failed used to leave the workspace switched to the new agent, the

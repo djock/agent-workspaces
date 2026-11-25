@@ -31,6 +31,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "session-start" | "user-prompt" | "stop" | "bash-audit" | "session-end"
         | "secret-redact" => {
             let h = hookio::read_stdin();
+            // Before the per-turn gate below: the first call of a resumed agy
+            // conversation is what confirms its launch.
+            if handler == "user-prompt" {
+                confirm_agy_resume(&h);
+            }
             let out = match handler {
                 "session-start" => session_start(&h),
                 // agy runs this hook before every model call of a turn, not
@@ -107,10 +112,14 @@ fn session_start(h: &hookio::HookInput) -> Option<String> {
         .and_then(|a| contract::read_session_id(&ws.state_toml(), &a));
     // The launch that started this agent, if ws started it and it has not
     // reported in yet. Read before recording the identity, then committed.
+    // An id that is not the one the launch asked for is not recorded: the
+    // previous conversation stays the one a bare launch resumes.
     let attempt = crate::attempt::for_hook(&ws);
-    record_session_identity(&ws, h);
+    if attempt.as_ref().is_none_or(|a| crate::attempt::accepts(a, &h.session_id)) {
+        record_session_identity(&ws, h);
+    }
     if let Some(a) = &attempt {
-        crate::attempt::confirm(&ws, a, &h.session_id);
+        confirm_launch(&ws, a, &h.session_id);
     }
 
     // Keep the notebook this agent is about to reread small. Only the actor's
@@ -177,6 +186,41 @@ fn session_start(h: &hookio::HookInput) -> Option<String> {
         None => hookio::additional_context("SessionStart", &ctx),
     };
     Some(out)
+}
+
+fn confirm_launch(ws: &Workspace, a: &crate::attempt::Attempt, session_id: &str) {
+    if let Err(e) = crate::attempt::confirm(ws, a, session_id) {
+        // Kept, not cleared: the next matching event or launch retries it.
+        let _ = append_log(ws, &format!("could not confirm launch {}: {e:#}", a.id));
+        eprintln!("ws: warning: could not record that {} started: {e:#}", a.agent);
+    }
+}
+
+/// agy skips SessionStart when it resumes a conversation (seen on 1.5.17, in
+/// print mode and in its own terminal); the first model call of the resumed
+/// conversation is the earliest sign it is running. Only an exact resume is
+/// confirmed here, only with the id it asked for, and only from inside the
+/// workspace. A fresh agy conversation still confirms on SessionStart.
+/// Nothing else happens on this path: no handoff offer, no context.
+fn confirm_agy_resume(h: &hookio::HookInput) {
+    if h.dialect != hookio::Dialect::Agy {
+        return;
+    }
+    let Some(ws) = current_ws() else { return };
+    let Some(a) = crate::attempt::for_hook(&ws).filter(|a| a.resume_id.is_some()) else {
+        return;
+    };
+    if started_outside(&ws, h) {
+        let _ = append_log(
+            &ws,
+            &format!(
+                "launch {} not confirmed: agy reported cwd {} outside the workspace",
+                a.id, h.cwd
+            ),
+        );
+        return;
+    }
+    confirm_launch(&ws, &a, &h.session_id);
 }
 
 /// A new conversation rather than one coming back. `/clear` always is. Claude

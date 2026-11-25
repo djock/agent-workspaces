@@ -120,3 +120,86 @@ fn setup_writes_a_named_ws_entry_into_agys_hooks_file_and_uninstall_removes_it()
     assert!(v.get("ws").is_none(), "{v}");
     assert_eq!(v["mine"]["Stop"][0]["command"], "./mine.sh");
 }
+
+/// agy 1.5.17 skips SessionStart when it resumes a conversation. Switching back
+/// to a saved agy conversation is confirmed by its first PreInvocation, and
+/// only with the exact id the launch resumed, from inside the workspace.
+#[test]
+fn an_agy_resume_is_confirmed_by_its_first_invocation() {
+    let env = Env::new();
+    let agy = env.fake_codex();
+    let claude = env.fake_claude();
+    let root = env.root.join("back");
+    let launch = |args: &[&str], hooks: bool| {
+        let mut c = env.cmd();
+        c.env("WS_AGY_BIN", &agy).env("WS_CLAUDE_BIN", &claude).env("WS_NO_EXEC", "1");
+        if !hooks {
+            c.env("WS_FAKE_NO_HOOKS", "1");
+        }
+        c.args(args).assert().success();
+    };
+    launch(&["back", "-agy"], true);
+    let state = || std::fs::read_to_string(root.join(".ws/local/state.toml")).unwrap();
+    let saved: toml::Table = toml::from_str(&state()).unwrap();
+    let saved = saved["agy"]["session_id"].as_str().unwrap().to_string();
+    launch(&["back", "-claude"], true);
+    // Back to agy: it resumes `saved` and reports no SessionStart.
+    launch(&["back", "-agy"], false);
+    assert!(env.codex_argv_log().contains(&format!("--conversation {saved}")));
+    let meta = || std::fs::read_to_string(root.join(".ws/workspace.toml")).unwrap();
+    assert!(meta().contains("default_agent = \"claude\""), "not yet: {}", meta());
+    let attempt: toml::Table = toml::from_str(
+        &std::fs::read_to_string(root.join(".ws/local/launch-attempt.toml")).unwrap(),
+    )
+    .unwrap();
+    let attempt_id = attempt["id"].as_str().unwrap().to_string();
+
+    let invoke = |id: &str, n: u32, cwd: &std::path::Path| {
+        env.cmd()
+            .env("WS_WORKSPACE", "back")
+            .env("WS_DIR", &root)
+            .env("WS_AGENT", "agy")
+            .env("WS_LAUNCH_ATTEMPT", &attempt_id)
+            .args(["internal", "user-prompt"])
+            .write_stdin(format!(
+                r#"{{"conversationId":"{id}","cwd":"{}","hookEventName":"PreInvocation","lastUserInput":"go","invocationNum":{n}}}"#,
+                cwd.display()
+            ))
+            .assert()
+            .success();
+    };
+    let pending = || root.join(".ws/local/launch-attempt.toml").exists();
+    invoke("someone-else", 0, &root);
+    invoke("", 0, &root);
+    invoke(&saved, 0, env.home.path());
+    assert!(pending(), "a wrong id, no id or another cwd confirms nothing");
+    assert!(meta().contains("default_agent = \"claude\""));
+
+    let rotations = || {
+        std::fs::read_to_string(root.join(".ws/timeline.jsonl"))
+            .unwrap()
+            .matches("\"rotated\"")
+            .count()
+    };
+    let before = rotations();
+    invoke(&saved, 0, &root);
+    invoke(&saved, 1, &root); // a later call of the same turn, and a duplicate
+    assert!(!pending(), "the matching invocation confirms it");
+    assert!(meta().contains("default_agent = \"agy\""), "{}", meta());
+    assert!(state().contains(&saved), "the resumed id is kept: {}", state());
+    assert_eq!(rotations(), before, "a resume is not a new conversation");
+    let tl = std::fs::read_to_string(root.join(".ws/timeline.jsonl")).unwrap();
+    let switches =
+        tl.lines().filter(|l| l.contains("agent-switch") && l.contains(&attempt_id)).count();
+    assert_eq!(switches, 1, "{tl}");
+
+    // The next open does not claim the launch never started.
+    let out = env
+        .cmd()
+        .env("WS_AGY_BIN", &agy)
+        .env("WS_NO_EXEC", "1")
+        .args(["back", "-agy"])
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("never reported"));
+}

@@ -56,14 +56,6 @@ pub fn read(ws: &Workspace) -> Option<Attempt> {
     toml::from_str(&std::fs::read_to_string(path(ws)).ok()?).ok()
 }
 
-/// Remove the attempt only if it is still `id`: a late or repeated hook must
-/// never clear a newer launch's record.
-fn clear_if(ws: &Workspace, id: &str) {
-    if read(ws).is_some_and(|a| a.id == id) {
-        let _ = std::fs::remove_file(path(ws));
-    }
-}
-
 /// The attempt this hook process belongs to: the id in its environment, for the
 /// agent it runs under. Anything else (a /clear later in the same session, a
 /// stray hook from an older launch) matches nothing.
@@ -73,49 +65,99 @@ pub fn for_hook(ws: &Workspace) -> Option<Attempt> {
     read(ws).filter(|a| a.id == id && a.agent == agent)
 }
 
-/// The agent started: commit what the launch only intended. Called once per
-/// attempt; the record is removed here, so a replayed SessionStart finds none
-/// and commits nothing twice.
-pub fn confirm(ws: &Workspace, a: &Attempt, session_id: &str) {
-    let actor = crate::actors::actor_slug_in(&ws.root);
-    if let Some(want) = &a.resume_id {
-        if want != session_id {
+/// Whether `session_id` is the conversation this launch asked for. An exact
+/// resume or a preallocated Claude id names it; a fresh Codex or agy launch
+/// learns it from the hook, so any non-empty id is that conversation.
+pub fn accepts(a: &Attempt, session_id: &str) -> bool {
+    let id = session_id.trim();
+    !id.is_empty() && a.resume_id.as_ref().or(a.preallocated.as_ref()).is_none_or(|want| want == id)
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Outcome {
+    Confirmed,
+    /// The hook reported a different (or no) conversation: nothing committed,
+    /// the attempt stays for a matching event or a retry.
+    Mismatch,
+    /// Another hook already confirmed it, or a newer launch replaced it.
+    Gone,
+}
+
+/// The agent started: commit what the launch only intended.
+///
+/// Matching and finishing happen under one lock on the attempt file, so two
+/// copies of the same hook cannot both commit. Every required write returns
+/// its error and leaves the attempt in place to retry; each timeline row
+/// carries the attempt id, so a retry after a partial success does not record
+/// the switch or the consumption twice.
+pub fn confirm(ws: &Workspace, a: &Attempt, session_id: &str) -> anyhow::Result<Outcome> {
+    crate::txn::transaction(&path(ws), || {
+        let Some(cur) = read(ws).filter(|c| c.id == a.id) else { return Ok(Outcome::Gone) };
+        if !accepts(&cur, session_id) {
             let _ = crate::internal::append_log(
                 ws,
-                &format!("launch asked to resume {want} but {} reported {session_id}", a.agent),
+                &format!(
+                    "launch {} of {} expected {} but the hook reported {:?}; still pending",
+                    cur.id,
+                    cur.agent,
+                    cur.resume_id.as_ref().or(cur.preallocated.as_ref()).map_or("an id", |s| s),
+                    session_id
+                ),
             );
+            return Ok(Outcome::Mismatch);
         }
-    }
-    if let Some(from) = &a.from_agent {
-        let _ = crate::meta::set_default_agent(&ws.workspace_toml(), &a.agent);
-        let _ = crate::timeline::record(
-            &ws.timeline(),
-            "agent-switch",
-            &actor,
-            serde_json::json!({ "from": from, "to": a.agent, "handoff": a.hint }),
-        );
-    }
-    if let Some(name) = &a.handoff {
-        // Only the handoff this launch accepted: a newer one armed while the
-        // agent was starting stays armed.
-        if let Some(armed) = crate::handoff::armed(ws).filter(|x| x.name() == name) {
-            crate::handoff::disarm(ws, &armed);
-        }
-        let _ = crate::timeline::record(
-            &ws.timeline(),
-            "handoff-consumed",
-            &actor,
-            serde_json::json!({ "file": name, "source": "launch" }),
-        );
-    }
-    if a.preallocated.is_some() {
-        let _ = crate::contract::update_state(&ws.state_toml(), |t| {
-            if let Some(e) = t.get_mut(&a.agent).and_then(|v| v.as_table_mut()) {
-                e.remove("pending_session_id");
+        let actor = crate::actors::actor_slug_in(&ws.root);
+        let done = |kind: &str| recorded(ws, kind, &cur.id);
+        if let Some(from) = &cur.from_agent {
+            crate::meta::set_default_agent(&ws.workspace_toml(), &cur.agent)?;
+            if !done("agent-switch") {
+                crate::timeline::record(
+                    &ws.timeline(),
+                    "agent-switch",
+                    &actor,
+                    serde_json::json!({
+                        "from": from, "to": cur.agent, "handoff": cur.hint, "attempt": cur.id,
+                    }),
+                )?;
             }
-        });
-    }
-    clear_if(ws, &a.id);
+        }
+        if let Some(name) = &cur.handoff {
+            // Only the handoff this launch accepted: a newer one armed while the
+            // agent was starting stays armed.
+            if let Some(armed) = crate::handoff::armed(ws).filter(|x| x.name() == name) {
+                crate::handoff::disarm(ws, &armed);
+            }
+            if !done("handoff-consumed") {
+                crate::timeline::record(
+                    &ws.timeline(),
+                    "handoff-consumed",
+                    &actor,
+                    serde_json::json!({ "file": name, "source": "launch", "attempt": cur.id }),
+                )?;
+            }
+        }
+        if cur.preallocated.is_some() {
+            crate::contract::update_state(&ws.state_toml(), |t| {
+                if let Some(e) = t.get_mut(&cur.agent).and_then(|v| v.as_table_mut()) {
+                    e.remove("pending_session_id");
+                }
+            })?;
+        }
+        match std::fs::remove_file(path(ws)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(Outcome::Confirmed)
+    })
+}
+
+/// Whether the timeline already holds a `kind` row for this attempt.
+fn recorded(ws: &Workspace, kind: &str, attempt: &str) -> bool {
+    std::fs::read_to_string(ws.timeline()).unwrap_or_default().lines().any(|l| {
+        serde_json::from_str::<serde_json::Value>(l)
+            .is_ok_and(|v| v["kind"] == kind && v["attempt"].as_str() == Some(attempt))
+    })
 }
 
 /// A previous launch that never reported back, told to the user before the
