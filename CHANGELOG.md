@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-11-25
+
 ### Fixed
 
 - `main` builds again after the rand 0.10 / aes-gcm 0.11 bump: the secret
