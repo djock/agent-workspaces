@@ -135,7 +135,7 @@ jobs:
           echo "signed:"; cat dist/SHA256SUMS.minisig
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/ws-*.tar.gz
 
